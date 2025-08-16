@@ -1,12 +1,12 @@
 [package]
 name = "project_management"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
 description = "Power-CLI project management tool with hierarchical task organisation and a retro-rapid TUI."
 license = "MIT"
 authors = ["Peter Garfield Bower"]
 readme = "README.md"
-repository = "https://github.com/pbower/pm"
+repository = "https://github.com/pbower/project_management"
 keywords = ["cli", "tui", "project-management", "task", "terminal"]
 categories = ["command-line-utilities", "development-tools"]
 
