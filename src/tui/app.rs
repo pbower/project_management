@@ -63,6 +63,9 @@ pub struct App {
     filter_active: bool,
     confirm_action: Option<String>,
     dialog_text: String,
+    dialog_cursor_x: usize,
+    dialog_cursor_y: usize,
+    dialog_scroll_y: usize,
     navigation_context: NavigationContext,
     navigation_stack: Vec<NavigationContext>,
     navigation_history: Vec<NavigationSnapshot>,
@@ -92,6 +95,9 @@ impl App {
             filter_active: false,
             confirm_action: None,
             dialog_text: String::new(),
+            dialog_cursor_x: 0,
+            dialog_cursor_y: 0,
+            dialog_scroll_y: 0,
             navigation_context,
             navigation_stack: Vec::new(),
             navigation_history: Vec::new(),
@@ -672,12 +678,14 @@ impl App {
                         // User Story field
                         self.push_state(AppState::UserStoryDialog, None);
                         self.dialog_text = self.task_form.user_story.value.clone();
+                        self.init_dialog_cursor();
                         return Ok(false);
                     }
                     REQUIREMENTS_GLOBAL_ORDER => {
                         // Requirements field
                         self.push_state(AppState::RequirementsDialog, None);
                         self.dialog_text = self.task_form.requirements.value.clone();
+                        self.init_dialog_cursor();
                         return Ok(false);
                     }
                     _ => {
@@ -995,7 +1003,7 @@ impl App {
     /// 
     /// Used for editing user stories and requirements in dedicated fullscreen mode.
     /// Returns true if the application should quit.
-    fn handle_dialog_input(&mut self, key: KeyCode, _modifiers: KeyModifiers, is_user_story: bool) -> io::Result<bool> {
+    fn handle_dialog_input(&mut self, key: KeyCode, modifiers: KeyModifiers, is_user_story: bool) -> io::Result<bool> {
         match key {
             KeyCode::Esc => {
                 // Save the dialog text back to the form and return to form
@@ -1012,17 +1020,151 @@ impl App {
                 self.input_mode = InputMode::Text;
             }
             KeyCode::Char(c) => {
-                self.dialog_text.push(c);
+                // Insert character at cursor position
+                let cursor_pos = self.get_dialog_cursor_position();
+                self.dialog_text.insert(cursor_pos, c);
+                self.move_dialog_cursor_right();
             }
             KeyCode::Backspace => {
-                self.dialog_text.pop();
+                if modifiers.contains(KeyModifiers::CONTROL) {
+                    // Ctrl+Backspace: Clear entire field
+                    self.dialog_text.clear();
+                    self.dialog_cursor_x = 0;
+                    self.dialog_cursor_y = 0;
+                    self.dialog_scroll_y = 0;
+                } else {
+                    // Regular Backspace: Remove character before cursor
+                    let cursor_pos = self.get_dialog_cursor_position();
+                    if cursor_pos > 0 {
+                        self.dialog_text.remove(cursor_pos - 1);
+                        self.move_dialog_cursor_left();
+                    }
+                }
+            }
+            KeyCode::Delete => {
+                if modifiers.contains(KeyModifiers::CONTROL) {
+                    // Ctrl+Delete: Clear entire field
+                    self.dialog_text.clear();
+                    self.dialog_cursor_x = 0;
+                    self.dialog_cursor_y = 0;
+                    self.dialog_scroll_y = 0;
+                } else {
+                    // Regular Delete: Remove character at cursor
+                    let cursor_pos = self.get_dialog_cursor_position();
+                    if cursor_pos < self.dialog_text.len() {
+                        self.dialog_text.remove(cursor_pos);
+                    }
+                }
             }
             KeyCode::Enter => {
-                self.dialog_text.push('\n');
+                let cursor_pos = self.get_dialog_cursor_position();
+                self.dialog_text.insert(cursor_pos, '\n');
+                self.dialog_cursor_x = 0;
+                self.dialog_cursor_y += 1;
+            }
+            KeyCode::Left => {
+                self.move_dialog_cursor_left();
+            }
+            KeyCode::Right => {
+                self.move_dialog_cursor_right();
+            }
+            KeyCode::Up => {
+                self.move_dialog_cursor_up();
+            }
+            KeyCode::Down => {
+                self.move_dialog_cursor_down();
+            }
+            KeyCode::Home => {
+                self.dialog_cursor_x = 0;
+            }
+            KeyCode::End => {
+                let lines: Vec<&str> = self.dialog_text.lines().collect();
+                if let Some(current_line) = lines.get(self.dialog_cursor_y) {
+                    self.dialog_cursor_x = current_line.len();
+                }
             }
             _ => {}
         }
         Ok(false)
+    }
+
+    /// Get the current cursor position in the dialog text as a character index.
+    fn get_dialog_cursor_position(&self) -> usize {
+        let lines: Vec<&str> = self.dialog_text.lines().collect();
+        let mut pos = 0;
+        
+        for (i, line) in lines.iter().enumerate() {
+            if i == self.dialog_cursor_y {
+                return pos + self.dialog_cursor_x.min(line.len());
+            }
+            pos += line.len() + 1; // +1 for the newline character
+        }
+        
+        // If cursor_y is beyond the last line, position at end
+        self.dialog_text.len()
+    }
+
+    /// Move the dialog cursor left by one character.
+    fn move_dialog_cursor_left(&mut self) {
+        if self.dialog_cursor_x > 0 {
+            self.dialog_cursor_x -= 1;
+        } else if self.dialog_cursor_y > 0 {
+            // Move to end of previous line
+            self.dialog_cursor_y -= 1;
+            let lines: Vec<&str> = self.dialog_text.lines().collect();
+            if let Some(prev_line) = lines.get(self.dialog_cursor_y) {
+                self.dialog_cursor_x = prev_line.len();
+            }
+        }
+    }
+
+    /// Move the dialog cursor right by one character.
+    fn move_dialog_cursor_right(&mut self) {
+        let lines: Vec<&str> = self.dialog_text.lines().collect();
+        if let Some(current_line) = lines.get(self.dialog_cursor_y) {
+            if self.dialog_cursor_x < current_line.len() {
+                self.dialog_cursor_x += 1;
+            } else if self.dialog_cursor_y + 1 < lines.len() {
+                // Move to beginning of next line
+                self.dialog_cursor_y += 1;
+                self.dialog_cursor_x = 0;
+            }
+        }
+    }
+
+    /// Move the dialog cursor up by one line.
+    fn move_dialog_cursor_up(&mut self) {
+        if self.dialog_cursor_y > 0 {
+            self.dialog_cursor_y -= 1;
+            let lines: Vec<&str> = self.dialog_text.lines().collect();
+            if let Some(new_line) = lines.get(self.dialog_cursor_y) {
+                self.dialog_cursor_x = self.dialog_cursor_x.min(new_line.len());
+            }
+        }
+    }
+
+    /// Move the dialog cursor down by one line.
+    fn move_dialog_cursor_down(&mut self) {
+        let lines: Vec<&str> = self.dialog_text.lines().collect();
+        if self.dialog_cursor_y + 1 < lines.len() {
+            self.dialog_cursor_y += 1;
+            if let Some(new_line) = lines.get(self.dialog_cursor_y) {
+                self.dialog_cursor_x = self.dialog_cursor_x.min(new_line.len());
+            }
+        }
+    }
+
+    /// Initialize dialog cursor position when opening a dialog.
+    fn init_dialog_cursor(&mut self) {
+        let lines: Vec<&str> = self.dialog_text.lines().collect();
+        if lines.is_empty() {
+            self.dialog_cursor_x = 0;
+            self.dialog_cursor_y = 0;
+        } else {
+            self.dialog_cursor_y = lines.len() - 1;
+            self.dialog_cursor_x = lines.last().unwrap_or(&"").len();
+        }
+        self.dialog_scroll_y = 0;
     }
 
     /// Handle keyboard input when viewing the help screen.
@@ -1842,36 +1984,47 @@ impl App {
         let inner = block.inner(chunks[0]);
         f.render_widget(block, chunks[0]);
 
-        let paragraph = Paragraph::new(self.dialog_text.as_str()).wrap(Wrap { trim: true });
+        // Split text into lines and handle scrolling
+        let lines: Vec<&str> = self.dialog_text.lines().collect();
+        let visible_height = inner.height as usize;
+        
+        // Adjust scroll to keep cursor visible
+        if self.dialog_cursor_y >= self.dialog_scroll_y + visible_height {
+            self.dialog_scroll_y = self.dialog_cursor_y.saturating_sub(visible_height - 1);
+        } else if self.dialog_cursor_y < self.dialog_scroll_y {
+            self.dialog_scroll_y = self.dialog_cursor_y;
+        }
 
+        // Get visible lines based on scroll position
+        let visible_lines: Vec<Line> = lines
+            .iter()
+            .skip(self.dialog_scroll_y)
+            .take(visible_height)
+            .map(|&line| Line::from(line))
+            .collect();
+
+        let paragraph = Paragraph::new(visible_lines);
         f.render_widget(paragraph, inner);
 
-        // Instructions
+        // Instructions with improved text
         let instructions = Paragraph::new(
-            "Type to edit • Enter for new line • Backspace to delete • Esc to save and return",
+            "Arrow keys to navigate • Type to edit • Enter for new line • Backspace/Delete • Ctrl+Backspace/Delete to clear all • Home/End • Esc to save and return",
         )
         .block(Block::default().borders(Borders::ALL).title("Instructions"))
         .alignment(Alignment::Center);
         f.render_widget(instructions, chunks[1]);
 
-        // Set cursor at end of text
-        let lines: Vec<&str> = self.dialog_text.lines().collect();
-        let cursor_y = if lines.is_empty() {
-            0
-        } else {
-            (lines.len() - 1).min((inner.height as usize).saturating_sub(1))
-        };
-        let cursor_x = if lines.is_empty() {
-            0
-        } else {
-            lines
-                .last()
-                .unwrap_or(&"")
-                .len()
-                .min((inner.width as usize).saturating_sub(1))
-        };
-
-        f.set_cursor_position((inner.x + cursor_x as u16, inner.y + cursor_y as u16));
+        // Calculate cursor position relative to visible area
+        let cursor_y_visible = self.dialog_cursor_y.saturating_sub(self.dialog_scroll_y);
+        let cursor_x_clamped = self.dialog_cursor_x.min(inner.width as usize);
+        
+        // Only show cursor if it's in the visible area
+        if cursor_y_visible < visible_height {
+            f.set_cursor_position((
+                inner.x + cursor_x_clamped as u16,
+                inner.y + cursor_y_visible as u16
+            ));
+        }
     }
 
     /// Render a confirmation dialog for destructive actions.

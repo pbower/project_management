@@ -1,6 +1,6 @@
 [package]
 name = "project_management"
-version = "0.9.1"
+version = "0.9.2"
 edition = "2021"
 description = "Power-CLI project management tool with hierarchical task organisation and a retro-rapid TUI."
 license = "MIT"
