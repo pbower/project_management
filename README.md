@@ -34,6 +34,21 @@ and no external integrations, so you retain complete control.
   - Tree view for hierarchical relationships
   - Ancestor and descendant navigation
 
+## Screenshots
+
+### Main Menu
+<img width="2560" height="1595" alt="image" src="https://github.com/user-attachments/assets/5cfbf035-3206-4c56-bce0-373b1fb58680" />
+
+### Product-View
+<img width="2560" height="1571" alt="image" src="https://github.com/user-attachments/assets/1e884f8d-ee99-403b-95b8-8610502bfeae" />
+
+### Add Item
+<img width="2559" height="1599" alt="image" src="https://github.com/user-attachments/assets/819062fb-376e-4079-870e-8aa0d82e23f6" />
+
+### Hierarchically-Coloured Views
+<img width="2560" height="1599" alt="image" src="https://github.com/user-attachments/assets/16c6cc32-2dc5-4203-b595-bbe73905e8ac" />
+
+
 ## Installation
 
 ### Prerequisites
