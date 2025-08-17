@@ -512,6 +512,26 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('s') => {
+                if let Some(selected) = self.task_list_state.selected() {
+                    if let Some(&task_id) = self.filtered_tasks.get(selected) {
+                        if let Some(task) = self.db.get_mut(task_id) {
+                            // Cycle through all three status states: Open -> InProgress -> Done -> Open
+                            let new_status = match task.status {
+                                Status::Open => Status::InProgress,
+                                Status::InProgress => Status::Done,
+                                Status::Done => Status::Open,
+                            };
+                            task.status = new_status;
+                            if let Err(e) = self.save_db() {
+                                self.set_status_message(format!("Error saving: {}", e));
+                            } else {
+                                self.set_status_message(format!("Task status updated to {}", format_status(new_status)));
+                            }
+                        }
+                    }
+                }
+            }
             KeyCode::Char('c') => {
                 if let Some(selected) = self.task_list_state.selected() {
                     if let Some(&task_id) = self.filtered_tasks.get(selected) {
@@ -525,6 +545,31 @@ impl App {
                                 self.set_status_message(format!("Error saving: {}", e));
                             } else {
                                 self.set_status_message("Task status updated".to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('p') => {
+                if let Some(selected) = self.task_list_state.selected() {
+                    if let Some(&task_id) = self.filtered_tasks.get(selected) {
+                        if let Some(task) = self.db.get_mut(task_id) {
+                            // Cycle through process stages: Ideation -> Design -> Prototyping -> Implementation -> Testing -> Refinement -> Release -> Ideation
+                            let new_stage = match task.process_stage {
+                                Some(ProcessStage::Ideation) => ProcessStage::Design,
+                                Some(ProcessStage::Design) => ProcessStage::Prototyping,
+                                Some(ProcessStage::Prototyping) => ProcessStage::Implementation,
+                                Some(ProcessStage::Implementation) => ProcessStage::Testing,
+                                Some(ProcessStage::Testing) => ProcessStage::Refinement,
+                                Some(ProcessStage::Refinement) => ProcessStage::Release,
+                                Some(ProcessStage::Release) => ProcessStage::Ideation,
+                                None => ProcessStage::Ideation, // Start with Ideation if no stage set
+                            };
+                            task.process_stage = Some(new_stage);
+                            if let Err(e) = self.save_db() {
+                                self.set_status_message(format!("Error saving: {}", e));
+                            } else {
+                                self.set_status_message(format!("Process stage updated to {}", format_process_stage(Some(new_stage))));
                             }
                         }
                     }
@@ -1923,6 +1968,8 @@ impl App {
             Line::from("  a            Add new task"),
             Line::from("  e            Edit selected task"),
             Line::from("  d            Delete selected task"),
+            Line::from("  s            Cycle task status (Open → In Progress → Done → Open)"),
+            Line::from("  p            Cycle process stage (Ideation → Design → ... → Release)"),
             Line::from("  c            Toggle task completion"),
             Line::from("  t            Toggle show/hide completed tasks"),
             Line::from("  r            Refresh task list"),
