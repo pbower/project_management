@@ -48,6 +48,7 @@ pub enum ProcessStage {
     Ideation,
     Design,
     Prototyping,
+    ReadyToImplement,
     Implementation,
     Testing,
     Refinement,

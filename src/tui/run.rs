@@ -28,3 +28,26 @@ pub fn run_tui(db_path: &Path) -> io::Result<()> {
 
     result
 }
+
+/// Run the TUI with a specific task pre-selected for editing.
+pub fn run_tui_with_edit(db_path: &Path, task_id: u64) -> io::Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut app = App::new(db_path)?;
+    app.open_task_for_edit(task_id);
+    let result = app.run(&mut terminal);
+
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+
+    result
+}

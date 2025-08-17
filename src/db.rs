@@ -282,6 +282,7 @@ pub fn format_process_stage(s: Option<ProcessStage>) -> &'static str {
         Some(ProcessStage::Ideation) => "Ideation",
         Some(ProcessStage::Design) => "Design",
         Some(ProcessStage::Prototyping) => "Prototyping",
+        Some(ProcessStage::ReadyToImplement) => "Ready to Implement",
         Some(ProcessStage::Implementation) => "Implementation",
         Some(ProcessStage::Testing) => "Testing",
         Some(ProcessStage::Refinement) => "Refinement",

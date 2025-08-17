@@ -87,6 +87,8 @@ pub mod tui {
     pub mod run;
     pub mod task_form;
     pub mod utils;
+    pub mod workflow;
+    pub mod workflow_run;
 }
 
 use cli::Cli;
@@ -127,7 +129,7 @@ fn main() {
         _ => {}
     }
 
-    // Handle UI command specially to support recent project logic
+    // Handle UI and Workflow commands specially to support recent project logic
     match &cli.command {
         Commands::Ui => {
             // For UI command, try to open most recent project or fall back to menu
@@ -147,6 +149,18 @@ fn main() {
                         cmd_menu(&pm_dir);
                     }
                 }
+            }
+            return;
+        },
+        Commands::Wf => {
+            // For Workflow command, show workflow selection menu
+            if cli.db.is_some() {
+                // If user specified --db, use that specific project
+                let db_path = cli.db.unwrap();
+                cmd_wf(&db_path);
+            } else {
+                // Show workflow project selection menu
+                cmd_workflow_menu(&pm_dir);
             }
             return;
         },
@@ -182,6 +196,7 @@ fn main() {
 
     match cli.command {
         Commands::Ui => unreachable!("UI command handled above"),
+        Commands::Wf => unreachable!("Workflow command handled above"),
         Commands::Add {
             title, template, desc, project, tags, due, parent, kind, priority_level,
             urgency, process_stage, issue_link, pr_link, summary, user_story,

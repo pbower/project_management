@@ -93,8 +93,9 @@ impl TaskForm {
             urgencies: vec![None, Some(Urgency::UrgentImportant), Some(Urgency::UrgentNotImportant), 
                           Some(Urgency::NotUrgentImportant), Some(Urgency::NotUrgentNotImportant)],
             process_stages: vec![None, Some(ProcessStage::Ideation), Some(ProcessStage::Design), 
-                               Some(ProcessStage::Prototyping), Some(ProcessStage::Implementation), 
-                               Some(ProcessStage::Testing), Some(ProcessStage::Refinement), Some(ProcessStage::Release)],
+                               Some(ProcessStage::Prototyping), Some(ProcessStage::ReadyToImplement),
+                               Some(ProcessStage::Implementation), Some(ProcessStage::Testing), 
+                               Some(ProcessStage::Refinement), Some(ProcessStage::Release)],
             available_projects,
         }
     }

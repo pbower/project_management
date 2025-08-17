@@ -171,6 +171,19 @@ impl App {
             "Default (Legacy)".to_string()
         }
     }
+    
+    /// Open a specific task for editing.
+    pub fn open_task_for_edit(&mut self, task_id: u64) {
+        if let Some(task) = self.db.get(task_id) {
+            self.selected_task = Some(task_id);
+            self.task_form = TaskForm::from_task_with_pm_dir(task, &self.pm_dir);
+            self.task_form.update_active_field();
+            self.push_state(AppState::EditTask, None);
+            self.input_mode = InputMode::Text;
+        }
+    }
+    
+    /// Check if the user wants to return to the main menu.
 
     /// Reload the database from disk and refresh the filtered task list.
     fn refresh_tasks(&mut self) {
@@ -554,11 +567,12 @@ impl App {
                 if let Some(selected) = self.task_list_state.selected() {
                     if let Some(&task_id) = self.filtered_tasks.get(selected) {
                         if let Some(task) = self.db.get_mut(task_id) {
-                            // Cycle through process stages: Ideation -> Design -> Prototyping -> Implementation -> Testing -> Refinement -> Release -> Ideation
+                            // Cycle through process stages: Ideation -> Design -> Prototyping -> Ready to Implement -> Implementation -> Testing -> Refinement -> Release -> Ideation
                             let new_stage = match task.process_stage {
                                 Some(ProcessStage::Ideation) => ProcessStage::Design,
                                 Some(ProcessStage::Design) => ProcessStage::Prototyping,
-                                Some(ProcessStage::Prototyping) => ProcessStage::Implementation,
+                                Some(ProcessStage::Prototyping) => ProcessStage::ReadyToImplement,
+                                Some(ProcessStage::ReadyToImplement) => ProcessStage::Implementation,
                                 Some(ProcessStage::Implementation) => ProcessStage::Testing,
                                 Some(ProcessStage::Testing) => ProcessStage::Refinement,
                                 Some(ProcessStage::Refinement) => ProcessStage::Release,
@@ -1969,11 +1983,12 @@ impl App {
             Line::from("  e            Edit selected task"),
             Line::from("  d            Delete selected task"),
             Line::from("  s            Cycle task status (Open → In Progress → Done → Open)"),
-            Line::from("  p            Cycle process stage (Ideation → Design → ... → Release)"),
+            Line::from("  p            Cycle process stage (Ideation → Design → ... → Ready to Implement → Implementation → ... → Release)"),
             Line::from("  c            Toggle task completion"),
             Line::from("  t            Toggle show/hide completed tasks"),
             Line::from("  r            Refresh task list"),
             Line::from("  /            Filter tasks by title/tags/project"),
+            Line::from("  m            Return to main menu"),
             Line::from("  h/F1         Show this help"),
             Line::from("  q/Ctrl+C/Esc Quit"),
             Line::from(""),

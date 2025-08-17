@@ -7,6 +7,10 @@ The key use case is rapid low-effort personal project planning for an individual
 It creates a simple local file ~/.pm/tasks.json which it uses as the database, with basic CSV export,
 and no external integrations, so you retain complete control.
 
+**Change Log**:
+V0.9.3: *Added Workflow Ticket Manager*
+V0.9.0-2: Initial Public Release
+
 ## Features
 
 - **Hierarchical Task Organisation**: Organise work using a four-level hierarchy:
@@ -39,13 +43,16 @@ and no external integrations, so you retain complete control.
 ### Main Menu
 <img width="2560" height="1595" alt="image" src="https://github.com/user-attachments/assets/5cfbf035-3206-4c56-bce0-373b1fb58680" />
 
+### Manage Workflow Queue
+<img width="2556" height="1589" alt="image" src="https://github.com/user-attachments/assets/21756bd4-d027-4a73-bd22-d07968ee33ac" />
+
 ### Product-View
 <img width="2560" height="1571" alt="image" src="https://github.com/user-attachments/assets/1e884f8d-ee99-403b-95b8-8610502bfeae" />
 
 ### Add Item
 <img width="2559" height="1599" alt="image" src="https://github.com/user-attachments/assets/819062fb-376e-4079-870e-8aa0d82e23f6" />
 
-### Hierarchically-Coloured Views
+### Hierarchical Views with Per-Level Colours
 <img width="2560" height="1599" alt="image" src="https://github.com/user-attachments/assets/16c6cc32-2dc5-4203-b595-bbe73905e8ac" />
 
 

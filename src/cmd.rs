@@ -14,13 +14,18 @@ use chrono::{Local, NaiveDate, TimeZone, Utc};
 use crate::db::*;
 use crate::fields::*;
 use crate::task::{Task, TaskTemplate};
-use crate::tui::run::run_tui;
+use crate::tui::run::{run_tui, run_tui_with_edit};
 use crate::tui::menu::MenuApp;
+use crate::tui::workflow_run::run_workflow_tui;
+use crate::tui::workflow::WorkflowExit;
 
 #[derive(Subcommand)]
 pub enum Commands {
     /// Launch the interactive UI interface.
     Ui,
+
+    /// Launch the workflow kanban board interface.
+    Wf,
 
     /// Add a new task.
     Add {
@@ -1590,6 +1595,49 @@ pub fn cmd_export_all(pm_dir: &Path, output: Option<String>, include_completed: 
     }
 }
 
+/// Launch the workflow project selection menu.
+pub fn cmd_workflow_menu(pm_dir: &Path) {
+    use crossterm::{
+        execute,
+        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    };
+    use ratatui::{backend::CrosstermBackend, Terminal};
+    use std::io;
+    
+    // Setup terminal
+    enable_raw_mode().unwrap();
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen).unwrap();
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend).unwrap();
+    
+    // Create and run menu app starting in workflow selection
+    let mut app = MenuApp::new(pm_dir.to_path_buf()).unwrap();
+    app.start_workflow_selection();
+    let res = app.run(&mut terminal);
+    
+    // Restore terminal
+    disable_raw_mode().unwrap();
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen
+    ).unwrap();
+    terminal.show_cursor().unwrap();
+    
+    if let Err(err) = res {
+        println!("{:?}", err);
+        std::process::exit(1);
+    }
+    
+    // Check what was selected
+    if let Some(project) = app.get_selected_project() {
+        if app.should_open_workflow() {
+            println!("Opening workflow for: {}", project.display_name);
+            cmd_wf(&project.file_path);
+        }
+    }
+}
+
 /// Launch the project selection menu.
 pub fn cmd_menu(pm_dir: &Path) {
     use crossterm::{
@@ -1623,9 +1671,46 @@ pub fn cmd_menu(pm_dir: &Path) {
         std::process::exit(1);
     }
     
-    // If a project was selected, launch the main TUI with that project
+    // Check what was selected
     if let Some(project) = app.get_selected_project() {
-        println!("Opening project: {}", project.display_name);
-        let _ = run_tui(&project.file_path);
+        if app.should_open_workflow() {
+            println!("Opening workflow for: {}", project.display_name);
+            cmd_wf(&project.file_path);
+        } else {
+            println!("Opening project: {}", project.display_name);
+            if let Err(err) = run_tui(&project.file_path) {
+                eprintln!("Error running TUI: {}", err);
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+/// Launch the workflow kanban board interface.
+pub fn cmd_wf(db_path: &Path) {
+    loop {
+        match run_workflow_tui(db_path) {
+            Ok(WorkflowExit::EditTask(task_id)) => {
+                // User wants to edit a task
+                let db = Database::load(db_path);
+                if let Some(_task) = db.get(task_id) {
+                    // Run the TUI with the task pre-selected for editing
+                    if let Err(err) = run_tui_with_edit(db_path, task_id) {
+                        eprintln!("Error running TUI: {}", err);
+                        std::process::exit(1);
+                    }
+                    // After editing, return to workflow
+                    continue;
+                }
+            }
+            Ok(WorkflowExit::Quit) => {
+                // Normal exit
+                break;
+            }
+            Err(err) => {
+                eprintln!("Error running workflow TUI: {}", err);
+                std::process::exit(1);
+            }
+        }
     }
 }
