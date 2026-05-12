@@ -8,5 +8,9 @@
 //! will replace it over subsequent phases (see PM_BUILD_PLAN.md).
 
 pub mod id;
+pub mod state;
+pub mod aliases;
 
 pub use id::{TypePrefix, LeafId, AddressId, IdInput, IdParseError};
+pub use state::{State, ItemEntry, StateError};
+pub use aliases::Aliases;
