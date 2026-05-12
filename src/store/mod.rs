@@ -11,8 +11,10 @@ pub mod id;
 pub mod state;
 pub mod aliases;
 pub mod layout;
+pub mod resolver;
 
 pub use id::{TypePrefix, LeafId, AddressId, IdInput, IdParseError};
 pub use state::{State, ItemEntry, StateError};
 pub use aliases::Aliases;
 pub use layout::{Layout, LayoutError, TYPE_FOLDER_ROOTS};
+pub use resolver::{Resolver, Resolved, ResolveError};
