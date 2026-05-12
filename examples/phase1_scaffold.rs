@@ -2,11 +2,11 @@
 //!
 //! Builds a `.pm/` layout, allocates a few typed ids, ensures their on-disk
 //! directories, writes state.json + aliases.json, and round-trips through
-//! load. Optionally runs the legacy migration planner against a supplied
-//! tasks.json path.
+//! load. Optionally runs the migration planner against a supplied tasks.json
+//! produced by the existing `Database` format.
 //!
 //! Usage:
-//!     cargo run --example phase1_scaffold -- <pm-base-dir> [--legacy <tasks.json>]
+//!     cargo run --example phase1_scaffold -- <pm-base-dir> [--migrate <tasks.json>]
 //!
 //! `<pm-base-dir>` is the directory under which `.pm/` will be created.
 
@@ -20,13 +20,13 @@ use project_management::store::{
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: {} <pm-base-dir> [--legacy <tasks.json>]", args[0]);
+        eprintln!("usage: {} <pm-base-dir> [--migrate <tasks.json>]", args[0]);
         return ExitCode::from(2);
     }
     let base = PathBuf::from(&args[1]);
-    let legacy_arg = args
+    let migrate_arg = args
         .iter()
-        .position(|a| a == "--legacy")
+        .position(|a| a == "--migrate")
         .and_then(|i| args.get(i + 1))
         .map(PathBuf::from);
 
@@ -105,9 +105,9 @@ fn main() -> ExitCode {
         println!("  {}  -> {}", id, entry.path.display());
     }
 
-    if let Some(legacy_path) = legacy_arg {
+    if let Some(source_path) = migrate_arg {
         println!();
-        match MigrationPlan::plan(&layout, &legacy_path) {
+        match MigrationPlan::plan(&layout, &source_path) {
             Ok(plan) => println!("{}", plan.render()),
             Err(e) => {
                 eprintln!("migration plan failed: {e}");
