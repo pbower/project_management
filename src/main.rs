@@ -72,29 +72,10 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
-pub mod cli;
-pub mod cmd;
-pub mod db;
-pub mod fields;
-pub mod project;
-pub mod task;
-pub mod tui {
-    pub mod colors;
-    pub mod app;
-    pub mod enums;
-    pub mod input;
-    pub mod menu;
-    pub mod run;
-    pub mod task_form;
-    pub mod utils;
-    pub mod workflow;
-    pub mod workflow_run;
-}
-
-use cli::Cli;
-use cmd::*;
-use db::*;
-use project::*;
+use project_management::cli::Cli;
+use project_management::cmd::*;
+use project_management::db::*;
+use project_management::project::*;
 
 fn main() {
     let cli = Cli::parse();

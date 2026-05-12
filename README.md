@@ -476,6 +476,6 @@ so that setup remains zero-config and ready-to-go.
 
 ## License
 
-MIT Licensed. See LICENSE for details.
+MPL Licensed. See LICENSE for details.
 
 ---
