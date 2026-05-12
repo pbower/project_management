@@ -15,6 +15,7 @@ pub mod resolver;
 pub mod migrate;
 pub mod front_matter;
 pub mod sections;
+pub mod templates;
 
 pub use id::{TypePrefix, LeafId, AddressId, IdInput, IdParseError};
 pub use state::{State, ItemEntry, StateError};
@@ -24,4 +25,5 @@ pub use resolver::{Resolver, Resolved, ResolveError};
 pub use migrate::{MigrationPlan, MigrationStep, MigrateError};
 pub use front_matter::{FrontMatter, Document, MemoryRef, FrontMatterError, split_front_matter};
 pub use sections::{Section, ParsedBody};
+pub use templates::{ResolvedTemplate, TemplateSource};
 
