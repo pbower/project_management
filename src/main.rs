@@ -77,6 +77,7 @@ pub mod cmd;
 pub mod db;
 pub mod fields;
 pub mod project;
+pub mod store;
 pub mod task;
 pub mod tui {
     pub mod colors;
