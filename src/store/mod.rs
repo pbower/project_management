@@ -17,6 +17,8 @@ pub mod front_matter;
 pub mod sections;
 pub mod templates;
 pub mod claude_md;
+pub mod artifacts;
+pub mod watcher;
 
 pub use id::{TypePrefix, LeafId, AddressId, IdInput, IdParseError};
 pub use state::{State, ItemEntry, StateError};
@@ -28,4 +30,9 @@ pub use front_matter::{FrontMatter, Document, MemoryRef, FrontMatterError, split
 pub use sections::{Section, ParsedBody};
 pub use templates::{ResolvedTemplate, TemplateSource};
 pub use claude_md::{Ticket, TicketError, CLAUDE_MD, ARTIFACTS_IMPORT};
+pub use artifacts::{
+    ArtifactsIndex, ArtifactEntry, SweepReport, ArtifactError, ARTIFACTS_MD,
+    sweep_dir, rename_artifact,
+};
+pub use watcher::{ArtifactsWatcher, DEFAULT_DEBOUNCE};
 
