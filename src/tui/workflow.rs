@@ -19,9 +19,10 @@ use ratatui::{
 };
 
 use crate::{fields::*, tui::colors::{DARK_GREEN, DARK_PURPLE, DARK_RED, GOLD}};
+use crate::store::LeafId;
 use crate::task::Task;
 use crate::{
-    db::{Database, format_status},
+    db::{Database, format_status, project_label},
     tui::enums::{HierarchyLevel, NavigationContext},
 };
 
@@ -30,7 +31,7 @@ use crate::{
 #[derive(Debug)]
 pub enum WorkflowExit {
     Quit,
-    EditTask(u64),
+    EditTask(LeafId),
 }
 
 /// Main workflow application state
@@ -45,12 +46,14 @@ pub struct WorkflowApp {
     status_message: String,
     show_task_detail: bool,  // Whether to show task detail popup
     show_completed: bool,    // Whether to show completed tasks
-    edit_task_id: Option<u64>,  // Task ID to edit when exiting
+    edit_task_id: Option<LeafId>,  // Task ID to edit when exiting
     filter_active: bool,     // Whether filter mode is active
     filter_text: String,     // Current filter text
-    
-    // Organized tasks by process stage
-    columns: [Vec<u64>; 9], // 9 process stages: None, Ideation, Design, Prototyping, Ready to Implement, Implementation, Testing, Refinement, Release
+
+    // Organised tasks by process stage. 9 columns: None, Ideation, Design,
+    // Prototyping, Ready to Implement, Implementation, Testing, Refinement,
+    // Release.
+    columns: [Vec<LeafId>; 9],
 }
 
 impl WorkflowApp {
@@ -82,6 +85,7 @@ impl WorkflowApp {
     /// Get the theme color for the current hierarchy level
     fn get_hierarchy_color(&self) -> Color {
         match self.navigation_context.level {
+            HierarchyLevel::Project => Color::Cyan,        // Cyan for Project (top-level)
             HierarchyLevel::Product => Color::Blue,        // Navy
             HierarchyLevel::Epic => DARK_GREEN,           // Green
             HierarchyLevel::Task => GOLD,                 // Gold
@@ -121,13 +125,14 @@ impl WorkflowApp {
             
             // Filter by hierarchy level
             let required_kind = match hierarchy_level {
+                HierarchyLevel::Project => Kind::Project,
                 HierarchyLevel::Product => Kind::Product,
                 HierarchyLevel::Epic => Kind::Epic,
                 HierarchyLevel::Task => Kind::Task,
                 HierarchyLevel::Subtask => Kind::Subtask,
                 HierarchyLevel::Milestone => continue, // Skip milestones in workflow view
             };
-            
+
             if task.kind != required_kind {
                 continue;
             }
@@ -138,15 +143,17 @@ impl WorkflowApp {
                     continue;
                 }
             }
-            
-            // Apply text filter if active
+
+            // Apply text filter if active. The project field is gone; we
+            // derive the project label from the parent chain instead.
             if !self.filter_text.is_empty() {
                 let filter_lower = self.filter_text.to_lowercase();
                 let title_matches = task.title.to_lowercase().contains(&filter_lower);
                 let tags_match = task.tags.iter().any(|tag| tag.to_lowercase().contains(&filter_lower));
-                let project_matches = task.project.as_ref()
-                    .map_or(false, |p| p.to_lowercase().contains(&filter_lower));
-                
+                let project_matches = project_label(&self.db, task)
+                    .to_lowercase()
+                    .contains(&filter_lower);
+
                 if !title_matches && !tags_match && !project_matches {
                     continue;
                 }
@@ -505,23 +512,25 @@ impl WorkflowApp {
         }
     }
 
-    /// Switch between hierarchy views (Product -> Epic -> Task -> Subtask)
+    /// Switch between hierarchy views (Project -> Product -> Epic -> Task -> Subtask)
     fn switch_hierarchy_view(&mut self, forward: bool) {
         let new_level = if forward {
             match self.navigation_context.level {
+                HierarchyLevel::Project => HierarchyLevel::Product,
                 HierarchyLevel::Product => HierarchyLevel::Epic,
                 HierarchyLevel::Epic => HierarchyLevel::Task,
                 HierarchyLevel::Task => HierarchyLevel::Subtask,
-                HierarchyLevel::Subtask => HierarchyLevel::Product,
-                HierarchyLevel::Milestone => HierarchyLevel::Product, // Skip milestones
+                HierarchyLevel::Subtask => HierarchyLevel::Project,
+                HierarchyLevel::Milestone => HierarchyLevel::Project, // Skip milestones
             }
         } else {
             match self.navigation_context.level {
-                HierarchyLevel::Product => HierarchyLevel::Subtask,
+                HierarchyLevel::Project => HierarchyLevel::Subtask,
+                HierarchyLevel::Product => HierarchyLevel::Project,
                 HierarchyLevel::Epic => HierarchyLevel::Product,
                 HierarchyLevel::Task => HierarchyLevel::Epic,
                 HierarchyLevel::Subtask => HierarchyLevel::Task,
-                HierarchyLevel::Milestone => HierarchyLevel::Product, // Skip milestones
+                HierarchyLevel::Milestone => HierarchyLevel::Project, // Skip milestones
             }
         };
 
@@ -833,10 +842,11 @@ impl WorkflowApp {
             card_text.push(Line::from(line));
         }
         
-        // Add status line at the bottom
-        card_text.push(Line::from(format!("{} | {}", 
+        // Add status line at the bottom. Project label is derived from the
+        // parent chain via project_label rather than a free-form field.
+        card_text.push(Line::from(format!("{} | {}",
             format_status(task.status),
-            task.project.as_deref().unwrap_or("-"))));
+            project_label(&self.db, task))));
 
         let card_block = Paragraph::new(card_text)
             .block(Block::default().borders(Borders::ALL))
@@ -915,7 +925,7 @@ impl WorkflowApp {
             };
 
             let mut detail_lines = vec![
-                Line::from(vec![Span::styled(format!("Task #{}: {}", task.id, task.title), 
+                Line::from(vec![Span::styled(format!("Task {}: {}", task.id, task.title),
                     Style::default().add_modifier(Modifier::BOLD))]),
                 Line::from(""),
                 Line::from(format!("Kind:         {}", format_kind(task.kind))),
@@ -925,7 +935,7 @@ impl WorkflowApp {
                 Line::from(format!("Process Stage: {}", format_process_stage(task.process_stage))),
                 Line::from(format!("Due:          {}", due_str)),
                 Line::from(format!("Parent:       {}", parent_str)),
-                Line::from(format!("Project:      {}", task.project.as_deref().unwrap_or("-"))),
+                Line::from(format!("Project:      {}", project_label(&self.db, task))),
                 Line::from(format!("Tags:         {}", if task.tags.is_empty() { "-".to_string() } else { task.tags.join(", ") })),
                 Line::from(""),
                 Line::from("Description:"),
