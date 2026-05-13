@@ -362,9 +362,17 @@ fn move_ticket(pm_root_arg: Option<&Path>, id: &str, dest: &str) -> Result<(), C
     }
 
     // Record an alias from the old address to the new address so old refs
-    // keep resolving.
-    if let (Ok(old_addr), Ok(new_addr)) = (compute_address(&state, &old_rel),
-                                            compute_address(&state, &new_rel)) {
+    // keep resolving. Compute both BEFORE updating state.items so the
+    // address walker still sees the ticket at its old location.
+    let old_addr = compute_address(&state, &old_rel).ok();
+    let new_parent_addr = new_parent_rel
+        .as_ref()
+        .and_then(|(_, parent_path)| compute_address(&state, parent_path).ok());
+    let new_addr = match new_parent_addr {
+        Some(prefix) => format!("{prefix}-{leaf}"),
+        None => leaf.to_string(),
+    };
+    if let Some(old_addr) = old_addr {
         if old_addr != new_addr {
             aliases.add(old_addr, new_addr);
         }
