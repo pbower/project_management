@@ -38,17 +38,16 @@ pub struct Ticket {
 }
 
 impl Ticket {
-    /// Build a brand-new ticket from a leaf id, title, slug, and template
-    /// content. The template is applied to an empty body via
-    /// [`templates::apply`] so the section headings appear in template order
-    /// with empty bodies, plus the trailing `@artifacts/ARTIFACTS.md` line.
+    /// Build a brand-new ticket from a leaf id, title, and template content.
+    /// The template is applied to an empty body via [`templates::apply`] so
+    /// the section headings appear in template order with empty bodies, plus
+    /// the trailing `@artifacts/ARTIFACTS.md` line.
     pub fn scaffold(
         leaf: LeafId,
         title: impl Into<String>,
-        slug: impl Into<String>,
         template: &str,
     ) -> Self {
-        let front_matter = FrontMatter::new(leaf, title, slug);
+        let front_matter = FrontMatter::new(leaf, title);
         let body = templates::scaffold(template);
         Ticket { front_matter, body }
     }
@@ -162,10 +161,9 @@ mod tests {
 
     #[test]
     fn scaffold_produces_template_sections_with_empty_bodies() {
-        let t = Ticket::scaffold(task_leaf(), "Lock protocol", "lock-protocol",
+        let t = Ticket::scaffold(task_leaf(), "Lock protocol",
             builtin(TypePrefix::Task));
         assert_eq!(t.front_matter.title, "Lock protocol");
-        assert_eq!(t.front_matter.slug, "lock-protocol");
         assert_eq!(
             t.body.names(),
             vec!["Description", "User Story", "Requirements", "Acceptance Criteria", "Notes"],
@@ -177,7 +175,7 @@ mod tests {
 
     #[test]
     fn render_includes_artifacts_import_trailer() {
-        let t = Ticket::scaffold(task_leaf(), "Lock protocol", "lock-protocol",
+        let t = Ticket::scaffold(task_leaf(), "Lock protocol",
             builtin(TypePrefix::Task));
         let rendered = t.render().unwrap();
         assert!(rendered.starts_with("---\n"), "must start with YAML delimiter");
@@ -191,7 +189,7 @@ mod tests {
     fn write_then_read_round_trip() {
         let dir = tmp_dir();
         let ticket_dir = dir.join("ticket");
-        let mut t = Ticket::scaffold(task_leaf(), "Lock protocol", "lock-protocol",
+        let mut t = Ticket::scaffold(task_leaf(), "Lock protocol",
             builtin(TypePrefix::Task));
         t.upsert_section("Description", "We need a heartbeat lock.\n");
 
@@ -217,7 +215,7 @@ mod tests {
     fn upsert_preserves_other_sections_via_disk() {
         let dir = tmp_dir();
         let ticket_dir = dir.join("ticket");
-        let mut t = Ticket::scaffold(task_leaf(), "Lock", "lock", builtin(TypePrefix::Task));
+        let mut t = Ticket::scaffold(task_leaf(), "Lock", builtin(TypePrefix::Task));
         t.upsert_section("Description", "Initial.\n");
         t.upsert_section("Requirements", "Must support TTL.\n");
         t.write_to(&ticket_dir).unwrap();
@@ -237,7 +235,7 @@ mod tests {
 
     #[test]
     fn apply_template_preserves_content_and_user_section() {
-        let mut t = Ticket::scaffold(task_leaf(), "T", "t", builtin(TypePrefix::Subtask));
+        let mut t = Ticket::scaffold(task_leaf(), "T", builtin(TypePrefix::Subtask));
         // Body starts with subtask template (Description, Notes).
         t.upsert_section("Description", "Subtask content.\n");
         // Add a user section.
@@ -260,7 +258,7 @@ mod tests {
 
     #[test]
     fn fixture_blank_ticket() {
-        let t = Ticket::scaffold(task_leaf(), "T", "t", builtin(TypePrefix::Task));
+        let t = Ticket::scaffold(task_leaf(), "T", builtin(TypePrefix::Task));
         let rendered = t.render().unwrap();
         // No section contains any body content other than headings.
         for name in ["Description", "User Story", "Requirements", "Acceptance Criteria", "Notes"] {
@@ -273,7 +271,7 @@ mod tests {
     fn fixture_full_ticket_round_trips() {
         let dir = tmp_dir();
         let ticket_dir = dir.join("ticket");
-        let mut t = Ticket::scaffold(task_leaf(), "T", "t", builtin(TypePrefix::Task));
+        let mut t = Ticket::scaffold(task_leaf(), "T", builtin(TypePrefix::Task));
         t.upsert_section("Description", "D.\n");
         t.upsert_section("User Story", "US.\n");
         t.upsert_section("Requirements", "R.\n");
@@ -291,7 +289,7 @@ mod tests {
     fn fixture_user_added_section_survives_round_trip() {
         let dir = tmp_dir();
         let ticket_dir = dir.join("ticket");
-        let mut t = Ticket::scaffold(task_leaf(), "T", "t", builtin(TypePrefix::Task));
+        let mut t = Ticket::scaffold(task_leaf(), "T", builtin(TypePrefix::Task));
         t.upsert_section("Performance Notes", "Hand-written.\n");
         t.write_to(&ticket_dir).unwrap();
         let back = Ticket::read(&ticket_dir.join(CLAUDE_MD)).unwrap();
@@ -303,7 +301,7 @@ mod tests {
     fn fixture_reordered_sections_survive_round_trip() {
         let dir = tmp_dir();
         let ticket_dir = dir.join("ticket");
-        let mut t = Ticket::scaffold(task_leaf(), "T", "t", builtin(TypePrefix::Task));
+        let mut t = Ticket::scaffold(task_leaf(), "T", builtin(TypePrefix::Task));
         // Simulate a hand-edit that reordered sections: Notes first.
         let original_order = t.body.names().iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let notes = t.body.remove("Notes").unwrap();
@@ -321,7 +319,7 @@ mod tests {
     fn fixture_deleted_section_not_resurrected_on_read() {
         let dir = tmp_dir();
         let ticket_dir = dir.join("ticket");
-        let mut t = Ticket::scaffold(task_leaf(), "T", "t", builtin(TypePrefix::Task));
+        let mut t = Ticket::scaffold(task_leaf(), "T", builtin(TypePrefix::Task));
         t.body.remove("Acceptance Criteria");
         t.write_to(&ticket_dir).unwrap();
         let back = Ticket::read(&ticket_dir.join(CLAUDE_MD)).unwrap();
@@ -331,7 +329,7 @@ mod tests {
 
     #[test]
     fn apply_template_restores_deleted_section_with_empty_body() {
-        let mut t = Ticket::scaffold(task_leaf(), "T", "t", builtin(TypePrefix::Task));
+        let mut t = Ticket::scaffold(task_leaf(), "T", builtin(TypePrefix::Task));
         t.upsert_section("Description", "Kept.\n");
         t.body.remove("Acceptance Criteria");
         t.apply_template(builtin(TypePrefix::Task));

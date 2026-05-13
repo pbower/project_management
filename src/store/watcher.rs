@@ -1,10 +1,10 @@
 //! File-watcher that auto-sweeps `artifacts/` directories on change.
 //!
 //! Wraps `notify-debouncer-mini`. Callers register one or more
-//! `(artifacts_dir, node, slug)` triples; the watcher fires a debounced sweep
-//! through [`crate::store::artifacts::sweep_dir`] whenever something inside a
-//! watched directory changes. The debounce window matches PM_DESIGN.md
-//! Section 10.3 (250ms).
+//! `(artifacts_dir, node)` pairs; the watcher fires a debounced sweep through
+//! [`crate::store::artifacts::sweep_dir`] whenever something inside a watched
+//! directory changes. The debounce window matches PM_DESIGN.md Section 10.3
+//! (250ms).
 //!
 //! Dropping an [`ArtifactsWatcher`] stops the underlying watcher thread.
 
@@ -26,7 +26,6 @@ pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(250);
 /// What to sweep when a watched directory changes.
 struct WatchTarget {
     node: LeafId,
-    slug: Option<String>,
 }
 
 /// Last sweep outcome per directory, surfaced to callers via [`take_reports`].
@@ -74,7 +73,7 @@ impl ArtifactsWatcher {
                             continue;
                         }
                         if event_belongs_to(&event.path, watched) {
-                            if let Ok((report, _idx)) = sweep_dir(watched, target.node, target.slug.as_deref()) {
+                            if let Ok((report, _idx)) = sweep_dir(watched, target.node) {
                                 if let Ok(mut reports) = reports_for_callback.lock() {
                                     reports.by_dir.insert(watched.clone(), report);
                                 }
@@ -91,19 +90,18 @@ impl ArtifactsWatcher {
     }
 
     /// Start watching `artifacts_dir`. New or changed files trigger a sweep
-    /// against `node` (with optional `slug` for human-readable headings).
+    /// against `node`.
     pub fn watch(
         &mut self,
         artifacts_dir: &Path,
         node: LeafId,
-        slug: Option<String>,
     ) -> Result<(), ArtifactError> {
         self.debouncer
             .watcher()
             .watch(artifacts_dir, RecursiveMode::NonRecursive)
             .map_err(map_notify_error)?;
         let mut guard = self.targets.lock().expect("targets mutex poisoned");
-        guard.insert(artifacts_dir.to_path_buf(), WatchTarget { node, slug });
+        guard.insert(artifacts_dir.to_path_buf(), WatchTarget { node });
         Ok(())
     }
 
@@ -189,11 +187,11 @@ mod tests {
         let artifacts = dir.join("artifacts");
         fs::create_dir_all(&artifacts).unwrap();
         // Pre-create the index so the watcher has a baseline.
-        let (_, _) = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let (_, _) = sweep_dir(&artifacts, task_leaf()).unwrap();
 
         let mut watcher = ArtifactsWatcher::with_debounce(Duration::from_millis(80))
             .expect("create watcher");
-        watcher.watch(&artifacts, task_leaf(), None).expect("watch dir");
+        watcher.watch(&artifacts, task_leaf()).expect("watch dir");
 
         // Small grace period so the OS watcher is fully wired.
         std::thread::sleep(Duration::from_millis(40));
@@ -214,11 +212,11 @@ mod tests {
         let artifacts = dir.join("artifacts");
         fs::create_dir_all(&artifacts).unwrap();
         fs::write(artifacts.join("bench.csv"), b"a,b").unwrap();
-        let (_, _) = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let (_, _) = sweep_dir(&artifacts, task_leaf()).unwrap();
 
         let mut watcher = ArtifactsWatcher::with_debounce(Duration::from_millis(80))
             .expect("create watcher");
-        watcher.watch(&artifacts, task_leaf(), None).expect("watch dir");
+        watcher.watch(&artifacts, task_leaf()).expect("watch dir");
         std::thread::sleep(Duration::from_millis(40));
 
         fs::remove_file(artifacts.join("bench.csv")).unwrap();
@@ -235,11 +233,11 @@ mod tests {
         let dir = tmp_dir();
         let artifacts = dir.join("artifacts");
         fs::create_dir_all(&artifacts).unwrap();
-        let (_, _) = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let (_, _) = sweep_dir(&artifacts, task_leaf()).unwrap();
 
         let mut watcher = ArtifactsWatcher::with_debounce(Duration::from_millis(80))
             .expect("create watcher");
-        watcher.watch(&artifacts, task_leaf(), None).expect("watch dir");
+        watcher.watch(&artifacts, task_leaf()).expect("watch dir");
         std::thread::sleep(Duration::from_millis(40));
         watcher.unwatch(&artifacts).expect("unwatch dir");
         std::thread::sleep(Duration::from_millis(40));
@@ -258,12 +256,12 @@ mod tests {
         let dir = tmp_dir();
         let artifacts = dir.join("artifacts");
         fs::create_dir_all(&artifacts).unwrap();
-        let (_, _) = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let (_, _) = sweep_dir(&artifacts, task_leaf()).unwrap();
 
         {
             let mut watcher = ArtifactsWatcher::with_debounce(Duration::from_millis(80))
                 .expect("create watcher");
-            watcher.watch(&artifacts, task_leaf(), None).expect("watch dir");
+            watcher.watch(&artifacts, task_leaf()).expect("watch dir");
             // Drop the watcher when this block exits.
         }
         // Without a live watcher, a new file should not appear in the index.

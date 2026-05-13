@@ -111,18 +111,15 @@ impl ArtifactsIndex {
     }
 
     /// Render to the full file contents, including a heading derived from
-    /// `node` and an optional `slug` for human readability.
-    pub fn render(&self, slug: Option<&str>) -> Result<String, ArtifactError> {
+    /// the node's `LeafId`.
+    pub fn render(&self) -> Result<String, ArtifactError> {
         let fm = ArtifactsFrontMatter {
             generated_by: "pm".into(),
             last_swept: self.last_swept,
             node: self.node,
         };
         let yaml = serde_yml::to_string(&fm).map_err(ArtifactError::Yaml)?;
-        let heading = match slug {
-            Some(s) => format!("# Artifacts ({} - {})", self.node, s),
-            None => format!("# Artifacts ({})", self.node),
-        };
+        let heading = format!("# Artifacts ({})", self.node);
         let mut out = String::new();
         out.push_str("---\n");
         out.push_str(yaml.trim_end_matches('\n'));
@@ -130,8 +127,8 @@ impl ArtifactsIndex {
         out.push_str(&heading);
         out.push_str("\n\n");
         if self.entries.is_empty() {
-            // Leave the heading section empty rather than emitting an empty
-            // YAML sequence (`[]`) which reads as noise.
+            // Leave the heading section empty rather than emit an empty YAML
+            // sequence (`[]`) which reads as noise.
         } else {
             let entries_yaml = serde_yml::to_string(&self.entries).map_err(ArtifactError::Yaml)?;
             out.push_str(entries_yaml.trim_end_matches('\n'));
@@ -141,11 +138,11 @@ impl ArtifactsIndex {
     }
 
     /// Atomic write to `<artifacts_dir>/ARTIFACTS.md`.
-    pub fn save(&self, index_path: &Path, slug: Option<&str>) -> Result<(), ArtifactError> {
+    pub fn save(&self, index_path: &Path) -> Result<(), ArtifactError> {
         if let Some(parent) = index_path.parent() {
             fs::create_dir_all(parent).map_err(ArtifactError::Io)?;
         }
-        let rendered = self.render(slug)?;
+        let rendered = self.render()?;
         atomic_write(index_path, rendered.as_bytes()).map_err(ArtifactError::Io)
     }
 
@@ -215,12 +212,11 @@ impl SweepReport {
     }
 }
 
-/// Convenience: load (or create) the index, sweep it, save back. Returns the
-/// sweep report and the updated index.
+/// Load (or create) the index, sweep it, save back. Returns the sweep report
+/// and the updated index.
 pub fn sweep_dir(
     artifacts_dir: &Path,
     node: LeafId,
-    slug: Option<&str>,
 ) -> Result<(SweepReport, ArtifactsIndex), ArtifactError> {
     fs::create_dir_all(artifacts_dir).map_err(ArtifactError::Io)?;
     let index_path = artifacts_dir.join(ARTIFACTS_MD);
@@ -230,7 +226,7 @@ pub fn sweep_dir(
         ArtifactsIndex::new(node)
     };
     let report = index.sweep(artifacts_dir)?;
-    index.save(&index_path, slug)?;
+    index.save(&index_path)?;
     Ok((report, index))
 }
 
@@ -242,7 +238,6 @@ pub fn rename_artifact(
     artifacts_dir: &Path,
     old: &str,
     new: &str,
-    slug: Option<&str>,
 ) -> Result<(), ArtifactError> {
     let old_path = artifacts_dir.join(old);
     let new_path = artifacts_dir.join(new);
@@ -266,7 +261,7 @@ pub fn rename_artifact(
     }
     fs::rename(&old_path, &new_path).map_err(ArtifactError::Io)?;
     index.last_swept = Utc::now();
-    index.save(&index_path, slug)?;
+    index.save(&index_path)?;
     Ok(())
 }
 
@@ -374,8 +369,8 @@ mod tests {
     #[test]
     fn render_round_trip_empty() {
         let idx = ArtifactsIndex::new(task_leaf());
-        let raw = idx.render(Some("lock-protocol")).unwrap();
-        assert!(raw.contains("# Artifacts (TSK7 - lock-protocol)"));
+        let raw = idx.render().unwrap();
+        assert!(raw.contains("# Artifacts (TSK7)"));
         let back = ArtifactsIndex::parse(&raw).unwrap();
         assert_eq!(back.node, task_leaf());
         assert!(back.entries.is_empty());
@@ -396,7 +391,7 @@ mod tests {
             tags: vec![],
             added: NaiveDate::from_ymd_opt(2026, 5, 12).unwrap(),
         });
-        let raw = idx.render(Some("lock-protocol")).unwrap();
+        let raw = idx.render().unwrap();
         let back = ArtifactsIndex::parse(&raw).unwrap();
         assert_eq!(back.entries.len(), 2);
         assert_eq!(back.entries[0].file, "schema.png");
@@ -413,7 +408,7 @@ mod tests {
         fs::write(artifacts.join("schema.png"), b"PNG").unwrap();
         fs::write(artifacts.join("bench.csv"), b"a,b").unwrap();
 
-        let (report, idx) = sweep_dir(&artifacts, task_leaf(), Some("lock-protocol")).unwrap();
+        let (report, idx) = sweep_dir(&artifacts, task_leaf()).unwrap();
         assert_eq!(report.added.len(), 2);
         assert!(report.removed.is_empty());
         assert_eq!(idx.entries.len(), 2);
@@ -436,16 +431,16 @@ mod tests {
         fs::write(artifacts.join("schema.png"), b"PNG").unwrap();
 
         // First sweep registers the file.
-        let _ = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let _ = sweep_dir(&artifacts, task_leaf()).unwrap();
         // Hand-edit the description in the index.
         let index_path = artifacts.join(ARTIFACTS_MD);
         let mut idx = ArtifactsIndex::load(&index_path).unwrap();
         idx.find_mut("schema.png").unwrap().desc = "ER diagram".into();
         idx.find_mut("schema.png").unwrap().tags = vec!["reference".into()];
-        idx.save(&index_path, None).unwrap();
+        idx.save(&index_path).unwrap();
 
         // Second sweep should not blow away the hand-edits.
-        let (_, idx_after) = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let (_, idx_after) = sweep_dir(&artifacts, task_leaf()).unwrap();
         assert_eq!(idx_after.find("schema.png").unwrap().desc, "ER diagram");
         assert_eq!(idx_after.find("schema.png").unwrap().tags, vec!["reference".to_string()]);
         fs::remove_dir_all(&dir).ok();
@@ -458,11 +453,11 @@ mod tests {
         fs::create_dir_all(&artifacts).unwrap();
         fs::write(artifacts.join("schema.png"), b"PNG").unwrap();
         fs::write(artifacts.join("bench.csv"), b"a,b").unwrap();
-        let _ = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let _ = sweep_dir(&artifacts, task_leaf()).unwrap();
 
         // Delete bench.csv from disk.
         fs::remove_file(artifacts.join("bench.csv")).unwrap();
-        let (report, idx) = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let (report, idx) = sweep_dir(&artifacts, task_leaf()).unwrap();
         assert_eq!(report.removed, vec!["bench.csv".to_string()]);
         assert!(idx.find("bench.csv").is_none());
         assert!(idx.find("schema.png").is_some());
@@ -481,7 +476,7 @@ mod tests {
         // Real artifact:
         fs::write(artifacts.join("real.csv"), b"a,b").unwrap();
 
-        let (_, idx) = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let (_, idx) = sweep_dir(&artifacts, task_leaf()).unwrap();
         let files: Vec<&str> = idx.entries.iter().map(|e| e.file.as_str()).collect();
         assert_eq!(files, vec!["real.csv"]);
         // Sanity: the ARTIFACTS.md we just wrote is not itself a registered entry.
@@ -495,15 +490,15 @@ mod tests {
         let artifacts = dir.join("artifacts");
         fs::create_dir_all(&artifacts).unwrap();
         fs::write(artifacts.join("old.png"), b"PNG").unwrap();
-        let _ = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let _ = sweep_dir(&artifacts, task_leaf()).unwrap();
 
         let index_path = artifacts.join(ARTIFACTS_MD);
         let mut idx = ArtifactsIndex::load(&index_path).unwrap();
         idx.find_mut("old.png").unwrap().desc = "Worth keeping".into();
         idx.find_mut("old.png").unwrap().tags = vec!["design".into()];
-        idx.save(&index_path, None).unwrap();
+        idx.save(&index_path).unwrap();
 
-        rename_artifact(&artifacts, "old.png", "new.png", None).unwrap();
+        rename_artifact(&artifacts, "old.png", "new.png").unwrap();
         assert!(!artifacts.join("old.png").exists());
         assert!(artifacts.join("new.png").exists());
 
@@ -521,9 +516,9 @@ mod tests {
         let artifacts = dir.join("artifacts");
         fs::create_dir_all(&artifacts).unwrap();
         fs::write(artifacts.join("real.png"), b"x").unwrap();
-        let _ = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let _ = sweep_dir(&artifacts, task_leaf()).unwrap();
 
-        let err = rename_artifact(&artifacts, "ghost.png", "new.png", None).unwrap_err();
+        let err = rename_artifact(&artifacts, "ghost.png", "new.png").unwrap_err();
         assert!(matches!(err, ArtifactError::NotFound(_)));
         fs::remove_dir_all(&dir).ok();
     }
@@ -535,9 +530,9 @@ mod tests {
         fs::create_dir_all(&artifacts).unwrap();
         fs::write(artifacts.join("a.png"), b"a").unwrap();
         fs::write(artifacts.join("b.png"), b"b").unwrap();
-        let _ = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let _ = sweep_dir(&artifacts, task_leaf()).unwrap();
 
-        let err = rename_artifact(&artifacts, "a.png", "b.png", None).unwrap_err();
+        let err = rename_artifact(&artifacts, "a.png", "b.png").unwrap_err();
         assert!(matches!(err, ArtifactError::TargetExists(_)));
         fs::remove_dir_all(&dir).ok();
     }
@@ -554,7 +549,7 @@ mod tests {
         let artifacts = dir.join("artifacts");
         fs::create_dir_all(&artifacts).unwrap();
         fs::write(artifacts.join("a.txt"), b"a").unwrap();
-        let _ = sweep_dir(&artifacts, task_leaf(), None).unwrap();
+        let _ = sweep_dir(&artifacts, task_leaf()).unwrap();
 
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut handles = Vec::new();
@@ -563,7 +558,7 @@ mod tests {
             let stop = stop.clone();
             handles.push(thread::spawn(move || {
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    let _ = sweep_dir(&artifacts, task_leaf(), None);
+                    let _ = sweep_dir(&artifacts, task_leaf());
                 }
             }));
         }

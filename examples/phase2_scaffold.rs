@@ -49,26 +49,28 @@ fn main() -> ExitCode {
     let orphan = state.allocate(TypePrefix::Task);
 
     let address = AddressId::new(vec![prj, prd, epc, tsk, sbt]).unwrap();
-    let slugs = vec!["pm", "core", "checkouts", "lock-protocol", "stale-cleanup"];
-    let subtask_dir = layout.directory_for(&address, &slugs).expect("subtask dir");
-    let mls_dir = layout
-        .directory_for(&AddressId::new(vec![prj, mls]).unwrap(), &["pm", "v1-release"])
-        .unwrap();
-    let orphan_dir = layout.orphan_directory_for(orphan, "quick-thought").unwrap();
+    let subtask_dir = layout.directory_for(&address);
+    let mls_dir = layout.directory_for(&AddressId::new(vec![prj, mls]).unwrap());
+    let orphan_dir = layout.orphan_directory_for(orphan);
 
-    // Map (leaf, slug, title, directory) so we can both write CLAUDE.md and
+    let prj_dir = layout.directory_for(&AddressId::new(vec![prj]).unwrap());
+    let prd_dir = layout.directory_for(&AddressId::new(vec![prj, prd]).unwrap());
+    let epc_dir = layout.directory_for(&AddressId::new(vec![prj, prd, epc]).unwrap());
+    let tsk_dir = layout.directory_for(&AddressId::new(vec![prj, prd, epc, tsk]).unwrap());
+
+    // Map (kind, leaf, title, directory) so we can both write CLAUDE.md and
     // populate state.items in one pass.
-    let placements: Vec<(TypePrefix, project_management::store::LeafId, &str, &str, PathBuf)> = vec![
-        (TypePrefix::Project,   prj, "pm",             "pm",                                                            PathBuf::from("projects/pm")),
-        (TypePrefix::Product,   prd, "core",           "core",                                                          PathBuf::from("projects/pm/products/core")),
-        (TypePrefix::Epic,      epc, "checkouts",      "Checkout protocol",                                             PathBuf::from("projects/pm/products/core/epics/checkouts")),
-        (TypePrefix::Task,      tsk, "lock-protocol",  "Lock protocol with TTL and heartbeat",                          PathBuf::from("projects/pm/products/core/epics/checkouts/tasks/lock-protocol")),
-        (TypePrefix::Subtask,   sbt, "stale-cleanup",  "Stale-lock cleanup on missed heartbeat",                        subtask_dir),
-        (TypePrefix::Milestone, mls, "v1-release",     "v1.0 release",                                                  mls_dir),
-        (TypePrefix::Task,      orphan, "quick-thought", "A standalone task with no product",                            orphan_dir),
+    let placements: Vec<(TypePrefix, project_management::store::LeafId, &str, PathBuf)> = vec![
+        (TypePrefix::Project,   prj,    "pm",                                                                          prj_dir),
+        (TypePrefix::Product,   prd,    "core",                                                                        prd_dir),
+        (TypePrefix::Epic,      epc,    "Checkout protocol",                                                           epc_dir),
+        (TypePrefix::Task,      tsk,    "Lock protocol with TTL and heartbeat",                                        tsk_dir),
+        (TypePrefix::Subtask,   sbt,    "Stale-lock cleanup on missed heartbeat",                                      subtask_dir),
+        (TypePrefix::Milestone, mls,    "v1.0 release",                                                                mls_dir),
+        (TypePrefix::Task,      orphan, "A standalone task with no product",                                           orphan_dir),
     ];
 
-    for (prefix, leaf, slug, title, rel) in &placements {
+    for (prefix, leaf, title, rel) in &placements {
         if let Err(e) = layout.ensure_node_path(rel) {
             eprintln!("ensure_node_path({}) failed: {e}", rel.display());
             return ExitCode::FAILURE;
@@ -76,7 +78,7 @@ fn main() -> ExitCode {
         state.insert(*leaf, ItemEntry { path: rel.clone() });
 
         let resolved = resolve(*prefix, &layout.root, dirs_home().as_deref());
-        let ticket = Ticket::scaffold(*leaf, *title, *slug, &resolved.content);
+        let ticket = Ticket::scaffold(*leaf, *title, &resolved.content);
         let abs_dir = layout.root.join(rel);
         match ticket.write_to(&abs_dir) {
             Ok(p) => println!("wrote {} ({})", p.display(), leaf),
@@ -96,7 +98,7 @@ fn main() -> ExitCode {
     // lock-protocol task, then read it back to confirm round-trip.
     let tsk_path = layout
         .root
-        .join("projects/pm/products/core/epics/checkouts/tasks/lock-protocol/CLAUDE.md");
+        .join("projects/PRJ1/products/PRD1/epics/EPC1/tasks/TSK1/CLAUDE.md");
     let mut reloaded = Ticket::read(&tsk_path).expect("read task");
     reloaded.upsert_section(
         "Description",
@@ -113,9 +115,9 @@ fn main() -> ExitCode {
     println!("--- Final TSK1 CLAUDE.md ---");
     println!("{}", final_state.render().expect("render final"));
 
-    // Demonstrate the template upgrade flow: upgrade the orphan task by
-    // applying the Task template (already applied, but exercises the path).
-    let orphan_path = layout.root.join("tasks/quick-thought/CLAUDE.md");
+    // Demonstrate the template-application flow: re-apply the Task template
+    // against the orphan task (already applied, but exercises the path).
+    let orphan_path = layout.root.join("tasks/TSK2/CLAUDE.md");
     let mut orphan_t = Ticket::read(&orphan_path).expect("read orphan");
     orphan_t.apply_template(builtin(TypePrefix::Task));
     orphan_t.write_to(orphan_path.parent().unwrap()).expect("write orphan");

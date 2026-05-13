@@ -34,9 +34,6 @@ pub struct FrontMatter {
     /// Human-readable title.
     pub title: String,
 
-    /// Directory slug. Must match the on-disk directory name for the ticket.
-    pub slug: String,
-
     /// Ticket lifecycle status. Defaults to `open` when omitted.
     #[serde(default = "default_status")]
     pub status: Status,
@@ -106,14 +103,13 @@ pub enum MemoryRef {
 impl FrontMatter {
     /// Build a minimal front-matter for a brand-new ticket. Sets `created`
     /// and `updated` to `Utc::now()`.
-    pub fn new(id: LeafId, title: impl Into<String>, slug: impl Into<String>) -> Self {
+    pub fn new(id: LeafId, title: impl Into<String>) -> Self {
         let now = Utc::now();
         FrontMatter {
             id,
             parent: None,
             project: None,
             title: title.into(),
-            slug: slug.into(),
             status: Status::Open,
             priority: None,
             urgency: None,
@@ -255,10 +251,9 @@ mod tests {
 
     #[test]
     fn new_initialises_required_fields() {
-        let fm = FrontMatter::new(sample_id(), "Lock protocol", "lock-protocol");
+        let fm = FrontMatter::new(sample_id(), "Lock protocol");
         assert_eq!(fm.id, sample_id());
         assert_eq!(fm.title, "Lock protocol");
-        assert_eq!(fm.slug, "lock-protocol");
         assert_eq!(fm.status, Status::Open);
         assert!(fm.parent.is_none());
         assert!(fm.tags.is_empty());
@@ -267,7 +262,7 @@ mod tests {
 
     #[test]
     fn yaml_roundtrip_minimum_fields() {
-        let fm = FrontMatter::new(sample_id(), "Lock protocol", "lock-protocol");
+        let fm = FrontMatter::new(sample_id(), "Lock protocol");
         let yaml = fm.to_yaml().unwrap();
         let back = FrontMatter::from_yaml(&yaml).unwrap();
         assert_eq!(back, fm);
@@ -275,7 +270,7 @@ mod tests {
 
     #[test]
     fn yaml_roundtrip_full_fields() {
-        let mut fm = FrontMatter::new(sample_id(), "Lock protocol", "lock-protocol");
+        let mut fm = FrontMatter::new(sample_id(), "Lock protocol");
         fm.parent = Some(LeafId::new(TypePrefix::Epic, 3));
         fm.project = Some(LeafId::new(TypePrefix::Project, 1));
         fm.priority = Some(Priority::MustHave);
@@ -304,7 +299,6 @@ mod tests {
         let yaml = r#"
 id: TSK7
 title: Lock
-slug: lock
 created: 2026-05-12T11:33:00Z
 updated: 2026-05-12T11:33:00Z
 "#;
@@ -322,7 +316,6 @@ updated: 2026-05-12T11:33:00Z
     fn missing_id_rejected() {
         let yaml = r#"
 title: No id here
-slug: no-id
 created: 2026-05-12T11:33:00Z
 updated: 2026-05-12T11:33:00Z
 "#;
@@ -339,7 +332,7 @@ updated: 2026-05-12T11:33:00Z
 
     #[test]
     fn document_split_strips_delimiters() {
-        let raw = "---\nid: TSK7\ntitle: x\nslug: x\ncreated: 2026-05-12T11:33:00Z\nupdated: 2026-05-12T11:33:00Z\n---\n# Body\nhello\n";
+        let raw = "---\nid: TSK7\ntitle: x\ncreated: 2026-05-12T11:33:00Z\nupdated: 2026-05-12T11:33:00Z\n---\n# Body\nhello\n";
         let (yaml, body) = split_front_matter(raw).unwrap();
         assert!(yaml.contains("id: TSK7"));
         assert_eq!(body, "# Body\nhello\n");
@@ -347,7 +340,7 @@ updated: 2026-05-12T11:33:00Z
 
     #[test]
     fn document_parse_round_trip() {
-        let raw = "---\nid: TSK7\ntitle: x\nslug: x\ncreated: 2026-05-12T11:33:00Z\nupdated: 2026-05-12T11:33:00Z\n---\n# Body\n\nThe body.\n";
+        let raw = "---\nid: TSK7\ntitle: x\ncreated: 2026-05-12T11:33:00Z\nupdated: 2026-05-12T11:33:00Z\n---\n# Body\n\nThe body.\n";
         let doc = Document::parse(raw).unwrap();
         assert_eq!(doc.front_matter.id, sample_id());
         assert_eq!(doc.body, "# Body\n\nThe body.\n");
@@ -366,7 +359,7 @@ updated: 2026-05-12T11:33:00Z
 
     #[test]
     fn missing_close_delimiter_rejected() {
-        let raw = "---\nid: TSK7\ntitle: x\nslug: x\ncreated: 2026-05-12T11:33:00Z\nupdated: 2026-05-12T11:33:00Z\n";
+        let raw = "---\nid: TSK7\ntitle: x\ncreated: 2026-05-12T11:33:00Z\nupdated: 2026-05-12T11:33:00Z\n";
         let err = split_front_matter(raw).unwrap_err();
         assert!(matches!(err, FrontMatterError::MissingCloseDelimiter));
     }
@@ -374,7 +367,7 @@ updated: 2026-05-12T11:33:00Z
     #[test]
     fn document_renders_without_body() {
         let mut doc = Document {
-            front_matter: FrontMatter::new(sample_id(), "x", "x"),
+            front_matter: FrontMatter::new(sample_id(), "x"),
             body: String::new(),
         };
         // Pin timestamps for determinism.

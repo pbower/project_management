@@ -38,20 +38,18 @@ fn main() -> ExitCode {
     let epc = state.allocate(TypePrefix::Epic);
     let tsk = state.allocate(TypePrefix::Task);
 
-    let task_dir_rel = PathBuf::from(
-        "projects/pm/products/core/epics/checkouts/tasks/lock-protocol",
-    );
+    let task_address = project_management::store::AddressId::new(vec![prj, prd, epc, tsk]).unwrap();
+    let task_dir_rel = layout.directory_for(&task_address);
     if let Err(e) = layout.ensure_node_path(&task_dir_rel) {
         eprintln!("ensure_node_path: {e}");
         return ExitCode::FAILURE;
     }
-    state.insert(prj, ItemEntry { path: PathBuf::from("projects/pm") });
-    state.insert(prd, ItemEntry { path: PathBuf::from("projects/pm/products/core") });
-    state.insert(epc, ItemEntry { path: PathBuf::from("projects/pm/products/core/epics/checkouts") });
+    state.insert(prj, ItemEntry { path: layout.directory_for(&project_management::store::AddressId::new(vec![prj]).unwrap()) });
+    state.insert(prd, ItemEntry { path: layout.directory_for(&project_management::store::AddressId::new(vec![prj, prd]).unwrap()) });
+    state.insert(epc, ItemEntry { path: layout.directory_for(&project_management::store::AddressId::new(vec![prj, prd, epc]).unwrap()) });
     state.insert(tsk, ItemEntry { path: task_dir_rel.clone() });
 
-    let ticket = Ticket::scaffold(tsk, "Lock protocol", "lock-protocol",
-        builtin(TypePrefix::Task));
+    let ticket = Ticket::scaffold(tsk, "Lock protocol", builtin(TypePrefix::Task));
     let task_dir = layout.root.join(&task_dir_rel);
     if let Err(e) = ticket.write_to(&task_dir) {
         eprintln!("write ticket: {e}");
@@ -61,8 +59,7 @@ fn main() -> ExitCode {
 
     let artifacts_dir = task_dir.join("artifacts");
     let mut watcher = ArtifactsWatcher::new().expect("create watcher");
-    watcher.watch(&artifacts_dir, tsk, Some("lock-protocol".to_string()))
-        .expect("watch artifacts");
+    watcher.watch(&artifacts_dir, tsk).expect("watch artifacts");
     println!("watching {}", artifacts_dir.display());
 
     // Drop two files; the watcher should sweep and update ARTIFACTS.md.
@@ -79,14 +76,14 @@ fn main() -> ExitCode {
     idx.find_mut("schema.png").unwrap().desc =
         "ER diagram of the lock-file format".into();
     idx.find_mut("schema.png").unwrap().tags = vec!["reference".into(), "design".into()];
-    idx.save(&index_path, Some("lock-protocol")).unwrap();
+    idx.save(&index_path).unwrap();
     std::fs::write(artifacts_dir.join("notes.md"), b"# scratch\n").unwrap();
     std::thread::sleep(Duration::from_millis(450));
 
     print_index(&index_path, "after hand-edit + new file");
 
     // Rename schema.png -> er-diagram.png. Description must carry over.
-    rename_artifact(&artifacts_dir, "schema.png", "er-diagram.png", Some("lock-protocol"))
+    rename_artifact(&artifacts_dir, "schema.png", "er-diagram.png")
         .expect("rename artifact");
     std::thread::sleep(Duration::from_millis(450));
 

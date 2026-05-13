@@ -2,9 +2,8 @@
 //!
 //! Reads the current [`Database`] (`Vec<Task>` keyed by numeric id) and
 //! computes the v2 disk layout it would produce: new leaf ids, parent linkage,
-//! slugs, address forms, target paths. Does not write anything; designed to be
-//! run as `pm doctor --plan-migration` and reviewed before the real migration
-//! in a later phase wires the write path.
+//! address forms, target paths. Read-only; the write side is added in a
+//! later phase.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -28,11 +27,9 @@ pub struct MigrationStep {
     pub new_leaf: LeafId,
     /// New parent leaf, if the source ticket had a parent.
     pub new_parent: Option<LeafId>,
-    /// Kebab-case slug derived from the title.
-    pub slug: String,
     /// Full address chain (root -> leaf). For orphans this is `[leaf]` only.
     pub address: AddressId,
-    /// Target directory relative to `.pm/` (e.g. `tasks/lock-protocol`).
+    /// Target directory relative to `.pm/`. Each path segment is a `LeafId`.
     pub target_dir: PathBuf,
     /// Original title (preserved for the new front-matter `title:` field).
     pub title: String,
@@ -65,12 +62,10 @@ impl MigrationPlan {
         // source-id -> new-leaf mapping. Parent resolution happens in a second
         // pass after every leaf exists.
         let mut source_to_new: BTreeMap<u64, LeafId> = BTreeMap::new();
-        let mut slugs: BTreeMap<u64, String> = BTreeMap::new();
         for t in &tasks {
             let prefix = kind_to_prefix(t.kind);
             let leaf = state.allocate(prefix);
             source_to_new.insert(t.id, leaf);
-            slugs.insert(t.id, slugify(&t.title));
         }
 
         // Detect any parent references that point to source ids not present
@@ -86,28 +81,26 @@ impl MigrationPlan {
         }
 
         // Second pass: walk parent chain (resolving via source_to_new) to
-        // build the address. Compute target directory from chain + slug map.
+        // build the address. Compute target directory from the chain alone;
+        // each segment is the LeafId of that level.
         let mut steps: Vec<MigrationStep> = Vec::with_capacity(tasks.len());
         for t in &tasks {
             let new_leaf = source_to_new[&t.id];
-            let slug = slugs[&t.id].clone();
 
             let parent_source = t.parent.filter(|p| known_ids.contains(p));
             let new_parent = parent_source.map(|p| source_to_new[&p]);
 
             let chain = walk_chain(t.id, &tasks, &source_to_new, &known_ids);
-            let chain_slugs: Vec<&str> = chain.iter().map(|src_id| slugs[src_id].as_str()).collect();
             let chain_leaves: Vec<LeafId> = chain.iter().map(|src| source_to_new[src]).collect();
 
             let address = AddressId::new(chain_leaves).expect("chain has at least the leaf itself");
-            let target_dir = layout.directory_for(&address, &chain_slugs).map_err(MigrateError::Layout)?;
+            let target_dir = layout.directory_for(&address);
 
             steps.push(MigrationStep {
                 source_id: t.id,
                 source_kind: t.kind,
                 new_leaf,
                 new_parent,
-                slug,
                 address,
                 target_dir,
                 title: t.title.clone(),
@@ -186,50 +179,15 @@ fn walk_chain(
     chain
 }
 
-/// Title -> kebab-case slug. Lowercase ASCII; non-alphanumeric becomes `-`;
-/// repeated hyphens collapsed; leading/trailing hyphens trimmed. Falls back to
-/// `untitled` if the title produces an empty slug.
-fn slugify(title: &str) -> String {
-    let mut out = String::with_capacity(title.len());
-    let mut last_was_hyphen = true; // suppress leading hyphens
-    for c in title.chars() {
-        let mapped = if c.is_ascii_alphanumeric() {
-            Some(c.to_ascii_lowercase())
-        } else if c.is_whitespace() || matches!(c, '-' | '_' | '/' | '\\' | '.') {
-            Some('-')
-        } else {
-            None
-        };
-        if let Some(ch) = mapped {
-            if ch == '-' {
-                if !last_was_hyphen {
-                    out.push('-');
-                    last_was_hyphen = true;
-                }
-            } else {
-                out.push(ch);
-                last_was_hyphen = false;
-            }
-        }
-    }
-    while out.ends_with('-') { out.pop(); }
-    if out.is_empty() { return "untitled".to_string(); }
-    if out.len() > 63 { out.truncate(63); }
-    while out.ends_with('-') { out.pop(); }
-    out
-}
-
 #[derive(Debug)]
 pub enum MigrateError {
     SourceMissing(PathBuf),
-    Layout(super::layout::LayoutError),
 }
 
 impl std::fmt::Display for MigrateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MigrateError::SourceMissing(p) => write!(f, "migration source not found: {}", p.display()),
-            MigrateError::Layout(e) => write!(f, "migration layout: {e}"),
         }
     }
 }
@@ -290,17 +248,6 @@ mod tests {
     }
 
     #[test]
-    fn slugify_basic() {
-        assert_eq!(slugify("Lock protocol"), "lock-protocol");
-        assert_eq!(slugify("E-commerce Platform"), "e-commerce-platform");
-        assert_eq!(slugify("   Leading and trailing   "), "leading-and-trailing");
-        assert_eq!(slugify("User Story / Requirements"), "user-story-requirements");
-        assert_eq!(slugify("Implement Foo (v2)"), "implement-foo-v2");
-        assert_eq!(slugify("!!!"), "untitled");
-        assert_eq!(slugify(""), "untitled");
-    }
-
-    #[test]
     fn kind_maps_one_for_one() {
         assert_eq!(kind_to_prefix(Kind::Product), TypePrefix::Product);
         assert_eq!(kind_to_prefix(Kind::Epic), TypePrefix::Epic);
@@ -329,22 +276,23 @@ mod tests {
         let product = &plan.steps[0];
         assert_eq!(product.new_leaf.to_string(), "PRD1");
         assert_eq!(product.address.to_string(), "PRD1");
-        assert_eq!(product.target_dir, PathBuf::from("products/e-commerce-platform"));
+        assert_eq!(product.target_dir, PathBuf::from("products/PRD1"));
 
         let epic = &plan.steps[1];
         assert_eq!(epic.new_leaf.to_string(), "EPC1");
         assert_eq!(epic.address.to_string(), "PRD1-EPC1");
-        assert_eq!(epic.target_dir, PathBuf::from("products/e-commerce-platform/epics/user-management-system"));
+        assert_eq!(epic.target_dir, PathBuf::from("products/PRD1/epics/EPC1"));
 
         let tsk = &plan.steps[2];
         assert_eq!(tsk.address.to_string(), "PRD1-EPC1-TSK1");
+        assert_eq!(tsk.target_dir, PathBuf::from("products/PRD1/epics/EPC1/tasks/TSK1"));
 
         let sub = &plan.steps[3];
         assert_eq!(sub.new_leaf.to_string(), "SBT1");
         assert_eq!(sub.address.to_string(), "PRD1-EPC1-TSK1-SBT1");
         assert_eq!(
             sub.target_dir,
-            PathBuf::from("products/e-commerce-platform/epics/user-management-system/tasks/user-registration/subtasks/email-validation"),
+            PathBuf::from("products/PRD1/epics/EPC1/tasks/TSK1/subtasks/SBT1"),
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -366,7 +314,7 @@ mod tests {
         let step = &plan.steps[0];
         assert!(step.new_parent.is_none(), "ticket pointing at missing parent demoted");
         assert_eq!(step.address.depth(), 1);
-        assert_eq!(step.target_dir, PathBuf::from("tasks/orphan-task"));
+        assert_eq!(step.target_dir, PathBuf::from("tasks/TSK1"));
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -384,7 +332,7 @@ mod tests {
         let plan = MigrationPlan::plan(&layout, &src).unwrap();
         assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.steps[0].new_leaf.to_string(), "MLS1");
-        assert_eq!(plan.steps[0].target_dir, PathBuf::from("milestones/solo-milestone"));
+        assert_eq!(plan.steps[0].target_dir, PathBuf::from("milestones/MLS1"));
 
         fs::remove_dir_all(&dir).ok();
     }
