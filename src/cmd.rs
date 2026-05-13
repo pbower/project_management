@@ -258,6 +258,20 @@ pub enum Commands {
 
     /// Open project main menu (interactive mode).
     Menu,
+
+    /// v2 commands operating on `.pm/` with typed ids and CLAUDE.md per node.
+    ///
+    /// The v2 surface (see PM_DESIGN.md Section 8.1) is the long-term home
+    /// for these verbs. The v0.9.x commands above continue to operate on the
+    /// existing `tasks.json` databases unchanged.
+    V2 {
+        /// Override the `.pm/` root (default: walk up from cwd).
+        #[arg(long, global = true, env = "PM_ROOT")]
+        pm_root: Option<std::path::PathBuf>,
+
+        #[command(subcommand)]
+        command: crate::v2::cli::V2Commands,
+    },
 }
 
 #[derive(Subcommand)]

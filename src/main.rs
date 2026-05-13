@@ -93,6 +93,16 @@ fn main() {
         pm_dir
     };
 
+    // Short-circuit v2 commands: they have their own .pm/ state and do not
+    // load the v0.9.x tasks.json database.
+    if let Commands::V2 { pm_root, command } = cli.command {
+        if let Err(e) = project_management::v2::cmd::run(command, pm_root) {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     // Handle commands that don't need a specific project first
     match &cli.command {
         Commands::Menu => {
@@ -225,5 +235,7 @@ fn main() {
             cmd_backup(&db_path, all),
 
         Commands::Menu => cmd_menu(&db_path.parent().unwrap_or_else(|| Path::new("."))),
+
+        Commands::V2 { .. } => unreachable!("V2 command handled above"),
     }
 }

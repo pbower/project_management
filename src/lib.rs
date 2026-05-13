@@ -12,6 +12,7 @@ pub mod fields;
 pub mod project;
 pub mod store;
 pub mod task;
+pub mod v2;
 pub mod tui {
     pub mod colors;
     pub mod app;
