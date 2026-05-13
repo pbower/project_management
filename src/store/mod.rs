@@ -18,6 +18,7 @@ pub mod sections;
 pub mod templates;
 pub mod claude_md;
 pub mod artifacts;
+pub mod watcher;
 
 pub use id::{TypePrefix, LeafId, AddressId, IdInput, IdParseError};
 pub use state::{State, ItemEntry, StateError};
@@ -33,4 +34,5 @@ pub use artifacts::{
     ArtifactsIndex, ArtifactEntry, SweepReport, ArtifactError, ARTIFACTS_MD,
     sweep_dir, rename_artifact,
 };
+pub use watcher::{ArtifactsWatcher, DEFAULT_DEBOUNCE};
 
