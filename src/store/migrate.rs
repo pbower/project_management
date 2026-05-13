@@ -142,11 +142,10 @@ impl MigrationPlan {
     }
 }
 
-/// Translate a source [`Kind`] to its v2 [`TypePrefix`]. The source enum has
-/// five variants (Product/Epic/Task/Subtask/Milestone); v2 adds Project on top
-/// but no source ticket can claim that prefix automatically.
+/// Translate a [`Kind`] to its v2 [`TypePrefix`].
 fn kind_to_prefix(k: Kind) -> TypePrefix {
     match k {
+        Kind::Project => TypePrefix::Project,
         Kind::Product => TypePrefix::Product,
         Kind::Epic => TypePrefix::Epic,
         Kind::Task => TypePrefix::Task,

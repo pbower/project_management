@@ -568,6 +568,7 @@ impl WorkflowApp {
         if let Some(task) = self.db.get(selected_task_id) {
             // Determine the child hierarchy level based on the task's kind
             let child_level = match task.kind {
+                Kind::Project => HierarchyLevel::Product,
                 Kind::Product => HierarchyLevel::Epic,
                 Kind::Epic => HierarchyLevel::Task,
                 Kind::Task => HierarchyLevel::Subtask,

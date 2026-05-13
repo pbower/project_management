@@ -344,6 +344,7 @@ impl App {
                 if let Some(&task_id) = self.filtered_tasks.get(selected) {
                     if let Some(task) = self.db.get(task_id) {
                         let child_level = match task.kind {
+                            Kind::Project => HierarchyLevel::Product,
                             Kind::Product => HierarchyLevel::Epic,
                             Kind::Epic => HierarchyLevel::Task,
                             Kind::Task => HierarchyLevel::Subtask,
@@ -1349,6 +1350,7 @@ impl App {
     
                 // Determine hierarchy color
                 let hierarchy_color = match task.kind {
+                    Kind::Project => Color::Cyan,        // Cyan for the top-level Project tickets
                     Kind::Product => Color::Blue,        // Dark Blue (keeping existing)
                     Kind::Epic => DARK_GREEN,          // Forest Green
                     Kind::Task => GOLD,         // Gold

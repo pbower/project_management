@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
+    #[serde(alias = "Project")]
+    Project,
     #[serde(alias = "Product")]
     Product,
     #[serde(alias = "Epic")]

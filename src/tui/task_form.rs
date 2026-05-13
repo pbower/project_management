@@ -81,13 +81,13 @@ impl TaskForm {
             requirements: InputField::new(),
             artifacts: InputField::new(),
             project_selector: 0, // Default to first available project
-            kind: 2, // Task
+            kind: 3, // Task (index in `kinds` below: Project, Product, Epic, Task, ...)
             status: 0, // Open
             priority_level: 0, // None (first item)
             urgency: 0, // None (first item)
             process_stage: 0, // None (first item),
             current_field: 0,
-            kinds: vec![Kind::Product, Kind::Epic, Kind::Task, Kind::Subtask, Kind::Milestone],
+            kinds: vec![Kind::Project, Kind::Product, Kind::Epic, Kind::Task, Kind::Subtask, Kind::Milestone],
             statuses: vec![Status::Open, Status::InProgress, Status::Done],
             priorities: vec![None, Some(Priority::MustHave), Some(Priority::NiceToHave), Some(Priority::CutFirst)],
             urgencies: vec![None, Some(Urgency::UrgentImportant), Some(Urgency::UrgentNotImportant), 
@@ -149,7 +149,7 @@ impl TaskForm {
             HierarchyLevel::Milestone => Kind::Task,  // Default for Milestones
         };
         
-        form.kind = form.kinds.iter().position(|&k| k == target_kind).unwrap_or(2);
+        form.kind = form.kinds.iter().position(|&k| k == target_kind).unwrap_or(3);
         form
     }
 
@@ -187,7 +187,7 @@ impl TaskForm {
             &task.requirements.clone().unwrap_or_default());
         form.artifacts = InputField::with_value(
             &task.artifacts.join(","));
-        form.kind = form.kinds.iter().position(|&k| k == task.kind).unwrap_or(2);
+        form.kind = form.kinds.iter().position(|&k| k == task.kind).unwrap_or(3);
         form.status = form.statuses.iter().position(|&s| s == task.status).unwrap_or(0);
         form.priority_level = form.priorities.iter().position(|&p| p == task.priority_level).unwrap_or(0);
         form.urgency = form.urgencies.iter().position(|&u| u == task.urgency).unwrap_or(0);

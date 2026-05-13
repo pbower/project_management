@@ -247,6 +247,7 @@ pub fn format_due_relative(due: Option<NaiveDate>, today: NaiveDate) -> String {
 /// Format a task kind for display.
 pub fn format_kind(k: Kind) -> &'static str {
     match k {
+        Kind::Project => "Project",
         Kind::Product => "Product",
         Kind::Epic => "Epic",
         Kind::Task => "Task",
@@ -294,6 +295,7 @@ pub fn format_process_stage(s: Option<ProcessStage>) -> &'static str {
 /// Validate that a parent-child relationship follows the hierarchical rules.
 pub fn validate_hierarchy(parent_kind: Kind, child_kind: Kind) -> bool {
     match (parent_kind, child_kind) {
+        (Kind::Project, Kind::Product) => true,
         (Kind::Product, Kind::Epic) => true,
         (Kind::Epic, Kind::Task) => true,
         (Kind::Task, Kind::Subtask) => true,
@@ -445,6 +447,7 @@ pub fn resolve_task_identifier(identifier: &str, db: &Database) -> Result<u64, S
 /// Parse a kind string from CSV format.
 pub fn parse_kind(s: &str) -> Kind {
     match s.to_lowercase().as_str() {
+        "project" => Kind::Project,
         "product" => Kind::Product,
         "epic" => Kind::Epic,
         "task" => Kind::Task,
