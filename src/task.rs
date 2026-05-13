@@ -1,20 +1,24 @@
 //! Task data structure and related functionality.
 //!
-//! This module defines the core `Task` struct that represents a single work item
-//! with all its associated metadata, including hierarchy, timing, and process information.
+//! Defines the core `Task` struct that represents a single work item with all
+//! its associated metadata, including hierarchy, timing, and process
+//! information. Identifiers are typed `LeafId`s carrying the ticket type via
+//! their prefix (`PRJ1`, `PRD3`, `EPC7`, `TSK22`, `SBT2`, `MLS1`).
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use crate::fields::*;
+use crate::store::id::LeafId;
 
-/// A work item with comprehensive metadata for project management.
+/// A work item with metadata for project management.
 ///
-/// Tasks support hierarchical organisation (Product > Epic > Task > Subtask),
-/// time tracking, process stages, and various categorisation fields.
+/// Tasks support hierarchical organisation (Project > Product > Epic > Task >
+/// Subtask) plus cross-cutting milestones. Project membership is derived from
+/// the parent chain on disk; there is no separate label field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
-    pub id: u64,
+    pub id: LeafId,
     pub title: String,
     pub summary: Option<String>,
     pub description: Option<String>,
@@ -22,9 +26,8 @@ pub struct Task {
     #[serde(default)]
     pub requirements: Option<String>,
     pub tags: Vec<String>,
-    pub project: Option<String>,
     pub due: Option<NaiveDate>,
-    pub parent: Option<u64>,
+    pub parent: Option<LeafId>,
     pub kind: Kind,
     pub status: Status,
     pub priority_level: Option<Priority>,
@@ -44,7 +47,6 @@ pub struct TaskTemplate {
     pub name: String,
     pub title_template: Option<String>,
     pub description_template: Option<String>,
-    pub project: Option<String>,
     pub tags: Vec<String>,
     pub kind: Kind,
     pub priority_level: Option<Priority>,
