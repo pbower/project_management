@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use project_management::store::{
     Aliases, ArtifactsIndex, State, Ticket, TypePrefix, ARTIFACTS_MD, CLAUDE_MD,
 };
-use project_management::v2::cli::{ArtifactAction, KindArg, V2Commands};
-use project_management::v2::cmd::run;
+use project_management::cmd::Commands;
+use project_management::v2::cli::{ArtifactAction, KindArg};
+use project_management::v2::cmd::dispatch as run;
 
 fn tmp_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -29,9 +30,9 @@ fn full_hierarchy_then_inspect_disk() {
     let pm_root = base.clone();
 
     // init + the full PRJ -> PRD -> EPC -> TSK -> SBT chain.
-    run(V2Commands::Init, Some(pm_root.clone())).unwrap();
+    run(Commands::Init, Some(pm_root.clone())).unwrap();
     run(
-        V2Commands::Add {
+        Commands::Add {
             title: "PM tool".into(),
             kind: KindArg::Project,
             parent: None,
@@ -41,7 +42,7 @@ fn full_hierarchy_then_inspect_disk() {
     )
     .unwrap();
     run(
-        V2Commands::Add {
+        Commands::Add {
             title: "Core".into(),
             kind: KindArg::Product,
             parent: Some("PRJ1".into()),
@@ -51,7 +52,7 @@ fn full_hierarchy_then_inspect_disk() {
     )
     .unwrap();
     run(
-        V2Commands::Add {
+        Commands::Add {
             title: "Checkouts".into(),
             kind: KindArg::Epic,
             parent: Some("PRD1".into()),
@@ -61,7 +62,7 @@ fn full_hierarchy_then_inspect_disk() {
     )
     .unwrap();
     run(
-        V2Commands::Add {
+        Commands::Add {
             title: "Lock protocol".into(),
             kind: KindArg::Task,
             parent: Some("EPC1".into()),
@@ -71,7 +72,7 @@ fn full_hierarchy_then_inspect_disk() {
     )
     .unwrap();
     run(
-        V2Commands::Add {
+        Commands::Add {
             title: "Stale cleanup".into(),
             kind: KindArg::Subtask,
             parent: Some("TSK1".into()),
@@ -120,9 +121,9 @@ fn full_hierarchy_then_inspect_disk() {
 fn metadata_verbs_update_front_matter() {
     let base = tmp_dir();
     let pm_root = base.clone();
-    run(V2Commands::Init, Some(pm_root.clone())).unwrap();
+    run(Commands::Init, Some(pm_root.clone())).unwrap();
     run(
-        V2Commands::Add {
+        Commands::Add {
             title: "Solo".into(),
             kind: KindArg::Task,
             parent: None,
@@ -132,10 +133,10 @@ fn metadata_verbs_update_front_matter() {
     )
     .unwrap();
 
-    run(V2Commands::Status { id: "TSK1".into(), value: "in-progress".into() }, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Priority { id: "TSK1".into(), value: "high".into() }, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Tag { id: "TSK1".into(), ops: vec!["+infra".into(), "+locking".into()] }, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Link { id: "TSK1".into(), key: "github_issue".into(), value: "pbower/project_management#42".into() }, Some(pm_root.clone())).unwrap();
+    run(Commands::Status { id: "TSK1".into(), value: "in-progress".into() }, Some(pm_root.clone())).unwrap();
+    run(Commands::Priority { id: "TSK1".into(), value: "high".into() }, Some(pm_root.clone())).unwrap();
+    run(Commands::Tag { id: "TSK1".into(), ops: vec!["+infra".into(), "+locking".into()] }, Some(pm_root.clone())).unwrap();
+    run(Commands::Link { id: "TSK1".into(), key: "github_issue".into(), value: "pbower/project_management#42".into() }, Some(pm_root.clone())).unwrap();
 
     let tsk = base.join(".pm/tasks/solo");
     let t = Ticket::read(&tsk.join(CLAUDE_MD)).unwrap();
@@ -151,15 +152,15 @@ fn metadata_verbs_update_front_matter() {
 fn move_writes_alias_and_relocates_directory() {
     let base = tmp_dir();
     let pm_root = base.clone();
-    run(V2Commands::Init, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Add { title: "PM".into(), kind: KindArg::Project, parent: None, slug: None }, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Add { title: "Core".into(), kind: KindArg::Product, parent: Some("PRJ1".into()), slug: None }, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Add { title: "Checkouts".into(), kind: KindArg::Epic, parent: Some("PRD1".into()), slug: None }, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Add { title: "Locking".into(), kind: KindArg::Epic, parent: Some("PRD1".into()), slug: None }, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Add { title: "Lock protocol".into(), kind: KindArg::Task, parent: Some("EPC1".into()), slug: None }, Some(pm_root.clone())).unwrap();
+    run(Commands::Init, Some(pm_root.clone())).unwrap();
+    run(Commands::Add { title: "PM".into(), kind: KindArg::Project, parent: None, slug: None }, Some(pm_root.clone())).unwrap();
+    run(Commands::Add { title: "Core".into(), kind: KindArg::Product, parent: Some("PRJ1".into()), slug: None }, Some(pm_root.clone())).unwrap();
+    run(Commands::Add { title: "Checkouts".into(), kind: KindArg::Epic, parent: Some("PRD1".into()), slug: None }, Some(pm_root.clone())).unwrap();
+    run(Commands::Add { title: "Locking".into(), kind: KindArg::Epic, parent: Some("PRD1".into()), slug: None }, Some(pm_root.clone())).unwrap();
+    run(Commands::Add { title: "Lock protocol".into(), kind: KindArg::Task, parent: Some("EPC1".into()), slug: None }, Some(pm_root.clone())).unwrap();
 
     // Move TSK1 from EPC1 (checkouts) to EPC2 (locking).
-    run(V2Commands::Move { id: "TSK1".into(), dest: "EPC2".into() }, Some(pm_root.clone())).unwrap();
+    run(Commands::Move { id: "TSK1".into(), dest: "EPC2".into() }, Some(pm_root.clone())).unwrap();
 
     let old_dir = base.join(".pm/projects/pm/products/core/epics/checkouts/tasks/lock-protocol");
     let new_dir = base.join(".pm/projects/pm/products/core/epics/locking/tasks/lock-protocol");
@@ -184,11 +185,11 @@ fn move_writes_alias_and_relocates_directory() {
 fn delete_tombstones_and_removes_directory() {
     let base = tmp_dir();
     let pm_root = base.clone();
-    run(V2Commands::Init, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Add { title: "Tossable".into(), kind: KindArg::Task, parent: None, slug: None }, Some(pm_root.clone())).unwrap();
+    run(Commands::Init, Some(pm_root.clone())).unwrap();
+    run(Commands::Add { title: "Tossable".into(), kind: KindArg::Task, parent: None, slug: None }, Some(pm_root.clone())).unwrap();
     let tsk_dir = base.join(".pm/tasks/tossable");
     assert!(tsk_dir.exists());
-    run(V2Commands::Delete { id: "TSK1".into(), force: true }, Some(pm_root.clone())).unwrap();
+    run(Commands::Delete { id: "TSK1".into(), force: true }, Some(pm_root.clone())).unwrap();
     assert!(!tsk_dir.exists(), "directory should be removed");
 
     let state = State::load(&base.join(".pm/state.json")).unwrap();
@@ -203,15 +204,15 @@ fn delete_tombstones_and_removes_directory() {
 fn artifact_add_list_rename() {
     let base = tmp_dir();
     let pm_root = base.clone();
-    run(V2Commands::Init, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Add { title: "Lock".into(), kind: KindArg::Task, parent: None, slug: None }, Some(pm_root.clone())).unwrap();
+    run(Commands::Init, Some(pm_root.clone())).unwrap();
+    run(Commands::Add { title: "Lock".into(), kind: KindArg::Task, parent: None, slug: None }, Some(pm_root.clone())).unwrap();
 
     // Drop an artifact file outside .pm/ first.
     let src = base.join("schema.png");
     fs::write(&src, b"PNG").unwrap();
 
     run(
-        V2Commands::Artifact {
+        Commands::Artifact {
             action: ArtifactAction::Add {
                 id: "TSK1".into(),
                 path: src.clone(),
@@ -226,7 +227,7 @@ fn artifact_add_list_rename() {
     assert_eq!(idx.find("schema.png").unwrap().desc, "ER diagram");
 
     run(
-        V2Commands::Artifact {
+        Commands::Artifact {
             action: ArtifactAction::Rename {
                 id: "TSK1".into(),
                 old: "schema.png".into(),
@@ -246,8 +247,8 @@ fn artifact_add_list_rename() {
 fn template_apply_preserves_content() {
     let base = tmp_dir();
     let pm_root = base.clone();
-    run(V2Commands::Init, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Add { title: "Solo".into(), kind: KindArg::Task, parent: None, slug: None }, Some(pm_root.clone())).unwrap();
+    run(Commands::Init, Some(pm_root.clone())).unwrap();
+    run(Commands::Add { title: "Solo".into(), kind: KindArg::Task, parent: None, slug: None }, Some(pm_root.clone())).unwrap();
 
     // Manually edit the description by reading + writing the file (simulates
     // a $EDITOR session).
@@ -257,7 +258,7 @@ fn template_apply_preserves_content() {
     t.write_to(&tsk).unwrap();
 
     run(
-        V2Commands::Template {
+        Commands::Template {
             action: project_management::v2::cli::TemplateAction::Apply { id: "TSK1".into() },
         },
         Some(pm_root.clone()),
@@ -273,14 +274,14 @@ fn template_apply_preserves_content() {
 fn doctor_rebuilds_state_json_from_disk() {
     let base = tmp_dir();
     let pm_root = base.clone();
-    run(V2Commands::Init, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Add { title: "PM".into(), kind: KindArg::Project, parent: None, slug: None }, Some(pm_root.clone())).unwrap();
-    run(V2Commands::Add { title: "Core".into(), kind: KindArg::Product, parent: Some("PRJ1".into()), slug: None }, Some(pm_root.clone())).unwrap();
+    run(Commands::Init, Some(pm_root.clone())).unwrap();
+    run(Commands::Add { title: "PM".into(), kind: KindArg::Project, parent: None, slug: None }, Some(pm_root.clone())).unwrap();
+    run(Commands::Add { title: "Core".into(), kind: KindArg::Product, parent: Some("PRJ1".into()), slug: None }, Some(pm_root.clone())).unwrap();
 
     // Wipe state.json; doctor should rebuild it.
     let state_path = base.join(".pm/state.json");
     fs::write(&state_path, r#"{ "next": {}, "tombstones": {}, "items": {} }"#).unwrap();
-    run(V2Commands::Doctor, Some(pm_root.clone())).unwrap();
+    run(Commands::Doctor, Some(pm_root.clone())).unwrap();
 
     let rebuilt = State::load(&state_path).unwrap();
     assert_eq!(rebuilt.items.len(), 2, "doctor should rediscover both tickets");

@@ -1,9 +1,9 @@
-//! Dispatcher for `pm v2 <verb>`.
+//! Handlers for the v2 verbs of [`crate::cmd::Commands`].
 //!
-//! Each branch delegates to a small handler that uses the [`crate::store`]
-//! modules. Commands deferred to later phases (workflow, memory, tv, log)
-//! print a clear "deferred to Phase N" message so the surface is shape-
-//! complete even before the underlying machinery exists.
+//! Each verb is a `pub fn` invoked directly by `main.rs` and integration
+//! tests; there is no enum dispatch layer. Verbs deferred to later phases
+//! (workflow, memory, tv, log) print a clear "deferred to Phase N" message
+//! so the surface is shape-complete even before the machinery is wired in.
 
 use std::fs;
 use std::io::{self, Write};
@@ -22,46 +22,53 @@ use crate::store::{
 };
 use crate::fields::{Priority, Status};
 
-use super::cli::{
-    ArtifactAction, KindArg, MemoryAction, TemplateAction, V2Commands,
-};
+use super::cli::{ArtifactAction, KindArg, MemoryAction, TemplateAction};
 use super::root;
 
-/// Public entry point invoked from `main.rs`.
-pub fn run(cmd: V2Commands, pm_root_arg: Option<PathBuf>) -> Result<(), CommandError> {
+// Convenience: dispatch the v2 verbs of crate::cmd::Commands. main.rs uses
+// this so each new verb only needs to be added in one place.
+pub fn dispatch(cmd: crate::cmd::Commands, pm_root_arg: Option<PathBuf>) -> Result<(), CommandError> {
+    use crate::cmd::Commands;
     match cmd {
-        V2Commands::Init => init(pm_root_arg.as_deref()),
-        V2Commands::Add { title, kind, parent, slug } => {
+        Commands::Init => init(pm_root_arg.as_deref()),
+        Commands::Add { title, kind, parent, slug } => {
             add(pm_root_arg.as_deref(), &title, kind, parent.as_deref(), slug.as_deref())
         }
-        V2Commands::List { kind, tree } => list(pm_root_arg.as_deref(), kind, tree),
-        V2Commands::Show { id } => show(pm_root_arg.as_deref(), &id),
-        V2Commands::Move { id, dest } => move_ticket(pm_root_arg.as_deref(), &id, &dest),
-        V2Commands::Complete { id } => set_status(pm_root_arg.as_deref(), &id, "done"),
-        V2Commands::Delete { id, force } => delete(pm_root_arg.as_deref(), &id, force),
-        V2Commands::Edit { id, section } => edit(pm_root_arg.as_deref(), &id, section.as_deref()),
-        V2Commands::Context { id, no_memories } => context(pm_root_arg.as_deref(), &id, no_memories),
-        V2Commands::Materialise { id, output } => {
+        Commands::List { kind, tree } => list(pm_root_arg.as_deref(), kind, tree),
+        Commands::Show { id } => show(pm_root_arg.as_deref(), &id),
+        Commands::Move { id, dest } => move_ticket(pm_root_arg.as_deref(), &id, &dest),
+        Commands::Complete { id } => set_status(pm_root_arg.as_deref(), &id, "done"),
+        Commands::Delete { id, force } => delete(pm_root_arg.as_deref(), &id, force),
+        Commands::Edit { id, section } => edit(pm_root_arg.as_deref(), &id, section.as_deref()),
+        Commands::Context { id, no_memories } => context(pm_root_arg.as_deref(), &id, no_memories),
+        Commands::Materialise { id, output } => {
             materialise(pm_root_arg.as_deref(), &id, output.as_deref())
         }
-        V2Commands::Artifact { action } => artifact(pm_root_arg.as_deref(), action),
-        V2Commands::Template { action } => template(pm_root_arg.as_deref(), action),
-        V2Commands::Status { id, value } => set_status(pm_root_arg.as_deref(), &id, &value),
-        V2Commands::Priority { id, value } => set_priority(pm_root_arg.as_deref(), &id, &value),
-        V2Commands::Due { id, value } => set_due(pm_root_arg.as_deref(), &id, &value),
-        V2Commands::Dep { id, op, other } => dep(pm_root_arg.as_deref(), &id, &op, &other),
-        V2Commands::Tag { id, ops } => tag(pm_root_arg.as_deref(), &id, &ops),
-        V2Commands::Link { id, key, value } => link(pm_root_arg.as_deref(), &id, &key, &value),
-        V2Commands::Milestone { id, value } => milestone(pm_root_arg.as_deref(), &id, &value),
-        V2Commands::Memory { action } => memory(action),
-        V2Commands::Checkout { id, intent } => stub_workflow("checkout", &id, intent.as_deref()),
-        V2Commands::Checkin { id, summary } => stub_workflow("checkin", &id, summary.as_deref()),
-        V2Commands::Next { agent, filter } => stub_next(agent.as_deref(), filter.as_deref()),
-        V2Commands::Locks => stub_simple("locks", "Phase 6"),
-        V2Commands::Tv => stub_simple("tv", "Phase 9"),
-        V2Commands::Log { id } => stub_log(&id),
-        V2Commands::Search { query } => search(pm_root_arg.as_deref(), &query),
-        V2Commands::Doctor => doctor(pm_root_arg.as_deref()),
+        Commands::Artifact { action } => artifact(pm_root_arg.as_deref(), action),
+        Commands::Template { action } => template(pm_root_arg.as_deref(), action),
+        Commands::Status { id, value } => set_status(pm_root_arg.as_deref(), &id, &value),
+        Commands::Priority { id, value } => set_priority(pm_root_arg.as_deref(), &id, &value),
+        Commands::Due { id, value } => set_due(pm_root_arg.as_deref(), &id, &value),
+        Commands::Dep { id, op, other } => dep(pm_root_arg.as_deref(), &id, &op, &other),
+        Commands::Tag { id, ops } => tag(pm_root_arg.as_deref(), &id, &ops),
+        Commands::Link { id, key, value } => link(pm_root_arg.as_deref(), &id, &key, &value),
+        Commands::Milestone { id, value } => milestone(pm_root_arg.as_deref(), &id, &value),
+        Commands::Memory { action } => memory(action),
+        Commands::Checkout { id, intent } => stub_workflow("checkout", &id, intent.as_deref()),
+        Commands::Checkin { id, summary } => stub_workflow("checkin", &id, summary.as_deref()),
+        Commands::Next { agent, filter } => stub_next(agent.as_deref(), filter.as_deref()),
+        Commands::Locks => stub_simple("locks", "Phase 6"),
+        Commands::Tv => stub_simple("tv", "Phase 9"),
+        Commands::Log { id } => stub_log(&id),
+        Commands::Search { query } => search(pm_root_arg.as_deref(), &query),
+        Commands::Doctor => doctor(pm_root_arg.as_deref()),
+        // Non-v2 variants (TUI launchers + completions) are dispatched in
+        // main.rs ahead of this function; reaching them here is a bug.
+        Commands::Ui | Commands::Wf | Commands::Menu | Commands::Completions { .. } => {
+            Err(CommandError::Parse(
+                "TUI verbs must be dispatched outside v2::cmd::dispatch".into(),
+            ))
+        }
     }
 }
 

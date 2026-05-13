@@ -1,241 +1,80 @@
 //! # PM - Project Management CLI
 //!
-//! A comprehensive command-line project management tool with hierarchical task organisation
-//! and an optional terminal user interface (TUI).
-//!
-//! ## Key Features
-//!
-//! - **Hierarchical Task Organisation**: Four-level hierarchy (Product → Epic → Task → Subtask) +
-//! Milestone
-//! - **Rich Task Metadata**: Priority, urgency, process stages, due dates, tags, and more
-//! - **Multiple Interfaces**: Full CLI for automation + interactive TUI for visual management
-//! - **Multi-Project Support**: Manage multiple projects with project-scoped (local .json) db files.
-//! - **Local File Storage**: Simple JSON files with CSV export/import and backup functionality
-//! - **Smart Navigation**: Browser-like back navigation and rapid contextual hierarchy drilling
-//!
-//! ## Quick Start
-//!
-//! ```bash
-//! # Launch interactive menu
-//! pm menu
-//!
-//! # Or launch TUI for most recent project
-//! pm ui
-//!
-//! # Add a task via CLI
-//! pm add "Implement user authentication" --project auth-system --tag backend
-//!
-//! # List tasks
-//! pm list
-//!
-//! # View task details
-//! pm view "Implement user authentication"
-//! ```
-//!
-//! ## Installation
-//!
-//! ```bash
-//! git clone <repository-url>
-//! cd pm
-//! cargo install --path .
-//! ```
-//!
-//! ## Usage Patterns
-//!
-//! **For Individual Developers**: PM excels at organizing complex software projects from
-//! high-level deliverables down to atomic implementation tasks, without the overhead of
-//! web-based collaborative tools.
-//!
-//! **Terminal-Native Workflow**: Integrates seamlessly with development environments,
-//! allowing rapid task capture and management without context switching.
-//!
-//! **Hierarchy Example**:
-//! - **Product**: "E-commerce Platform"
-//!   - **Epic**: "User Management System"
-//!     - **Task**: "User Registration"
-//!       - **Subtask**: "Email Validation"
-//!       - **Subtask**: "Password Hashing"
-//!
-//! ## Key Commands
-//!
-//! - `pm menu` - Interactive project selection menu
-//! - `pm ui` - Launch TUI for visual task management
-//! - `pm add <title>` - Create new task with optional metadata
-//! - `pm list` - View tasks with filtering and tree view options
-//! - `pm export` - Export to CSV for reporting/backup
-//! - `pm backup` - Create timestamped project backups
-//!
-//! Data is stored locally in `~/.pm/` with each project as a separate JSON file.
-//! We recommend you source control this folder via `git init` and back it up periodically.
+//! Hierarchical project-management tool. The CLI surface operates on a `.pm/`
+//! directory of typed tickets (PM_DESIGN.md Section 4); the TUI launchers
+//! (`ui`, `wf`, `menu`) currently still drive the v0.9.x `tasks.json` flow
+//! and will be rebuilt on top of v2 in Phase 7.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::Parser;
 
 use project_management::cli::Cli;
-use project_management::cmd::*;
-use project_management::db::*;
-use project_management::project::*;
+use project_management::cmd::{cmd_menu, cmd_ui, cmd_wf, cmd_workflow_menu, cmd_completions, Commands};
+use project_management::project::{discover_projects, get_most_recent_project, Project};
 
 fn main() {
     let cli = Cli::parse();
 
-    // Determine PM directory
-    let pm_dir = if let Some(db_path) = cli.db.as_ref() {
-        db_path.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf()
-    } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let pm_dir = PathBuf::from(home).join(".pm");
-        if let Err(e) = std::fs::create_dir_all(&pm_dir) {
-            eprintln!("Failed to create pm directory {}: {}", pm_dir.display(), e);
-            std::process::exit(1);
-        }
-        pm_dir
-    };
-
-    // Short-circuit v2 commands: they have their own .pm/ state and do not
-    // load the v0.9.x tasks.json database.
-    if let Commands::V2 { pm_root, command } = cli.command {
-        if let Err(e) = project_management::v2::cmd::run(command, pm_root) {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }
-        return;
-    }
-
-    // Handle commands that don't need a specific project first
-    match &cli.command {
+    match cli.command {
+        // ---- TUI launchers (existing ratatui screens, evolve in Phase 7) ----
         Commands::Menu => {
+            let pm_dir = resolve_legacy_pm_dir(cli.db.as_deref());
             cmd_menu(&pm_dir);
-            return;
-        },
-        Commands::Backup { all: true } => {
-            cmd_backup_all(&pm_dir);
-            return;
-        },
-        Commands::Export { output, all_projects: true, all, project, tag } => {
-            cmd_export_all(&pm_dir, output.clone(), *all, project.clone(), tag.clone());
-            return;
-        },
-        _ => {}
-    }
-
-    // Handle UI and Workflow commands specially to support recent project logic
-    match &cli.command {
+        }
         Commands::Ui => {
-            // For UI command, try to open most recent project or fall back to menu
-            if cli.db.is_some() {
-                // If user specified --db, use that specific project
-                let db_path = cli.db.unwrap();
-                cmd_ui(&db_path);
+            let pm_dir = resolve_legacy_pm_dir(cli.db.as_deref());
+            if let Some(db) = cli.db {
+                cmd_ui(&db);
             } else {
-                // Auto-select most recent project or show menu
                 match get_most_recent_project(&pm_dir) {
                     Ok(Some(project)) => {
                         println!("Opening recent project: {}", project.display_name);
                         cmd_ui(&project.file_path);
-                    },
-                    _ => {
-                        // No recent projects found, show menu
-                        cmd_menu(&pm_dir);
                     }
-                }
-            }
-            return;
-        },
-        Commands::Wf => {
-            // For Workflow command, show workflow selection menu
-            if cli.db.is_some() {
-                // If user specified --db, use that specific project
-                let db_path = cli.db.unwrap();
-                cmd_wf(&db_path);
-            } else {
-                // Show workflow project selection menu
-                cmd_workflow_menu(&pm_dir);
-            }
-            return;
-        },
-        _ => {}
-    }
-
-    // For all other commands, determine the database file to use
-    let db_path = cli.db.unwrap_or_else(|| {
-        // Check if there's a legacy tasks.json file
-        let legacy_path = pm_dir.join("tasks.json");
-        if legacy_path.exists() {
-            legacy_path
-        } else {
-            // Try to find any project file, or default to a default project
-            match discover_projects(&pm_dir) {
-                Ok(projects) if !projects.is_empty() => {
-                    projects[0].file_path.clone()
-                },
-                _ => {
-                    // Create a default project
-                    let default_project = Project::new("Default", &pm_dir);
-                    if let Err(e) = default_project.create_if_not_exists() {
-                        eprintln!("Failed to create default project: {}", e);
-                        std::process::exit(1);
-                    }
-                    default_project.file_path
+                    _ => cmd_menu(&pm_dir),
                 }
             }
         }
-    });
-
-    let mut db = Database::load(&db_path);
-
-    match cli.command {
-        Commands::Ui => unreachable!("UI command handled above"),
-        Commands::Wf => unreachable!("Workflow command handled above"),
-        Commands::Add {
-            title, template, desc, project, tags, due, parent, kind, priority_level,
-            urgency, process_stage, issue_link, pr_link, summary, user_story,
-            requirements, artifacts, status,
-        } => cmd_add(&mut db, &db_path, title, template, desc, project, tags, due, parent,
-                     kind, priority_level, urgency, process_stage, issue_link,
-                     pr_link, summary, user_story, requirements, artifacts, status),
-
-        Commands::List { all, status, kind, project, tags, due, tree, sort, limit } =>
-            cmd_list(&db, all, status, kind, project, tags, due, tree, sort, limit),
-
-        Commands::View { id, children, parents } => cmd_view(&db, id, children, parents),
-
-        Commands::Update { id, title, desc, project, due, parent, kind, status,
-                          add_tags, rm_tags, clear_due, clear_parent } =>
-            cmd_update(&mut db, &db_path, id, title, desc, project, due, parent, kind,
-                      status, add_tags, rm_tags, clear_due, clear_parent),
-
-        Commands::Complete { id, recurse, tag, project, status } =>
-            cmd_complete(&mut db, &db_path, id, recurse, tag, project, status),
-
-        Commands::Reopen { id } => cmd_reopen(&mut db, &db_path, id),
-
-        Commands::Delete { id, cascade, tag, project, status } =>
-            cmd_delete(&mut db, &db_path, id, cascade, tag, project, status),
-
-        Commands::Projects => cmd_projects(&db),
-
-        Commands::Tags => cmd_tags(&db),
-
+        Commands::Wf => {
+            let pm_dir = resolve_legacy_pm_dir(cli.db.as_deref());
+            if let Some(db) = cli.db {
+                cmd_wf(&db);
+            } else {
+                cmd_workflow_menu(&pm_dir);
+            }
+        }
         Commands::Completions { shell } => cmd_completions(shell),
 
-        Commands::Template { action } => cmd_template(&mut db, &db_path, action),
-
-        Commands::Export { output, all, all_projects, project, tag } => {
-            // all_projects: true case is handled earlier, this handles all_projects: false
-            assert!(!all_projects, "all_projects case should be handled earlier");
-            cmd_export(&db, output, all, project, tag);
-        },
-
-        Commands::Import { input, no_backup } =>
-            cmd_import(&mut db, &db_path, input, no_backup),
-
-        Commands::Backup { all } =>
-            cmd_backup(&db_path, all),
-
-        Commands::Menu => cmd_menu(&db_path.parent().unwrap_or_else(|| Path::new("."))),
-
-        Commands::V2 { .. } => unreachable!("V2 command handled above"),
+        // ---- v2 verbs operating on `.pm/` ----
+        other => {
+            if let Err(e) = project_management::v2::cmd::dispatch(other, cli.pm_root) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
     }
+}
+
+/// Resolve the legacy `~/.pm/<project>.json` directory used by the TUI
+/// launchers. Used by `ui`/`wf`/`menu` only; v2 verbs use `cli.pm_root`.
+fn resolve_legacy_pm_dir(explicit_db: Option<&std::path::Path>) -> PathBuf {
+    if let Some(db) = explicit_db {
+        return db.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let pm_dir = PathBuf::from(home).join(".pm");
+    if let Err(e) = std::fs::create_dir_all(&pm_dir) {
+        eprintln!("Failed to create pm directory {}: {}", pm_dir.display(), e);
+        std::process::exit(1);
+    }
+    // Seed a default project file if none exist, so the TUI has something to
+    // open. Matches the previous v0.9.x behaviour.
+    if let Ok(projects) = discover_projects(&pm_dir) {
+        if projects.is_empty() && !pm_dir.join("tasks.json").exists() {
+            let default = Project::new("Default", &pm_dir);
+            let _ = default.create_if_not_exists();
+        }
+    }
+    pm_dir
 }
