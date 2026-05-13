@@ -1,11 +1,12 @@
-//! Migration planner from the existing `tasks.json` format to the v2 layout.
+//! Migration planner from a `tasks.json`-backed [`Database`] to the v2 layout.
 //!
-//! Reads the current [`Database`] (`Vec<Task>` keyed by numeric id) and
-//! computes the v2 disk layout it would produce: new leaf ids, parent linkage,
-//! address forms, target paths. Read-only; the write side is added in a
-//! later phase.
+//! Now that [`Task`] carries a [`LeafId`] directly, the planner's job is to
+//! work out each ticket's address chain and target directory on disk. It does
+//! not renumber anything; identity flows straight from `Task.id`.
+//!
+//! Read-only. The write side lands in a later phase.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::db::Database;
@@ -14,24 +15,23 @@ use crate::task::Task;
 
 use super::id::{AddressId, LeafId, TypePrefix};
 use super::layout::Layout;
-use super::state::State;
 
 /// One ticket's migration outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationStep {
-    /// Numeric id from the source `Database`.
-    pub source_id: u64,
-    /// Source `Kind` (Product/Epic/Task/Subtask/Milestone).
-    pub source_kind: Kind,
-    /// New v2 leaf id (typed prefix + monotonic number).
-    pub new_leaf: LeafId,
-    /// New parent leaf, if the source ticket had a parent.
-    pub new_parent: Option<LeafId>,
+    /// The ticket's canonical leaf id. Carries the type prefix.
+    pub leaf: LeafId,
+    /// The ticket's `Kind`. Redundant with `leaf.prefix()` for tickets that
+    /// were authored cleanly; preserved so a future audit pass can flag any
+    /// task whose `Task.kind` and `Task.id.prefix()` disagree.
+    pub kind: Kind,
+    /// Parent leaf when the source ticket had a parent in the file's chain.
+    pub parent: Option<LeafId>,
     /// Full address chain (root -> leaf). For orphans this is `[leaf]` only.
     pub address: AddressId,
     /// Target directory relative to `.pm/`. Each path segment is a `LeafId`.
     pub target_dir: PathBuf,
-    /// Original title (preserved for the new front-matter `title:` field).
+    /// Original title, preserved for the new front-matter `title:` field.
     pub title: String,
 }
 
@@ -40,9 +40,9 @@ pub struct MigrationStep {
 pub struct MigrationPlan {
     pub source: PathBuf,
     pub steps: Vec<MigrationStep>,
-    /// Source ids that referenced a parent that does not exist in the source.
-    /// Tickets pointing at these are demoted to orphans in the plan.
-    pub dangling_parents: Vec<u64>,
+    /// Parent leaves that the source referenced but that aren't present in
+    /// the source. Tickets pointing at these are demoted to orphans.
+    pub dangling_parents: Vec<LeafId>,
 }
 
 impl MigrationPlan {
@@ -54,24 +54,15 @@ impl MigrationPlan {
         }
         let db = Database::load(source);
         let mut tasks: Vec<Task> = db.tasks;
-        // Stable order: by source id so the plan is deterministic.
+        // Stable order: by leaf id so the plan is deterministic.
         tasks.sort_by_key(|t| t.id);
 
-        let mut state = State::fresh();
-        // First pass: allocate every ticket its new leaf id and record the
-        // source-id -> new-leaf mapping. Parent resolution happens in a second
-        // pass after every leaf exists.
-        let mut source_to_new: BTreeMap<u64, LeafId> = BTreeMap::new();
-        for t in &tasks {
-            let prefix = kind_to_prefix(t.kind);
-            let leaf = state.allocate(prefix);
-            source_to_new.insert(t.id, leaf);
-        }
+        let known_ids: BTreeSet<LeafId> = tasks.iter().map(|t| t.id).collect();
 
-        // Detect any parent references that point to source ids not present
-        // in the source. Demote those tickets to orphans (parent=None).
-        let mut dangling: Vec<u64> = Vec::new();
-        let known_ids: std::collections::BTreeSet<u64> = tasks.iter().map(|t| t.id).collect();
+        // Detect any parent references that point to leaves not present in
+        // the source. Demote those tickets to orphans (parent=None) in their
+        // address chain.
+        let mut dangling: Vec<LeafId> = Vec::new();
         for t in &tasks {
             if let Some(p) = t.parent {
                 if !known_ids.contains(&p) && !dangling.contains(&p) {
@@ -80,27 +71,20 @@ impl MigrationPlan {
             }
         }
 
-        // Second pass: walk parent chain (resolving via source_to_new) to
-        // build the address. Compute target directory from the chain alone;
-        // each segment is the LeafId of that level.
+        // Build the address chain for each task by walking parents that are
+        // known to the source. Anything dangling stops the chain at that level.
         let mut steps: Vec<MigrationStep> = Vec::with_capacity(tasks.len());
         for t in &tasks {
-            let new_leaf = source_to_new[&t.id];
+            let parent = t.parent.filter(|p| known_ids.contains(p));
 
-            let parent_source = t.parent.filter(|p| known_ids.contains(p));
-            let new_parent = parent_source.map(|p| source_to_new[&p]);
-
-            let chain = walk_chain(t.id, &tasks, &source_to_new, &known_ids);
-            let chain_leaves: Vec<LeafId> = chain.iter().map(|src| source_to_new[src]).collect();
-
-            let address = AddressId::new(chain_leaves).expect("chain has at least the leaf itself");
+            let chain = walk_chain(t.id, &tasks, &known_ids);
+            let address = AddressId::new(chain).expect("chain has at least the leaf itself");
             let target_dir = layout.directory_for(&address);
 
             steps.push(MigrationStep {
-                source_id: t.id,
-                source_kind: t.kind,
-                new_leaf,
-                new_parent,
+                leaf: t.id,
+                kind: t.kind,
+                parent,
                 address,
                 target_dir,
                 title: t.title.clone(),
@@ -121,19 +105,23 @@ impl MigrationPlan {
         let _ = writeln!(out, "Migration plan for {}", self.source.display());
         let _ = writeln!(out, "  {} tickets total", self.steps.len());
         if !self.dangling_parents.is_empty() {
-            let _ = writeln!(out, "  {} dangling parent references (demoted to orphan): {:?}",
-                self.dangling_parents.len(), self.dangling_parents);
+            let names: Vec<String> = self.dangling_parents.iter().map(|l| l.to_string()).collect();
+            let _ = writeln!(
+                out,
+                "  {} dangling parent references (demoted to orphan): {}",
+                self.dangling_parents.len(),
+                names.join(", "),
+            );
         }
         let _ = writeln!(out);
-        let _ = writeln!(out, "  {:>6}  {:>4}  {:<9}  {:<32}  {}",
-            "SOURCE", "NEW", "KIND", "ADDRESS", "TARGET");
+        let _ = writeln!(out, "  {:<5}  {:<9}  {:<32}  {}",
+            "LEAF", "KIND", "ADDRESS", "TARGET");
         for s in &self.steps {
             let _ = writeln!(
                 out,
-                "  {:>6}  {:>4}  {:<9}  {:<32}  {}",
-                s.source_id,
-                s.new_leaf.to_string(),
-                format!("{:?}", s.source_kind),
+                "  {:<5}  {:<9}  {:<32}  {}",
+                s.leaf.to_string(),
+                format!("{:?}", s.kind),
                 s.address.to_string(),
                 s.target_dir.display(),
             );
@@ -143,7 +131,7 @@ impl MigrationPlan {
 }
 
 /// Translate a [`Kind`] to its v2 [`TypePrefix`].
-fn kind_to_prefix(k: Kind) -> TypePrefix {
+pub(crate) fn kind_to_prefix(k: Kind) -> TypePrefix {
     match k {
         Kind::Project => TypePrefix::Project,
         Kind::Product => TypePrefix::Product,
@@ -154,15 +142,15 @@ fn kind_to_prefix(k: Kind) -> TypePrefix {
     }
 }
 
-/// Walk a ticket's parent chain to the root, returning source ids root-first.
-/// Parents that are missing from the source are skipped (the chain stops).
+/// Walk a ticket's parent chain to the root, returning leaf ids root-first.
+/// Parents that are missing from the source stop the chain at the first
+/// known ancestor or at the starting leaf if no ancestor resolves.
 fn walk_chain(
-    start: u64,
+    start: LeafId,
     tasks: &[Task],
-    source_to_new: &BTreeMap<u64, LeafId>,
-    known: &std::collections::BTreeSet<u64>,
-) -> Vec<u64> {
-    let by_id: BTreeMap<u64, &Task> = tasks.iter().map(|t| (t.id, t)).collect();
+    known: &BTreeSet<LeafId>,
+) -> Vec<LeafId> {
+    let by_id: BTreeMap<LeafId, &Task> = tasks.iter().map(|t| (t.id, t)).collect();
     let mut chain = Vec::new();
     let mut cursor = Some(start);
     let mut guard = 0usize;
@@ -172,7 +160,7 @@ fn walk_chain(
         chain.push(id);
         cursor = by_id.get(&id)
             .and_then(|t| t.parent)
-            .filter(|p| known.contains(p) && source_to_new.contains_key(p));
+            .filter(|p| known.contains(p));
     }
     chain.reverse();
     chain
@@ -214,7 +202,7 @@ mod tests {
 
     /// Build a [`Task`] with the bare-minimum fields the migration planner
     /// touches. Avoids hand-rolled JSON in tests.
-    fn task(id: u64, title: &str, parent: Option<u64>, kind: Kind) -> Task {
+    fn task(id: LeafId, title: &str, parent: Option<LeafId>, kind: Kind) -> Task {
         Task {
             id,
             title: title.to_string(),
@@ -223,7 +211,6 @@ mod tests {
             user_story: None,
             requirements: None,
             tags: Vec::new(),
-            project: None,
             due: None,
             parent,
             kind,
@@ -239,6 +226,10 @@ mod tests {
         }
     }
 
+    fn leaf(prefix: TypePrefix, n: u64) -> LeafId {
+        LeafId::new(prefix, n)
+    }
+
     fn write_db(dir: &Path, name: &str, tasks: Vec<Task>) -> PathBuf {
         let p = dir.join(name);
         let db = Database { tasks, templates: Vec::new() };
@@ -248,6 +239,7 @@ mod tests {
 
     #[test]
     fn kind_maps_one_for_one() {
+        assert_eq!(kind_to_prefix(Kind::Project), TypePrefix::Project);
         assert_eq!(kind_to_prefix(Kind::Product), TypePrefix::Product);
         assert_eq!(kind_to_prefix(Kind::Epic), TypePrefix::Epic);
         assert_eq!(kind_to_prefix(Kind::Task), TypePrefix::Task);
@@ -261,33 +253,40 @@ mod tests {
         let layout = Layout::under(&dir);
         layout.init().unwrap();
 
+        let prd1 = leaf(TypePrefix::Product, 1);
+        let epc1 = leaf(TypePrefix::Epic, 1);
+        let tsk1 = leaf(TypePrefix::Task, 1);
+        let sbt1 = leaf(TypePrefix::Subtask, 1);
+
         let src = write_db(&dir, "tasks.json", vec![
-            task(1, "E-commerce Platform", None, Kind::Product),
-            task(2, "User Management System", Some(1), Kind::Epic),
-            task(3, "User Registration", Some(2), Kind::Task),
-            task(4, "Email Validation", Some(3), Kind::Subtask),
+            task(prd1, "E-commerce Platform", None, Kind::Product),
+            task(epc1, "User Management System", Some(prd1), Kind::Epic),
+            task(tsk1, "User Registration", Some(epc1), Kind::Task),
+            task(sbt1, "Email Validation", Some(tsk1), Kind::Subtask),
         ]);
 
         let plan = MigrationPlan::plan(&layout, &src).unwrap();
         assert_eq!(plan.steps.len(), 4);
         assert!(plan.dangling_parents.is_empty());
 
-        let product = &plan.steps[0];
-        assert_eq!(product.new_leaf.to_string(), "PRD1");
+        // Steps come back in leaf-id order (PRD < EPC < TSK < SBT by prefix
+        // ordering in TypePrefix). PRD1 lands first.
+        let by_leaf: BTreeMap<LeafId, &MigrationStep> =
+            plan.steps.iter().map(|s| (s.leaf, s)).collect();
+
+        let product = by_leaf[&prd1];
         assert_eq!(product.address.to_string(), "PRD1");
         assert_eq!(product.target_dir, PathBuf::from("products/PRD1"));
 
-        let epic = &plan.steps[1];
-        assert_eq!(epic.new_leaf.to_string(), "EPC1");
+        let epic = by_leaf[&epc1];
         assert_eq!(epic.address.to_string(), "PRD1-EPC1");
         assert_eq!(epic.target_dir, PathBuf::from("products/PRD1/epics/EPC1"));
 
-        let tsk = &plan.steps[2];
+        let tsk = by_leaf[&tsk1];
         assert_eq!(tsk.address.to_string(), "PRD1-EPC1-TSK1");
         assert_eq!(tsk.target_dir, PathBuf::from("products/PRD1/epics/EPC1/tasks/TSK1"));
 
-        let sub = &plan.steps[3];
-        assert_eq!(sub.new_leaf.to_string(), "SBT1");
+        let sub = by_leaf[&sbt1];
         assert_eq!(sub.address.to_string(), "PRD1-EPC1-TSK1-SBT1");
         assert_eq!(
             sub.target_dir,
@@ -303,17 +302,20 @@ mod tests {
         let layout = Layout::under(&dir);
         layout.init().unwrap();
 
+        let tsk7 = leaf(TypePrefix::Task, 7);
+        let ghost = leaf(TypePrefix::Task, 999);
+
         let src = write_db(&dir, "tasks.json", vec![
-            task(7, "Orphan Task", Some(999), Kind::Task),
+            task(tsk7, "Orphan Task", Some(ghost), Kind::Task),
         ]);
 
         let plan = MigrationPlan::plan(&layout, &src).unwrap();
         assert_eq!(plan.steps.len(), 1);
-        assert_eq!(plan.dangling_parents, vec![999]);
+        assert_eq!(plan.dangling_parents, vec![ghost]);
         let step = &plan.steps[0];
-        assert!(step.new_parent.is_none(), "ticket pointing at missing parent demoted");
+        assert!(step.parent.is_none(), "ticket pointing at missing parent demoted");
         assert_eq!(step.address.depth(), 1);
-        assert_eq!(step.target_dir, PathBuf::from("tasks/TSK1"));
+        assert_eq!(step.target_dir, PathBuf::from("tasks/TSK7"));
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -324,13 +326,14 @@ mod tests {
         let layout = Layout::under(&dir);
         layout.init().unwrap();
 
+        let mls1 = leaf(TypePrefix::Milestone, 1);
         let src = write_db(&dir, "tasks.json", vec![
-            task(1, "Solo Milestone", None, Kind::Milestone),
+            task(mls1, "Solo Milestone", None, Kind::Milestone),
         ]);
 
         let plan = MigrationPlan::plan(&layout, &src).unwrap();
         assert_eq!(plan.steps.len(), 1);
-        assert_eq!(plan.steps[0].new_leaf.to_string(), "MLS1");
+        assert_eq!(plan.steps[0].leaf.to_string(), "MLS1");
         assert_eq!(plan.steps[0].target_dir, PathBuf::from("milestones/MLS1"));
 
         fs::remove_dir_all(&dir).ok();
@@ -352,9 +355,11 @@ mod tests {
         let layout = Layout::under(&dir);
         layout.init().unwrap();
 
+        let prd1 = leaf(TypePrefix::Product, 1);
+        let epc1 = leaf(TypePrefix::Epic, 1);
         let src = write_db(&dir, "tasks.json", vec![
-            task(1, "P", None, Kind::Product),
-            task(2, "E", Some(1), Kind::Epic),
+            task(prd1, "P", None, Kind::Product),
+            task(epc1, "E", Some(prd1), Kind::Epic),
         ]);
 
         let plan = MigrationPlan::plan(&layout, &src).unwrap();
@@ -363,6 +368,31 @@ mod tests {
         assert!(rendered.contains("2 tickets total"));
         assert!(rendered.contains("PRD1"));
         assert!(rendered.contains("EPC1"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn project_root_chain_keeps_prj_at_top() {
+        let dir = tmp_dir();
+        let layout = Layout::under(&dir);
+        layout.init().unwrap();
+
+        let prj1 = leaf(TypePrefix::Project, 1);
+        let prd1 = leaf(TypePrefix::Product, 1);
+        let src = write_db(&dir, "tasks.json", vec![
+            task(prj1, "Top project", None, Kind::Project),
+            task(prd1, "First product", Some(prj1), Kind::Product),
+        ]);
+
+        let plan = MigrationPlan::plan(&layout, &src).unwrap();
+        let by_leaf: BTreeMap<LeafId, &MigrationStep> =
+            plan.steps.iter().map(|s| (s.leaf, s)).collect();
+
+        assert_eq!(by_leaf[&prj1].address.to_string(), "PRJ1");
+        assert_eq!(by_leaf[&prj1].target_dir, PathBuf::from("projects/PRJ1"));
+        assert_eq!(by_leaf[&prd1].address.to_string(), "PRJ1-PRD1");
+        assert_eq!(by_leaf[&prd1].target_dir, PathBuf::from("projects/PRJ1/products/PRD1"));
 
         fs::remove_dir_all(&dir).ok();
     }
