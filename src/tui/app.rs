@@ -26,6 +26,7 @@ use chrono::Utc;
 use crate::{fields::*, tui::colors::{DARK_GREEN, DARK_PURPLE, DARK_RED, GOLD}};
 use crate::store::{IdInput, LeafId};
 use crate::store::locks::{self, LockFile};
+use crate::store::events;
 use crate::task::Task;
 use crate::{
     db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
@@ -2270,7 +2271,11 @@ impl App {
     fn render(&mut self, f: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)].as_ref())
+            .constraints([
+                Constraint::Min(0),    // mode content
+                Constraint::Length(5), // activity footer (bordered, 3 events)
+                Constraint::Length(1), // context-sensitive help row
+            ].as_ref())
             .split(f.area());
 
         match self.mode {
@@ -2291,7 +2296,40 @@ impl App {
             Mode::Activity => self.render_mode_stub(f, chunks[0], "Activity View", "Phase 9"),
         }
 
-        self.render_status_bar(f, chunks[1]);
+        self.render_activity_footer(f, chunks[1]);
+        self.render_status_bar(f, chunks[2]);
+    }
+
+    /// Render the activity footer - the last three entries from `events.log`
+    /// in a bordered block. Shown beneath every mode (PM_DESIGN.md 8.3.1).
+    fn render_activity_footer(&mut self, f: &mut Frame, area: Rect) {
+        let all = events::read_events(&self.pm_dir).unwrap_or_default();
+        // Take the last three, then re-order oldest-first for display.
+        let mut tail: Vec<&events::Event> = all.iter().rev().take(3).collect();
+        tail.reverse();
+
+        let mut lines: Vec<Line> = Vec::new();
+        for ev in tail {
+            let time = ev.ts.format("%H:%M:%S");
+            let id = ev.id.map(|i| i.to_string()).unwrap_or_else(|| "-".to_string());
+            let detail = ev
+                .detail
+                .as_deref()
+                .map(|d| format!("  \"{d}\""))
+                .unwrap_or_default();
+            lines.push(Line::from(format!(
+                "  {time}  {:<18}  {:<10}  {id}{detail}",
+                truncate(&ev.actor, 18),
+                ev.verb
+            )));
+        }
+        if lines.is_empty() {
+            lines.push(Line::from("  (no activity yet)"));
+        }
+
+        let widget = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title("Activity"));
+        f.render_widget(widget, area);
     }
 
     /// Placeholder screen for Modes 2 and 3 until Phases 8 and 9 build them
