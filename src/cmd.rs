@@ -338,7 +338,7 @@ pub fn cmd_add(
     // Apply template defaults if specified
     let (task_kind, final_tags, final_priority, final_urgency, final_process_stage, final_status, final_desc) =
         if let Some(template_name) = template {
-            let template = db.templates.iter()
+            let template = db.state.templates.iter()
                 .find(|t| t.name == template_name)
                 .cloned();
 
@@ -1018,7 +1018,7 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
             };
             
             // Check if template already exists
-            if db.templates.iter().any(|t| t.name == template_name) {
+            if db.state.templates.iter().any(|t| t.name == template_name) {
                 eprintln!("Template '{}' already exists. Use a different name.", template_name);
                 std::process::exit(1);
             }
@@ -1035,7 +1035,7 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
                 status: task.status,
             };
             
-            db.templates.push(template);
+            db.state.templates.push(template);
             
             if let Err(e) = db.save(db_path) {
                 eprintln!("Failed to save database: {}", e);
@@ -1046,13 +1046,13 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
         },
         
         TemplateAction::List => {
-            if db.templates.is_empty() {
+            if db.state.templates.is_empty() {
                 println!("No templates found.");
                 return;
             }
 
             println!("{:<20} {:<10} {:<12}", "Name", "Kind", "Status");
-            for template in &db.templates {
+            for template in &db.state.templates {
                 println!(
                     "{:<20} {:<10} {:<12}",
                     truncate(&template.name, 20),
@@ -1063,10 +1063,10 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
         },
         
         TemplateAction::Delete { template_name } => {
-            let initial_len = db.templates.len();
-            db.templates.retain(|t| t.name != template_name);
+            let initial_len = db.state.templates.len();
+            db.state.templates.retain(|t| t.name != template_name);
             
-            if db.templates.len() == initial_len {
+            if db.state.templates.len() == initial_len {
                 eprintln!("Template '{}' not found.", template_name);
                 std::process::exit(1);
             }
@@ -1091,7 +1091,7 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
             status,
         } => {
             // Check if template already exists
-            if db.templates.iter().any(|t| t.name == name) {
+            if db.state.templates.iter().any(|t| t.name == name) {
                 eprintln!("Template '{}' already exists. Use a different name.", name);
                 std::process::exit(1);
             }
@@ -1114,7 +1114,7 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
                 status,
             };
             
-            db.templates.push(template);
+            db.state.templates.push(template);
             
             if let Err(e) = db.save(db_path) {
                 eprintln!("Failed to save database: {}", e);

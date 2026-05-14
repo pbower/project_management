@@ -233,7 +233,7 @@ mod tests {
 
     fn write_db(dir: &Path, name: &str, tasks: Vec<Task>) -> PathBuf {
         let p = dir.join(name);
-        let db = Database { tasks, templates: Vec::new(), state: State::fresh() };
+        let db = Database { tasks, state: State::fresh() };
         db.save(&p).unwrap();
         p
     }

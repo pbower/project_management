@@ -17,18 +17,17 @@ use serde::{Deserialize, Serialize};
 use crate::fields::*;
 use crate::store::id::{IdInput, LeafId, TypePrefix};
 use crate::store::state::State;
-use crate::task::{Task, TaskTemplate};
+use crate::task::Task;
 
 /// In-memory database for storing and managing tasks.
 ///
 /// The `state` field carries the per-type monotonic counters used by
-/// [`allocate_id`]. It also doubles as the source of truth for tombstones so
-/// reused numbers stay out of circulation.
+/// [`Database::allocate_id`], the tombstone set so reused numbers stay out of
+/// circulation, the on-disk path index for each ticket, and the named
+/// [`crate::task::TaskTemplate`] presets used by the template commands.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Database {
     pub tasks: Vec<Task>,
-    #[serde(default)]
-    pub templates: Vec<TaskTemplate>,
     #[serde(default)]
     pub state: State,
 }
