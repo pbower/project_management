@@ -24,9 +24,10 @@ use std::collections::HashMap;
 use chrono::Utc;
 
 use crate::{fields::*, tui::colors::{DARK_GREEN, DARK_PURPLE, DARK_RED, GOLD}};
-use crate::store::{IdInput, LeafId};
-use crate::store::locks::{self, LockFile};
+use crate::store::{IdInput, LeafId, MemoryRef};
+use crate::store::locks::{self, LockFile, LockMode, AcquireOutcome, DEFAULT_TTL_SECONDS};
 use crate::store::events;
+use crate::store::git;
 use crate::task::Task;
 use crate::{
     db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
@@ -84,6 +85,8 @@ pub struct App {
     help_open: bool,
     /// Vertical scroll offset for the help overlay.
     help_scroll: u16,
+    /// Whether the memory side-panel is showing for the selected ticket.
+    memory_panel_open: bool,
 }
 
 impl App {
@@ -119,6 +122,7 @@ impl App {
             pm_dir,
             help_open: false,
             help_scroll: 0,
+            memory_panel_open: false,
         };
         
         app.update_filtered_tasks();
@@ -297,6 +301,63 @@ impl App {
     /// Get a reference to the currently selected task.
     fn get_selected_task(&self) -> Option<&Task> {
         self.selected_task.and_then(|id| self.db.get(id))
+    }
+
+    /// The `LeafId` highlighted in the task table, if any.
+    fn selected_task_id(&self) -> Option<LeafId> {
+        self.task_list_state
+            .selected()
+            .and_then(|idx| self.filtered_tasks.get(idx))
+            .copied()
+    }
+
+    /// Checkout the highlighted ticket - acquire a soft lock and emit a
+    /// `checkout` event. Soft locks warn on overlap but still proceed.
+    fn do_checkout(&mut self) {
+        let Some(task_id) = self.selected_task_id() else {
+            self.set_status_message("No ticket selected".to_string());
+            return;
+        };
+        let base_commit = git::head_commit(&self.pm_dir).ok().flatten();
+        let lock = LockFile::new(task_id, None, DEFAULT_TTL_SECONDS, LockMode::Soft, base_commit);
+        match locks::acquire(&self.pm_dir, &lock, Utc::now()) {
+            Ok(AcquireOutcome::Acquired) => {
+                let _ = events::emit_event(&self.pm_dir, "checkout", Some(task_id), None);
+                self.set_status_message(format!("{task_id} checked out by {}", lock.agent));
+            }
+            Ok(AcquireOutcome::Overlapped { previous }) => {
+                let _ = events::emit_event(&self.pm_dir, "checkout", Some(task_id), None);
+                self.set_status_message(format!(
+                    "{task_id} checked out (soft lock; was held by {})",
+                    previous.agent
+                ));
+            }
+            Ok(AcquireOutcome::Blocked { holder }) => {
+                self.set_status_message(format!(
+                    "{task_id} is hard-locked by {}; cannot check out",
+                    holder.agent
+                ));
+            }
+            Err(e) => self.set_status_message(format!("checkout failed: {e}")),
+        }
+    }
+
+    /// Checkin the highlighted ticket - release its lock and emit a `checkin`
+    /// event. The git squash that `pm checkin` performs is left to the CLI
+    /// verb; the in-TUI path releases the lock and records the event.
+    fn do_checkin(&mut self) {
+        let Some(task_id) = self.selected_task_id() else {
+            self.set_status_message("No ticket selected".to_string());
+            return;
+        };
+        match locks::release(&self.pm_dir, task_id) {
+            Ok(true) => {
+                let _ = events::emit_event(&self.pm_dir, "checkin", Some(task_id), None);
+                self.set_status_message(format!("{task_id} checked in"));
+            }
+            Ok(false) => self.set_status_message(format!("{task_id} was not checked out")),
+            Err(e) => self.set_status_message(format!("checkin failed: {e}")),
+        }
     }
 
     /// Set a status message to display in the status bar.
@@ -516,13 +577,17 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('a') => {
+            // `n` opens the quick-entry form for a new child ticket. `a` is
+            // kept as an alias until commit 7b reassigns it to add-artifact.
+            KeyCode::Char('n') | KeyCode::Char('a') => {
                 self.task_form = TaskForm::new_with_context_and_pm_dir(&self.navigation_context, &self.pm_dir);
                 self.task_form.update_active_field();
                 self.push_state(AppState::AddTask, None);
                 self.input_mode = InputMode::Text;
             }
-            KeyCode::Char('e') => {
+            // `f` opens the quick-entry form on the selected ticket. `e` is
+            // kept as an alias until commit 7b reassigns it to $EDITOR.
+            KeyCode::Char('f') | KeyCode::Char('e') => {
                 if let Some(selected) = self.task_list_state.selected() {
                     if let Some(&task_id) = self.filtered_tasks.get(selected) {
                         if let Some(task) = self.db.get(task_id) {
@@ -534,6 +599,10 @@ impl App {
                         }
                     }
                 }
+            }
+            KeyCode::Char('i') => self.do_checkin(),
+            KeyCode::Char('m') => {
+                self.memory_panel_open = !self.memory_panel_open;
             }
             KeyCode::Char('d') => {
                 if let Some(selected) = self.task_list_state.selected() {
@@ -564,24 +633,9 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('c') => {
-                if let Some(selected) = self.task_list_state.selected() {
-                    if let Some(&task_id) = self.filtered_tasks.get(selected) {
-                        if let Some(task) = self.db.get_mut(task_id) {
-                            task.status = if task.status == Status::Done {
-                                Status::Open
-                            } else {
-                                Status::Done
-                            };
-                            if let Err(e) = self.save_db() {
-                                self.set_status_message(format!("Error saving: {}", e));
-                            } else {
-                                self.set_status_message("Task status updated".to_string());
-                            }
-                        }
-                    }
-                }
-            }
+            // `c` checks out the selected ticket (acquires a soft lock).
+            // Status toggling lives on `s`, which cycles through Done.
+            KeyCode::Char('c') => self.do_checkout(),
             KeyCode::Char('p') => {
                 if let Some(selected) = self.task_list_state.selected() {
                     if let Some(&task_id) = self.filtered_tasks.get(selected) {
@@ -2318,18 +2372,24 @@ impl App {
             .split(f.area());
 
         match self.mode {
-            Mode::Tickets => match self.state {
-                AppState::TaskList => self.render_task_list(f, chunks[0]),
-                AppState::TaskDetail => self.render_task_detail(f, chunks[0]),
-                AppState::AddTask => self.render_task_form(f, chunks[0], false),
-                AppState::EditTask => self.render_task_form(f, chunks[0], true),
-                AppState::UserStoryDialog => self.render_dialog(f, chunks[0], "User Story"),
-                AppState::RequirementsDialog => self.render_dialog(f, chunks[0], "Requirements"),
-                AppState::Confirm => {
-                    self.render_task_list(f, chunks[0]);
-                    self.render_confirm(f, chunks[0]);
+            Mode::Tickets => {
+                match self.state {
+                    AppState::TaskList => self.render_task_list(f, chunks[0]),
+                    AppState::TaskDetail => self.render_task_detail(f, chunks[0]),
+                    AppState::AddTask => self.render_task_form(f, chunks[0], false),
+                    AppState::EditTask => self.render_task_form(f, chunks[0], true),
+                    AppState::UserStoryDialog => self.render_dialog(f, chunks[0], "User Story"),
+                    AppState::RequirementsDialog => self.render_dialog(f, chunks[0], "Requirements"),
+                    AppState::Confirm => {
+                        self.render_task_list(f, chunks[0]);
+                        self.render_confirm(f, chunks[0]);
+                    }
                 }
-            },
+                // The memory side-panel overlays the right edge of the list.
+                if self.memory_panel_open && self.state == AppState::TaskList {
+                    self.render_memory_panel(f, chunks[0]);
+                }
+            }
             Mode::Documents => self.render_mode_stub(f, chunks[0], "Document Workspace", "Phase 8"),
             Mode::Activity => self.render_mode_stub(f, chunks[0], "Activity View", "Phase 9"),
         }
@@ -2374,6 +2434,41 @@ impl App {
         let widget = Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title("Activity"));
         f.render_widget(widget, area);
+    }
+
+    /// Render the memory side-panel over the right edge of the task list.
+    /// Lists the selected ticket's linked memories with their tier; full
+    /// memory content is a Mode 2 concern (Phase 8 / 10).
+    fn render_memory_panel(&mut self, f: &mut Frame, area: Rect) {
+        let width = (area.width / 3).max(20).min(area.width);
+        let panel = Rect {
+            x: area.x + area.width.saturating_sub(width),
+            y: area.y,
+            width,
+            height: area.height,
+        };
+        f.render_widget(Clear, panel);
+
+        let mut lines: Vec<Line> = Vec::new();
+        match self.get_selected_task() {
+            Some(task) if !task.memories.is_empty() => {
+                for memory in &task.memories {
+                    let (tier, name) = match memory {
+                        MemoryRef::User(name) => ("user", name),
+                        MemoryRef::Project(name) => ("project", name),
+                        MemoryRef::Ticket(name) => ("ticket", name),
+                    };
+                    lines.push(Line::from(format!("  @{name}  [{tier}]")));
+                }
+            }
+            Some(_) => lines.push(Line::from("  (no linked memories)")),
+            None => lines.push(Line::from("  (no ticket selected)")),
+        }
+
+        let widget = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title("Memories  (m to close)"))
+            .wrap(Wrap { trim: false });
+        f.render_widget(widget, panel);
     }
 
     /// Placeholder screen for Modes 2 and 3 until Phases 8 and 9 build them
