@@ -211,6 +211,7 @@ fn main() {
         // Phase 6: lock protocol + activity feed
         Commands::Checkout { id, intent } => cmd_checkout(&pm_dir, &id, intent.as_deref()),
         Commands::Checkin { id, summary, granular } => cmd_checkin(&pm_dir, &id, summary.as_deref(), granular),
+        Commands::Heartbeat { id } => cmd_heartbeat(&pm_dir, &id),
         Commands::Next { agent, filter } => cmd_next(&pm_dir, agent.as_deref(), filter.as_deref()),
         Commands::Locks => cmd_locks(&pm_dir),
 

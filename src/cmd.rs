@@ -420,6 +420,12 @@ pub enum Commands {
         granular: bool,
     },
 
+    /// (Phase 6) Refresh the heartbeat on a held lock so it does not go stale.
+    Heartbeat {
+        /// Ticket id.
+        id: String,
+    },
+
     /// (Phase 6) Return the next ready task for an agent.
     Next {
         /// Acting agent name (defaults to `PM_AGENT_ID`).
@@ -3137,8 +3143,115 @@ pub fn cmd_checkin(pm_dir: &Path, id: &str, summary: Option<&str>, granular: boo
     println!("checkin: {leaf} released.");
 }
 
-pub fn cmd_next(_pm_dir: &Path, _agent: Option<&str>, _filter: Option<&str>) { cmd_deferred("next", "Phase 6"); }
-pub fn cmd_locks(_pm_dir: &Path) { cmd_deferred("locks", "Phase 6"); }
+/// `pm heartbeat <id>`: refresh the heartbeat on a held lock so it does not
+/// go stale. Intended to be called periodically by a lock holder - a TUI or
+/// an agent loop. It only touches the lock file; it neither commits nor emits
+/// an event, since heartbeats are high-frequency and that would be noise.
+pub fn cmd_heartbeat(pm_dir: &Path, id: &str) {
+    use crate::store::locks;
+
+    let db = Database::load(pm_dir);
+    let leaf = match resolve_v2_id(id, &db) {
+        Some(l) => l,
+        None => {
+            eprintln!("heartbeat: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    match locks::refresh_heartbeat(pm_dir, leaf, Utc::now()) {
+        Ok(true) => println!("heartbeat: {leaf} refreshed."),
+        Ok(false) => {
+            eprintln!("heartbeat: no active lock on {leaf}.");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("heartbeat: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `pm locks`: reap any stale locks, then list the live ones. A lock is stale
+/// once its heartbeat is older than its TTL window.
+pub fn cmd_locks(pm_dir: &Path) {
+    use crate::store::locks;
+
+    let now = Utc::now();
+    match locks::reap_stale(pm_dir, now) {
+        Ok(reaped) => {
+            for id in &reaped {
+                println!("locks: reaped stale lock on {id}");
+                emit_or_warn(pm_dir, "lock-reaped", Some(*id), None);
+            }
+        }
+        Err(e) => {
+            eprintln!("locks: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    let live = match locks::list(pm_dir) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("locks: {e}");
+            std::process::exit(1);
+        }
+    };
+    if live.is_empty() {
+        println!("locks: no active locks.");
+        return;
+    }
+    for lock in live {
+        let started = lock.started_at.format("%Y-%m-%d %H:%M:%S");
+        let intent = lock.intent.as_deref().unwrap_or("");
+        println!("{}  {}  since {started}  {intent}", lock.id, lock.agent);
+    }
+}
+
+/// `pm next [--agent ...]`: print the first ready work item - a Task or
+/// Subtask that is open, has every dependency done, and carries no live lock.
+/// Container kinds (Project/Product/Epic) and Milestones are not work an
+/// agent picks up, so they are excluded. Stale locks are reaped first so a
+/// dead hold does not hide a ready ticket. Ties break on the lowest id for a
+/// deterministic answer.
+pub fn cmd_next(pm_dir: &Path, agent: Option<&str>, _filter: Option<&str>) {
+    use crate::store::locks;
+    use std::collections::HashSet;
+
+    let db = Database::load(pm_dir);
+    let now = Utc::now();
+    // Reap stale locks so a dead hold does not mask a ready ticket.
+    let _ = locks::reap_stale(pm_dir, now);
+    let locked: HashSet<crate::store::LeafId> = locks::list(pm_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| l.id)
+        .collect();
+
+    let done: HashSet<crate::store::LeafId> = db
+        .tasks
+        .iter()
+        .filter(|t| t.status == Status::Done)
+        .map(|t| t.id)
+        .collect();
+
+    let mut ready: Vec<&Task> = db
+        .tasks
+        .iter()
+        .filter(|t| matches!(t.kind, Kind::Task | Kind::Subtask))
+        .filter(|t| t.status == Status::Open)
+        .filter(|t| !locked.contains(&t.id))
+        .filter(|t| t.deps.iter().all(|d| done.contains(d)))
+        .collect();
+    ready.sort_by_key(|t| t.id);
+
+    let who = agent.map(|s| s.to_string()).unwrap_or_else(crate::store::events::actor);
+    match ready.first() {
+        Some(t) => println!("next ({who}): {}  {}  [{}]", t.id, t.title, format_kind(t.kind)),
+        None => println!("next ({who}): no ready tickets."),
+    }
+}
+
 pub fn cmd_tv(_pm_dir: &Path) { cmd_deferred("tv", "Phase 9"); }
 /// `pm log <id>`: print the git history filtered to commits that touched the
 /// ticket's directory. Shells out to `git log -- <ticket-path>`, which does
