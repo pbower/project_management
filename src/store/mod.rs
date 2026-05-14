@@ -20,6 +20,7 @@ pub mod claude_md;
 pub mod artifacts;
 pub mod watcher;
 pub mod task_bridge;
+pub mod git;
 
 pub use id::{TypePrefix, LeafId, AddressId, IdInput, IdParseError};
 pub use state::{State, ItemEntry, StateError};
@@ -40,4 +41,5 @@ pub use task_bridge::{
     task_to_document, task_from_document, project_ancestor,
     SECTION_DESCRIPTION, SECTION_REQUIREMENTS, SECTION_SUMMARY, SECTION_USER_STORY,
 };
+pub use git::{commit_workspace, ensure_repo, subject as commit_subject, GitError, GitResult};
 

@@ -702,11 +702,13 @@ pub fn cmd_add(
         created_at_utc: now_utc,
         updated_at_utc: now_utc,
     };
+    let title_for_msg = task.title.clone();
     db.tasks.push(task);
     if let Err(e) = db.save(db_path) {
         eprintln!("Failed to save DB: {e}");
         std::process::exit(1);
     }
+    commit_or_warn(db_path, &commit_subject_for(id, "add", Some(&title_for_msg)));
     println!("Added task {}", id);
 }
 
@@ -1048,6 +1050,7 @@ pub fn cmd_update(
         eprintln!("Failed to save DB: {e}");
         std::process::exit(1);
     }
+    commit_or_warn(db_path, &commit_subject_for(task_id, "update", None));
     println!("Updated task {}", task_id);
 }
 
@@ -1121,6 +1124,7 @@ pub fn cmd_complete(
             }
         }
     }
+    let completed = to_mark.clone();
     for tid in to_mark {
         if let Some(t) = db.get_mut(tid) {
             t.status = Status::Done;
@@ -1131,6 +1135,13 @@ pub fn cmd_complete(
         eprintln!("Failed to save DB: {e}");
         std::process::exit(1);
     }
+    let summary = if completed.len() == 1 {
+        let only = *completed.iter().next().expect("len checked");
+        commit_subject_for(only, "complete", None)
+    } else {
+        format!("pm: complete batch ({} tickets)", completed.len())
+    };
+    commit_or_warn(db_path, &summary);
     println!("Marked done.");
 }
 
@@ -1154,6 +1165,7 @@ pub fn cmd_reopen(db: &mut Database, db_path: &Path, id: String) {
         eprintln!("Failed to save DB: {e}");
         std::process::exit(1);
     }
+    commit_or_warn(db_path, &commit_subject_for(task_id, "reopen", None));
     println!("Reopened {}", task_id);
 }
 
@@ -1233,11 +1245,18 @@ pub fn cmd_delete(
     }
     
     let ids = to_delete;
+    let count = ids.len();
+    let first = ids.iter().next().copied();
     db.remove_ids(&ids);
     if let Err(e) = db.save(db_path) {
         eprintln!("Failed to save DB: {e}");
         std::process::exit(1);
     }
+    let summary = match (count, first) {
+        (1, Some(id)) => commit_subject_for(id, "delete", None),
+        (n, _) => format!("pm: delete batch ({n} tickets)"),
+    };
+    commit_or_warn(db_path, &summary);
     println!("Deleted.");
 }
 
@@ -1493,6 +1512,10 @@ pub fn cmd_template_apply(db: &mut Database, pm_dir: &Path, id: &str) {
         eprintln!("template apply: write failed: {e}");
         std::process::exit(1);
     }
+    commit_or_warn(
+        pm_dir,
+        &commit_subject_for(leaf, "template apply", Some(templates::template_stem(leaf.prefix()))),
+    );
     println!("Applied {} template to {leaf}", templates::template_stem(leaf.prefix()));
 }
 
@@ -2091,17 +2114,42 @@ fn cmd_deferred(verb: &str, phase: &str) {
     std::process::exit(0);
 }
 
-/// `pm init`: scaffold a `.pm/` workspace in the current directory.
+/// `pm init`: scaffold a `.pm/` workspace in the current directory and ensure
+/// a git repository encloses it. If `pm_dir` is already inside an existing
+/// repo, that repo is reused; otherwise a fresh repo is initialised at
+/// `pm_dir`. An initial commit (`pm: init`) records the scaffold so
+/// subsequent state-mutating commits have a parent.
 pub fn cmd_init(pm_dir: &Path) {
     use crate::store::layout::Layout;
     let layout = Layout::at(pm_dir);
-    match layout.init() {
-        Ok(()) => println!("Initialised .pm/ workspace at {}", pm_dir.display()),
-        Err(e) => {
-            eprintln!("init failed: {e}");
-            std::process::exit(1);
-        }
+    if let Err(e) = layout.init() {
+        eprintln!("init failed: {e}");
+        std::process::exit(1);
     }
+
+    if let Err(e) = crate::store::git::ensure_repo(pm_dir) {
+        eprintln!("init: git repository setup failed: {e}");
+        std::process::exit(1);
+    }
+    commit_or_warn(pm_dir, "pm: init");
+
+    println!("Initialised .pm/ workspace at {}", pm_dir.display());
+}
+
+/// Commit any staged workspace changes under `pm_dir` with `message`. Logs a
+/// warning on failure rather than aborting, since the on-disk state is
+/// already saved and a failed commit should not propagate as a CLI error.
+fn commit_or_warn(pm_dir: &Path, message: &str) {
+    if let Err(e) = crate::store::git::commit_workspace(pm_dir, message) {
+        eprintln!("warning: git commit failed: {e}");
+    }
+}
+
+/// Build a commit subject for a ticket mutation. Wraps
+/// [`crate::store::git::subject`] so handlers only need the verb and optional
+/// summary.
+fn commit_subject_for(leaf: crate::store::LeafId, verb: &str, summary: Option<&str>) -> String {
+    crate::store::git::subject(&leaf, verb, summary)
 }
 
 /// `pm show <id>`: print front-matter and section names for a ticket.
@@ -2259,8 +2307,14 @@ pub fn cmd_move(
         }
     }
 
-    println!("Moved {leaf} -> {}",
-        target_parent.map(|p| p.to_string()).unwrap_or_else(|| "(orphan)".into()));
+    let dest_label = target_parent
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "(orphan)".into());
+    commit_or_warn(
+        pm_dir,
+        &commit_subject_for(leaf, "move", Some(&format!("-> {dest_label}"))),
+    );
+    println!("Moved {leaf} -> {dest_label}");
 
     // Suppress unused-import warning on `AddressId` if no other site brings it.
     let _ = std::marker::PhantomData::<AddressId>;
@@ -2506,6 +2560,10 @@ pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
                     let _ = idx.save(&index_path);
                 }
             }
+            commit_or_warn(
+                pm_dir,
+                &commit_subject_for(leaf, "artifact add", Some(&file_name.to_string_lossy())),
+            );
             println!("Added artifact {} to {leaf}", file_name.to_string_lossy());
         }
         ArtifactAction::Rename { id, old, new } => {
@@ -2514,6 +2572,10 @@ pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
                 eprintln!("artifact rename: {e}");
                 std::process::exit(1);
             }
+            commit_or_warn(
+                pm_dir,
+                &commit_subject_for(leaf, "artifact rename", Some(&format!("{old} -> {new}"))),
+            );
             println!("Renamed {old} -> {new} on {leaf}");
         }
         ArtifactAction::List { id } => {
@@ -2536,9 +2598,24 @@ pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
     }
 }
 
-/// Mutate a ticket's front-matter in memory and persist via Database::save.
-/// Returns the resolved leaf id for callers that want to log the result.
+/// Mutate a ticket's front-matter in memory, persist via Database::save, and
+/// record a structured commit. The `label` doubles as both the user-facing
+/// status message and the verb in the commit subject.
 fn mutate_task<F>(db: &mut Database, pm_dir: &Path, id: &str, label: &str, f: F)
+where
+    F: FnOnce(&mut Task),
+{
+    mutate_task_with_summary(db, pm_dir, id, label, None, f)
+}
+
+fn mutate_task_with_summary<F>(
+    db: &mut Database,
+    pm_dir: &Path,
+    id: &str,
+    label: &str,
+    summary: Option<&str>,
+    f: F,
+)
 where
     F: FnOnce(&mut Task),
 {
@@ -2557,6 +2634,7 @@ where
         eprintln!("{label}: save failed: {e}");
         std::process::exit(1);
     }
+    commit_or_warn(pm_dir, &commit_subject_for(leaf, label, summary));
     println!("{label}: {leaf} updated.");
 }
 
@@ -2753,6 +2831,13 @@ fn run_doctor_rebuild(pm_dir: &Path) {
         std::process::exit(1);
     }
 
+    if added > 0 || !removed_paths.is_empty() {
+        commit_or_warn(
+            pm_dir,
+            &format!("pm: doctor rebuild (+{added}/-{} entries)", removed_paths.len()),
+        );
+    }
+
     println!("doctor: scanned {found} tickets at {}", layout.root.display());
     if added > 0 {
         println!("  added {added} entries to state.json");
@@ -2934,7 +3019,130 @@ pub fn cmd_checkin(_pm_dir: &Path, _id: &str, _summary: Option<&str>) { cmd_defe
 pub fn cmd_next(_pm_dir: &Path, _agent: Option<&str>, _filter: Option<&str>) { cmd_deferred("next", "Phase 6"); }
 pub fn cmd_locks(_pm_dir: &Path) { cmd_deferred("locks", "Phase 6"); }
 pub fn cmd_tv(_pm_dir: &Path) { cmd_deferred("tv", "Phase 9"); }
-pub fn cmd_log(_pm_dir: &Path, _id: &str) { cmd_deferred("log", "Phase 5"); }
+/// `pm log <id>`: print the git log filtered to commits that touched the
+/// ticket's directory. Walks HEAD's ancestry, diffing each commit against its
+/// parent and keeping commits whose diff intersects the ticket's path slice.
+pub fn cmd_log(pm_dir: &Path, id: &str) {
+    use git2::{DiffOptions, Pathspec};
+
+    let db = Database::load(pm_dir);
+    let leaf = match resolve_v2_id(id, db_ref(&db), ).or_else(|| {
+        // Allow logging tickets that exist in state.json even when Database::load
+        // could not reconstruct them (e.g. a missing CLAUDE.md). Fall back to the
+        // raw IdInput so the user still sees history for a half-broken ticket.
+        id.parse::<crate::store::IdInput>().ok().map(|p| p.leaf())
+    }) {
+        Some(l) => l,
+        None => {
+            eprintln!("log: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+
+    let layout = crate::store::layout::Layout::at(pm_dir);
+    let state = crate::store::state::State::load(&layout.state_path()).unwrap_or_default();
+    let Some(entry) = state.items.get(&leaf) else {
+        eprintln!("log: state.json has no path for {leaf}; run `pm doctor`.");
+        std::process::exit(1);
+    };
+
+    let repo = match crate::store::git::ensure_repo(pm_dir) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("log: could not open git repository: {e}");
+            std::process::exit(1);
+        }
+    };
+    let workdir = repo.workdir().expect("non-bare repo");
+    let workdir_canonical = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+    let pm_canonical = std::fs::canonicalize(pm_dir).unwrap_or_else(|_| pm_dir.to_path_buf());
+    let ticket_path_in_repo = match pm_canonical
+        .join(&entry.path)
+        .strip_prefix(&workdir_canonical)
+    {
+        Ok(p) => p.to_path_buf(),
+        Err(_) => {
+            eprintln!("log: workspace lies outside repository workdir.");
+            std::process::exit(1);
+        }
+    };
+    let pathspec_str = ticket_path_in_repo.to_string_lossy().into_owned();
+    let mut diff_opts = DiffOptions::new();
+    diff_opts.pathspec(&pathspec_str);
+    let pathspec = Pathspec::new(std::iter::once(pathspec_str.as_str())).expect("valid pathspec");
+
+    let mut revwalk = repo.revwalk().expect("revwalk");
+    revwalk.push_head().ok();
+    revwalk.set_sorting(git2::Sort::TIME).ok();
+
+    let mut printed = 0usize;
+    for oid in revwalk.flatten() {
+        let commit = match repo.find_commit(oid) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if !commit_touches_path(&repo, &commit, &pathspec) {
+            continue;
+        }
+        let summary = commit.summary().unwrap_or("");
+        let ts = commit.time().seconds();
+        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(ts, 0)
+            .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "?".into());
+        println!("{}  {dt}  {}", &oid.to_string()[..8], summary);
+        printed += 1;
+    }
+    if printed == 0 {
+        println!("(no commits touch {leaf} - check `pm doctor` if you expect history.)");
+    }
+}
+
+/// Borrow helper so the deferred id resolution can fall back when Database::load
+/// returns an empty set.
+fn db_ref(db: &Database) -> &Database { db }
+
+/// True if `commit` (compared against its first parent) modifies any path
+/// matching `pathspec`. Root commits use an empty tree as the parent so the
+/// initial state is treated as added.
+fn commit_touches_path(repo: &git2::Repository, commit: &git2::Commit, pathspec: &git2::Pathspec) -> bool {
+    let tree = match commit.tree() {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let parent_tree = if commit.parent_count() == 0 {
+        None
+    } else {
+        commit.parent(0).ok().and_then(|p| p.tree().ok())
+    };
+    let diff = repo
+        .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+        .ok();
+    let Some(diff) = diff else { return false; };
+    let mut hit = false;
+    diff.foreach(
+        &mut |delta, _| {
+            let matched_old = delta
+                .old_file()
+                .path()
+                .map(|p| pathspec.matches_path(p, git2::PathspecFlags::DEFAULT))
+                .unwrap_or(false);
+            let matched_new = delta
+                .new_file()
+                .path()
+                .map(|p| pathspec.matches_path(p, git2::PathspecFlags::DEFAULT))
+                .unwrap_or(false);
+            if matched_old || matched_new {
+                hit = true;
+            }
+            true
+        },
+        None,
+        None,
+        None,
+    )
+    .ok();
+    hit
+}
 pub fn cmd_memory(_db: &mut Database, _pm_dir: &Path, action: MemoryAction) {
     let verb = match action {
         MemoryAction::Link { .. } => "memory link",
