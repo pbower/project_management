@@ -270,7 +270,7 @@ pub fn format_kind(k: Kind) -> &'static str {
 
 /// Map the data-layer [`Kind`] to its v2 [`TypePrefix`]. Used wherever a Task
 /// needs to be turned into an addressed v2 ticket (id allocation, on-disk
-/// directory naming, the future Task <-> Document bridge).
+/// directory naming, the Task <-> Document bridge).
 pub fn kind_to_prefix(k: Kind) -> TypePrefix {
     match k {
         Kind::Project => TypePrefix::Project,
@@ -279,6 +279,19 @@ pub fn kind_to_prefix(k: Kind) -> TypePrefix {
         Kind::Task => TypePrefix::Task,
         Kind::Subtask => TypePrefix::Subtask,
         Kind::Milestone => TypePrefix::Milestone,
+    }
+}
+
+/// Inverse of [`kind_to_prefix`]. A `TypePrefix` carries the canonical kind of
+/// its `LeafId`, so the bridge can recover the data-layer `Kind` on read.
+pub fn prefix_to_kind(p: TypePrefix) -> Kind {
+    match p {
+        TypePrefix::Project => Kind::Project,
+        TypePrefix::Product => Kind::Product,
+        TypePrefix::Epic => Kind::Epic,
+        TypePrefix::Task => Kind::Task,
+        TypePrefix::Subtask => Kind::Subtask,
+        TypePrefix::Milestone => Kind::Milestone,
     }
 }
 
