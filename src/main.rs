@@ -68,21 +68,23 @@
 //! Data is stored locally in `~/.pm/` with each project as a separate JSON file.
 //! We recommend you source control this folder via `git init` and back it up periodically.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::Parser;
 
 use project_management::cli::Cli;
 use project_management::cmd::*;
 use project_management::db::*;
-use project_management::project::*;
 
 fn main() {
     let cli = Cli::parse();
 
-    // Determine PM directory
+    // Resolve the .pm/ workspace. The --db flag now points at the workspace
+    // directory itself; in v2 the storage is the `.pm/` tree, not a single
+    // JSON file. With no flag, default to `~/.pm/` so existing global-scope
+    // installations keep working.
     let pm_dir = if let Some(db_path) = cli.db.as_ref() {
-        db_path.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf()
+        db_path.clone()
     } else {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         let pm_dir = PathBuf::from(home).join(".pm");
@@ -93,7 +95,7 @@ fn main() {
         pm_dir
     };
 
-    // Handle commands that don't need a specific project first
+    // Handle commands that don't need a loaded Database.
     match &cli.command {
         Commands::Menu => {
             cmd_menu(&pm_dir);
@@ -110,70 +112,22 @@ fn main() {
         _ => {}
     }
 
-    // Handle UI and Workflow commands specially to support recent project logic
+    // UI and Workflow open the workspace directly. The legacy
+    // pick-a-project-file flow collapses into "open the workspace"; project
+    // selection happens inside the TUI now via PRJ tickets.
     match &cli.command {
         Commands::Ui => {
-            // For UI command, try to open most recent project or fall back to menu
-            if cli.db.is_some() {
-                // If user specified --db, use that specific project
-                let db_path = cli.db.unwrap();
-                cmd_ui(&db_path);
-            } else {
-                // Auto-select most recent project or show menu
-                match get_most_recent_project(&pm_dir) {
-                    Ok(Some(project)) => {
-                        println!("Opening recent project: {}", project.display_name);
-                        cmd_ui(&project.file_path);
-                    },
-                    _ => {
-                        // No recent projects found, show menu
-                        cmd_menu(&pm_dir);
-                    }
-                }
-            }
+            cmd_ui(&pm_dir);
             return;
         },
         Commands::Wf => {
-            // For Workflow command, show workflow selection menu
-            if cli.db.is_some() {
-                // If user specified --db, use that specific project
-                let db_path = cli.db.unwrap();
-                cmd_wf(&db_path);
-            } else {
-                // Show workflow project selection menu
-                cmd_workflow_menu(&pm_dir);
-            }
+            cmd_wf(&pm_dir);
             return;
         },
         _ => {}
     }
 
-    // For all other commands, determine the database file to use
-    let db_path = cli.db.unwrap_or_else(|| {
-        // Check if there's a legacy tasks.json file
-        let legacy_path = pm_dir.join("tasks.json");
-        if legacy_path.exists() {
-            legacy_path
-        } else {
-            // Try to find any project file, or default to a default project
-            match discover_projects(&pm_dir) {
-                Ok(projects) if !projects.is_empty() => {
-                    projects[0].file_path.clone()
-                },
-                _ => {
-                    // Create a default project
-                    let default_project = Project::new("Default", &pm_dir);
-                    if let Err(e) = default_project.create_if_not_exists() {
-                        eprintln!("Failed to create default project: {}", e);
-                        std::process::exit(1);
-                    }
-                    default_project.file_path
-                }
-            }
-        }
-    });
-
-    let mut db = Database::load(&db_path);
+    let mut db = Database::load(&pm_dir);
 
     match cli.command {
         Commands::Ui => unreachable!("UI command handled above"),
@@ -182,7 +136,7 @@ fn main() {
             title, template, desc, tags, due, parent, kind, priority_level,
             urgency, process_stage, issue_link, pr_link, summary, user_story,
             requirements, artifacts, status,
-        } => cmd_add(&mut db, &db_path, title, template, desc, tags, due, parent,
+        } => cmd_add(&mut db, &pm_dir, title, template, desc, tags, due, parent,
                      kind, priority_level, urgency, process_stage, issue_link,
                      pr_link, summary, user_story, requirements, artifacts, status),
 
@@ -193,16 +147,16 @@ fn main() {
 
         Commands::Update { id, title, desc, due, parent, kind, status,
                           add_tags, rm_tags, clear_due, clear_parent } =>
-            cmd_update(&mut db, &db_path, id, title, desc, due, parent, kind,
+            cmd_update(&mut db, &pm_dir, id, title, desc, due, parent, kind,
                       status, add_tags, rm_tags, clear_due, clear_parent),
 
         Commands::Complete { id, recurse, tag, project, status } =>
-            cmd_complete(&mut db, &db_path, id, recurse, tag, project, status),
+            cmd_complete(&mut db, &pm_dir, id, recurse, tag, project, status),
 
-        Commands::Reopen { id } => cmd_reopen(&mut db, &db_path, id),
+        Commands::Reopen { id } => cmd_reopen(&mut db, &pm_dir, id),
 
         Commands::Delete { id, cascade, tag, project, status } =>
-            cmd_delete(&mut db, &db_path, id, cascade, tag, project, status),
+            cmd_delete(&mut db, &pm_dir, id, cascade, tag, project, status),
 
         Commands::Projects => cmd_projects(&db),
 
@@ -210,7 +164,7 @@ fn main() {
 
         Commands::Completions { shell } => cmd_completions(shell),
 
-        Commands::Template { action } => cmd_template(&mut db, &db_path, action),
+        Commands::Template { action } => cmd_template(&mut db, &pm_dir, action),
 
         Commands::Export { output, all, all_projects, project, tag } => {
             // all_projects: true case is handled earlier, this handles all_projects: false
@@ -219,11 +173,48 @@ fn main() {
         },
 
         Commands::Import { input, no_backup } =>
-            cmd_import(&mut db, &db_path, input, no_backup),
+            cmd_import(&mut db, &pm_dir, input, no_backup),
 
         Commands::Backup { all } =>
-            cmd_backup(&db_path, all),
+            cmd_backup(&pm_dir, all),
 
-        Commands::Menu => cmd_menu(&db_path.parent().unwrap_or_else(|| Path::new("."))),
+        Commands::Menu => cmd_menu(&pm_dir),
+
+        // v2 lifecycle
+        Commands::Init => cmd_init(&pm_dir),
+        Commands::Show { id } => cmd_show(&db, &id),
+        Commands::Move { id, new_parent, orphan } => {
+            cmd_move(&mut db, &pm_dir, &id, new_parent.as_deref(), orphan);
+        },
+
+        // v2 content
+        Commands::Edit { id, section } => cmd_edit(&pm_dir, &id, section.as_deref()),
+        Commands::Context { id, no_memories } => cmd_context(&db, &pm_dir, &id, !no_memories),
+        Commands::Materialise { id, output } => cmd_materialise(&db, &pm_dir, &id, output),
+        Commands::Artifact { action } => cmd_artifact(&db, &pm_dir, action),
+
+        // v2 metadata
+        Commands::SetStatus { id, new_status } => cmd_set_status(&mut db, &pm_dir, &id, new_status),
+        Commands::Priority { id, new_priority } => cmd_priority(&mut db, &pm_dir, &id, new_priority),
+        Commands::Due { id, when } => cmd_due(&mut db, &pm_dir, &id, &when),
+        Commands::Dep { id, op, dep_id } => cmd_dep(&mut db, &pm_dir, &id, &op, &dep_id),
+        Commands::Tag { id, ops } => cmd_tag(&mut db, &pm_dir, &id, &ops),
+        Commands::Link { id, key, url } => cmd_link(&mut db, &pm_dir, &id, &key, &url),
+        Commands::Milestone { id, milestone_id } => {
+            cmd_milestone(&mut db, &pm_dir, &id, &milestone_id);
+        },
+
+        // v2 views / maintenance
+        Commands::Doctor { migrate } => cmd_doctor(&pm_dir, migrate),
+        Commands::Search { query } => cmd_search(&pm_dir, &query),
+
+        // Deferred to later phases
+        Commands::Checkout { id, intent } => cmd_checkout(&pm_dir, &id, intent.as_deref()),
+        Commands::Checkin { id, summary } => cmd_checkin(&pm_dir, &id, summary.as_deref()),
+        Commands::Next { agent, filter } => cmd_next(&pm_dir, agent.as_deref(), filter.as_deref()),
+        Commands::Locks => cmd_locks(&pm_dir),
+        Commands::Tv => cmd_tv(&pm_dir),
+        Commands::Log { id } => cmd_log(&pm_dir, &id),
+        Commands::Memory { action } => cmd_memory(&mut db, &pm_dir, action),
     }
 }

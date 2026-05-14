@@ -212,6 +212,8 @@ mod tests {
             user_story: None,
             requirements: None,
             tags: Vec::new(),
+            deps: Vec::new(),
+            milestone: None,
             due: None,
             parent,
             kind,
@@ -233,7 +235,7 @@ mod tests {
 
     fn write_db(dir: &Path, name: &str, tasks: Vec<Task>) -> PathBuf {
         let p = dir.join(name);
-        let db = Database { tasks, templates: Vec::new(), state: State::fresh() };
+        let db = Database { tasks, state: State::fresh() };
         db.save(&p).unwrap();
         p
     }

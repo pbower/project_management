@@ -7,7 +7,7 @@
 use clap::Subcommand;
 use clap_complete::{generate, Shell};
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
@@ -255,6 +255,272 @@ pub enum Commands {
 
     /// Open project main menu (interactive mode).
     Menu,
+
+    // ----- v2 lifecycle verbs -----
+
+    /// Initialise a `.pm/` workspace in the current directory.
+    Init,
+
+    /// Show a ticket's front-matter and CLAUDE.md sections.
+    Show {
+        /// Ticket id (e.g. `TSK7`, `PRJ1-PRD3-EPC7-TSK22`).
+        id: String,
+    },
+
+    /// Move a ticket under a different parent.
+    #[command(name = "move")]
+    Move {
+        /// Ticket id to move.
+        id: String,
+        /// New parent id; pass `--orphan` to clear the parent.
+        new_parent: Option<String>,
+        /// Promote the ticket to orphan-scope (no parent).
+        #[arg(long)]
+        orphan: bool,
+    },
+
+    // ----- v2 content verbs -----
+
+    /// Open a ticket's CLAUDE.md in `$EDITOR`.
+    Edit {
+        /// Ticket id.
+        id: String,
+        /// Position the cursor at this section heading (e.g. `--section "User Story"`).
+        #[arg(long)]
+        section: Option<String>,
+    },
+
+    /// Print the composed CLAUDE.md chain for a ticket.
+    Context {
+        /// Ticket id.
+        id: String,
+        /// Suppress the linked memories section.
+        #[arg(long)]
+        no_memories: bool,
+    },
+
+    /// Write a composed view to disk next to the ticket.
+    Materialise {
+        /// Ticket id.
+        id: String,
+        /// Output file path. Defaults to `<ticket-dir>/COMPOSED.md`.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Artifact directory management.
+    Artifact {
+        #[command(subcommand)]
+        action: ArtifactAction,
+    },
+
+    // ----- v2 metadata verbs -----
+
+    /// Set a ticket's status.
+    SetStatus {
+        /// Ticket id.
+        id: String,
+        /// New status.
+        #[arg(value_enum)]
+        new_status: Status,
+    },
+
+    /// Set a ticket's priority.
+    Priority {
+        /// Ticket id.
+        id: String,
+        /// New priority.
+        #[arg(value_enum)]
+        new_priority: Priority,
+    },
+
+    /// Set a ticket's due date.
+    Due {
+        /// Ticket id.
+        id: String,
+        /// Due date in any form `parse_due_input` accepts (e.g. `"next friday"`).
+        when: String,
+    },
+
+    /// Manage a ticket's dependencies.
+    Dep {
+        /// Ticket id.
+        id: String,
+        /// Operation: `needs` or `remove`.
+        op: String,
+        /// Dependency id (the ticket the operation targets).
+        dep_id: String,
+    },
+
+    /// Add or remove tags on a ticket.
+    Tag {
+        /// Ticket id.
+        id: String,
+        /// Tag ops in the form `+foo` to add, `-bar` to remove. Values may
+        /// start with `-` because clap is told these are not flags.
+        #[arg(allow_hyphen_values = true)]
+        ops: Vec<String>,
+    },
+
+    /// Set a key in a ticket's `links:` map.
+    Link {
+        /// Ticket id.
+        id: String,
+        /// Link key (e.g. `github_issue`).
+        key: String,
+        /// Link value (URL or `owner/repo#issue`).
+        url: String,
+    },
+
+    /// Attach a ticket to a milestone.
+    Milestone {
+        /// Ticket id.
+        id: String,
+        /// Milestone id (`MLSn`).
+        milestone_id: String,
+    },
+
+    // ----- v2 views and maintenance -----
+
+    /// Rebuild state.json from the on-disk tree. Pass `--migrate` to import a
+    /// legacy `tasks.json` archive into the workspace via the bridge.
+    Doctor {
+        /// Run the legacy `tasks.json` migration into the current workspace.
+        #[arg(long)]
+        migrate: bool,
+    },
+
+    /// Search CLAUDE.md content across the workspace.
+    Search {
+        /// Substring or regex pattern.
+        query: String,
+    },
+
+    // ----- v2 verbs deferred to later phases -----
+
+    /// (Phase 6) Acquire a soft lock on a ticket.
+    Checkout {
+        /// Ticket id.
+        id: String,
+        /// Optional intent string recorded on the lock.
+        #[arg(long)]
+        intent: Option<String>,
+    },
+
+    /// (Phase 6) Release a lock and commit work in progress.
+    Checkin {
+        /// Ticket id.
+        id: String,
+        /// Summary written to the activity feed.
+        #[arg(long)]
+        summary: Option<String>,
+    },
+
+    /// (Phase 6) Return the next ready task for an agent.
+    Next {
+        /// Acting agent name (defaults to `PM_AGENT_ID`).
+        #[arg(long)]
+        agent: Option<String>,
+        /// Filter expression.
+        #[arg(long)]
+        filter: Option<String>,
+    },
+
+    /// (Phase 6) List active locks.
+    Locks,
+
+    /// (Phase 9) Open the full-screen activity feed.
+    Tv,
+
+    /// (Phase 5) Filter git log to the ticket's slice of the tree.
+    Log {
+        /// Ticket id.
+        id: String,
+    },
+
+    /// (Phase 10) Memory tier management.
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ArtifactAction {
+    /// Drop a file into a ticket's `artifacts/` directory and sweep.
+    Add {
+        /// Ticket id.
+        id: String,
+        /// Path to the file to add.
+        path: PathBuf,
+        /// Description for the artifact entry.
+        #[arg(long)]
+        desc: Option<String>,
+    },
+    /// Rename an artifact, preserving its description.
+    Rename {
+        /// Ticket id.
+        id: String,
+        /// Existing filename.
+        old: String,
+        /// New filename.
+        new: String,
+    },
+    /// List artifacts for a ticket.
+    List {
+        /// Ticket id.
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MemoryAction {
+    /// Link a memory to a ticket.
+    Link {
+        /// Ticket id.
+        id: String,
+        /// Memory name.
+        name: String,
+    },
+    /// Unlink a memory from a ticket.
+    Unlink {
+        /// Ticket id.
+        id: String,
+        /// Memory name.
+        name: String,
+    },
+    /// List memories linked to a ticket.
+    List {
+        /// Ticket id.
+        id: String,
+    },
+    /// Write a memory at the given scope.
+    Write {
+        /// Scope: `user`, `project`, or `ticket`.
+        #[arg(long)]
+        scope: String,
+        /// Memory type: `feedback`, `project`, `reference`, or `user`.
+        #[arg(long)]
+        ty: String,
+        /// Memory name (file slug).
+        #[arg(long)]
+        name: String,
+        /// Memory content.
+        content: String,
+    },
+    /// Promote a memory between scopes.
+    Promote {
+        /// Memory name.
+        name: String,
+        /// Target scope.
+        #[arg(long)]
+        to: String,
+    },
+    /// Print a memory's contents.
+    Show {
+        /// Memory name.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -272,6 +538,17 @@ pub enum TemplateAction {
     Delete {
         /// Template name to delete
         template_name: String,
+    },
+    /// Open a per-kind section template in `$EDITOR`.
+    Edit {
+        /// Ticket kind (project|product|epic|task|subtask|milestone).
+        kind: String,
+    },
+    /// Re-apply the section template to an existing ticket, preserving any
+    /// content under sections that match the template by name.
+    Apply {
+        /// Ticket id.
+        id: String,
     },
     /// Create a new template from scratch.
     Create {
@@ -338,7 +615,7 @@ pub fn cmd_add(
     // Apply template defaults if specified
     let (task_kind, final_tags, final_priority, final_urgency, final_process_stage, final_status, final_desc) =
         if let Some(template_name) = template {
-            let template = db.templates.iter()
+            let template = db.state.templates.iter()
                 .find(|t| t.name == template_name)
                 .cloned();
 
@@ -410,6 +687,8 @@ pub fn cmd_add(
         user_story,
         requirements,
         tags: final_tags,
+        deps: Vec::new(),
+        milestone: None,
         due,
         parent: parent_id,
         kind: task_kind,
@@ -1018,7 +1297,7 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
             };
             
             // Check if template already exists
-            if db.templates.iter().any(|t| t.name == template_name) {
+            if db.state.templates.iter().any(|t| t.name == template_name) {
                 eprintln!("Template '{}' already exists. Use a different name.", template_name);
                 std::process::exit(1);
             }
@@ -1035,7 +1314,7 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
                 status: task.status,
             };
             
-            db.templates.push(template);
+            db.state.templates.push(template);
             
             if let Err(e) = db.save(db_path) {
                 eprintln!("Failed to save database: {}", e);
@@ -1046,13 +1325,13 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
         },
         
         TemplateAction::List => {
-            if db.templates.is_empty() {
+            if db.state.templates.is_empty() {
                 println!("No templates found.");
                 return;
             }
 
             println!("{:<20} {:<10} {:<12}", "Name", "Kind", "Status");
-            for template in &db.templates {
+            for template in &db.state.templates {
                 println!(
                     "{:<20} {:<10} {:<12}",
                     truncate(&template.name, 20),
@@ -1063,10 +1342,10 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
         },
         
         TemplateAction::Delete { template_name } => {
-            let initial_len = db.templates.len();
-            db.templates.retain(|t| t.name != template_name);
+            let initial_len = db.state.templates.len();
+            db.state.templates.retain(|t| t.name != template_name);
             
-            if db.templates.len() == initial_len {
+            if db.state.templates.len() == initial_len {
                 eprintln!("Template '{}' not found.", template_name);
                 std::process::exit(1);
             }
@@ -1091,7 +1370,7 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
             status,
         } => {
             // Check if template already exists
-            if db.templates.iter().any(|t| t.name == name) {
+            if db.state.templates.iter().any(|t| t.name == name) {
                 eprintln!("Template '{}' already exists. Use a different name.", name);
                 std::process::exit(1);
             }
@@ -1114,16 +1393,107 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
                 status,
             };
             
-            db.templates.push(template);
-            
+            db.state.templates.push(template);
+
             if let Err(e) = db.save(db_path) {
                 eprintln!("Failed to save database: {}", e);
                 std::process::exit(1);
             }
-            
+
             println!("Created template '{}'", name);
         },
+        TemplateAction::Edit { kind } => {
+            cmd_template_edit(db_path, &kind);
+        },
+        TemplateAction::Apply { id } => {
+            cmd_template_apply(db, db_path, &id);
+        },
     }
+}
+
+/// Open a per-kind section template in `$EDITOR`. Resolves through the
+/// override chain (`.pm/templates/<kind>.md`, then `~/.pm-templates/<kind>.md`,
+/// then the built-in default). If the chosen file does not exist on disk yet,
+/// the built-in default is copied into `.pm/templates/<kind>.md` so the user
+/// has something to edit.
+pub fn cmd_template_edit(pm_dir: &Path, kind: &str) {
+    use crate::store::id::TypePrefix;
+    use crate::store::templates;
+
+    let prefix = match kind.to_lowercase().as_str() {
+        "project" => TypePrefix::Project,
+        "product" => TypePrefix::Product,
+        "epic" => TypePrefix::Epic,
+        "task" => TypePrefix::Task,
+        "subtask" => TypePrefix::Subtask,
+        "milestone" => TypePrefix::Milestone,
+        other => {
+            eprintln!("template edit: unknown kind {other:?}; expected project|product|epic|task|subtask|milestone");
+            std::process::exit(1);
+        }
+    };
+
+    let target = pm_dir.join("templates").join(format!("{}.md", templates::template_stem(prefix)));
+    if !target.exists() {
+        if let Some(parent) = target.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Err(e) = fs::write(&target, templates::builtin(prefix)) {
+            eprintln!("template edit: could not seed override at {}: {e}", target.display());
+            std::process::exit(1);
+        }
+    }
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+    match std::process::Command::new(&editor).arg(&target).status() {
+        Ok(st) if st.success() => println!("Saved template at {}", target.display()),
+        Ok(st) => {
+            eprintln!("template edit: $EDITOR exited with status {st}");
+            std::process::exit(st.code().unwrap_or(1));
+        }
+        Err(e) => {
+            eprintln!("template edit: could not launch {editor}: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Re-apply the per-kind section template to an existing ticket. Existing
+/// content under sections that match the template by name is preserved; user-
+/// added sections are kept at the tail of the body.
+pub fn cmd_template_apply(db: &mut Database, pm_dir: &Path, id: &str) {
+    use crate::store::templates;
+
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("template apply: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    let Some(entry) = db.state.items.get(&leaf) else {
+        eprintln!("template apply: state.json has no entry for {id}");
+        std::process::exit(1);
+    };
+    let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
+    let mut ticket = match crate::store::Ticket::read(&claude_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("template apply: could not read {}: {e}", claude_path.display());
+            std::process::exit(1);
+        }
+    };
+
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let resolved = templates::resolve(leaf.prefix(), pm_dir, home.as_deref());
+    ticket.apply_template(&resolved.content);
+
+    let parent = claude_path.parent().expect("ticket dir");
+    if let Err(e) = ticket.write_to(parent) {
+        eprintln!("template apply: write failed: {e}");
+        std::process::exit(1);
+    }
+    println!("Applied {} template to {leaf}", templates::template_stem(leaf.prefix()));
 }
 
 /// Export tasks to CSV format for external analysis and time tracking.
@@ -1357,6 +1727,8 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
             user_story: None, // CSV doesn't include user_story field
             requirements: None, // CSV doesn't include requirements field
             tags,
+            deps: Vec::new(),
+            milestone: None,
             due,
             parent,
             kind,
@@ -1706,4 +2078,871 @@ pub fn cmd_wf(db_path: &Path) {
             }
         }
     }
+}
+
+// =============================================================================
+// v2 verb handlers - skeletons populated by Phase 4 tasks 39-42
+// =============================================================================
+
+/// Print a "deferred to Phase N" message and exit successfully. Used as the
+/// handler for verbs whose implementation belongs to a later phase.
+fn cmd_deferred(verb: &str, phase: &str) {
+    eprintln!("`{verb}` is part of {phase} and is not yet wired up. The CLI surface is shape-complete; the handler will land in that phase.");
+    std::process::exit(0);
+}
+
+/// `pm init`: scaffold a `.pm/` workspace in the current directory.
+pub fn cmd_init(pm_dir: &Path) {
+    use crate::store::layout::Layout;
+    let layout = Layout::at(pm_dir);
+    match layout.init() {
+        Ok(()) => println!("Initialised .pm/ workspace at {}", pm_dir.display()),
+        Err(e) => {
+            eprintln!("init failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `pm show <id>`: print front-matter and section names for a ticket.
+pub fn cmd_show(db: &Database, id: &str) {
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    let Some(task) = db.get(leaf) else {
+        eprintln!("ticket not found: {id}");
+        std::process::exit(1);
+    };
+    println!("{} {}", task.id, task.title);
+    println!("  kind: {:?}", task.kind);
+    println!("  status: {:?}", task.status);
+    if let Some(p) = task.parent {
+        println!("  parent: {p}");
+    }
+    if !task.tags.is_empty() {
+        println!("  tags: {}", task.tags.join(", "));
+    }
+    if let Some(d) = task.due {
+        println!("  due: {d}");
+    }
+    if let Some(ref text) = task.description {
+        println!("\n# Description\n{text}");
+    }
+}
+
+/// Resolve a user-supplied id string against the loaded Database. Accepts the
+/// v2 forms understood by [`crate::store::id::IdInput`] (leaf, address, with
+/// trailing labels). Returns the canonical `LeafId` if it appears in the db.
+fn resolve_v2_id(input: &str, db: &Database) -> Option<crate::store::LeafId> {
+    use crate::store::id::IdInput;
+    let parsed: IdInput = input.parse().ok()?;
+    let leaf = parsed.leaf();
+    if db.get(leaf).is_some() {
+        Some(leaf)
+    } else {
+        None
+    }
+}
+
+/// `pm move <id> [<new_parent>] [--orphan]`: re-parent a ticket. Either a
+/// `<new_parent>` id or `--orphan` must be supplied. The new parent's `Kind`
+/// must accept this ticket's `Kind` per [`validate_hierarchy`]. After the
+/// in-memory update the database is saved, which writes the ticket's
+/// `CLAUDE.md` to its new addressed path and rewrites `state.json`.
+pub fn cmd_move(
+    db: &mut Database,
+    pm_dir: &Path,
+    id: &str,
+    new_parent: Option<&str>,
+    orphan: bool,
+) {
+    use crate::store::id::AddressId;
+    use crate::store::layout::Layout;
+
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("move: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+
+    if orphan && new_parent.is_some() {
+        eprintln!("move: pass either `<new_parent>` or `--orphan`, not both.");
+        std::process::exit(1);
+    }
+    if !orphan && new_parent.is_none() {
+        eprintln!("move: supply a new parent id or `--orphan`.");
+        std::process::exit(1);
+    }
+
+    let target_parent: Option<crate::store::LeafId> = if orphan {
+        None
+    } else {
+        let raw = new_parent.expect("checked above");
+        match resolve_v2_id(raw, db) {
+            Some(p) if p != leaf => Some(p),
+            Some(_) => {
+                eprintln!("move: parent cannot equal the ticket itself.");
+                std::process::exit(1);
+            }
+            None => {
+                eprintln!("move: parent not found: {raw}");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    let task_kind = db.get(leaf).expect("resolved above").kind;
+    if let Some(parent_id) = target_parent {
+        let parent_kind = db.get(parent_id).expect("resolved above").kind;
+        if !validate_hierarchy(parent_kind, task_kind) {
+            eprintln!(
+                "move: invalid hierarchy: {} cannot be child of {}. \
+                 Valid order is Project > Product > Epic > Task > Subtask.",
+                format_kind(task_kind),
+                format_kind(parent_kind),
+            );
+            std::process::exit(1);
+        }
+    }
+
+    // Remember the prior absolute directory so it can be cleaned up after the
+    // save writes the new location.
+    let old_abs_dir = db
+        .state
+        .items
+        .get(&leaf)
+        .map(|entry| pm_dir.join(&entry.path));
+
+    // Capture old address chain for alias bookkeeping.
+    let old_address = old_address_for(db, leaf);
+
+    // Apply the move in memory.
+    if let Some(task) = db.get_mut(leaf) {
+        task.parent = target_parent;
+        task.updated_at_utc = Utc::now().timestamp();
+    }
+
+    if let Err(e) = db.save(pm_dir) {
+        eprintln!("move: save failed: {e}");
+        std::process::exit(1);
+    }
+
+    // Clean up the now-vacated directory if it differs from where the save
+    // landed. Saved state.items has the new path; compare against the old.
+    let new_abs_dir = db.state.items.get(&leaf).map(|e| pm_dir.join(&e.path));
+    if let (Some(old), Some(new)) = (old_abs_dir.as_ref(), new_abs_dir.as_ref()) {
+        if old != new && old.exists() {
+            if let Err(e) = fs::remove_dir_all(old) {
+                eprintln!("move: warning - could not remove old directory {}: {e}", old.display());
+            }
+        }
+    }
+
+    // Record an alias so the old address-form keeps resolving.
+    if let Some(old) = old_address {
+        if let Some(new) = old_address_for(db, leaf) {
+            if old != new {
+                let layout = Layout::at(pm_dir);
+                let aliases_path = layout.aliases_path();
+                let mut aliases = crate::store::Aliases::load(&aliases_path).unwrap_or_default();
+                aliases.add(old.to_string(), new.to_string());
+                if let Err(e) = aliases.save(&aliases_path) {
+                    eprintln!("move: warning - could not write alias: {e}");
+                }
+            }
+        }
+    }
+
+    println!("Moved {leaf} -> {}",
+        target_parent.map(|p| p.to_string()).unwrap_or_else(|| "(orphan)".into()));
+
+    // Suppress unused-import warning on `AddressId` if no other site brings it.
+    let _ = std::marker::PhantomData::<AddressId>;
+}
+
+/// Compute the current address chain (parent->child) for a leaf, if every
+/// ancestor in the chain is present in the database.
+fn old_address_for(db: &Database, leaf: crate::store::LeafId) -> Option<crate::store::AddressId> {
+    let mut chain = Vec::new();
+    let mut cursor = Some(leaf);
+    let mut guard = 0;
+    while let Some(id) = cursor {
+        if guard > 16 {
+            return None;
+        }
+        guard += 1;
+        let task = db.get(id)?;
+        chain.push(task.id);
+        cursor = task.parent;
+    }
+    chain.reverse();
+    crate::store::AddressId::new(chain).ok()
+}
+
+/// `pm edit <id> [--section <name>]`: open the ticket's CLAUDE.md in `$EDITOR`.
+/// When `section` is supplied, supported editors (nvim, vim, nano, helix,
+/// emacs) position the cursor at the matching `# Section` heading. Unknown
+/// editors get the file opened at the top.
+pub fn cmd_edit(pm_dir: &Path, id: &str, section: Option<&str>) {
+    let layout = crate::store::layout::Layout::at(pm_dir);
+    let state = crate::store::state::State::load(&layout.state_path()).unwrap_or_default();
+    let leaf = match id.parse::<crate::store::IdInput>() {
+        Ok(input) => input.leaf(),
+        Err(e) => {
+            eprintln!("edit: bad id {id}: {e}");
+            std::process::exit(1);
+        }
+    };
+    let Some(entry) = state.items.get(&leaf) else {
+        eprintln!("edit: ticket not found in state.json: {id}");
+        std::process::exit(1);
+    };
+    let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
+    if !claude_path.exists() {
+        eprintln!("edit: missing CLAUDE.md at {}", claude_path.display());
+        std::process::exit(1);
+    }
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+    let mut cmd = std::process::Command::new(&editor);
+    if let Some(name) = section {
+        let bin = std::path::Path::new(&editor)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        match bin {
+            "nvim" | "vim" | "vi" => {
+                cmd.arg(format!("+/^# {name}"));
+            }
+            "nano" | "emacs" | "helix" | "hx" => {
+                if let Some(line) = find_section_line(&claude_path, name) {
+                    cmd.arg(format!("+{line}"));
+                }
+            }
+            _ => {}
+        }
+    }
+    cmd.arg(&claude_path);
+    match cmd.status() {
+        Ok(st) if st.success() => {}
+        Ok(st) => {
+            eprintln!("edit: $EDITOR exited with status {st}");
+            std::process::exit(st.code().unwrap_or(1));
+        }
+        Err(e) => {
+            eprintln!("edit: failed to launch {editor}: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Locate the 1-indexed line number of a `# Section` heading in a markdown
+/// file. Returns `None` if the file cannot be read or the heading is absent.
+fn find_section_line(path: &Path, section: &str) -> Option<usize> {
+    let content = fs::read_to_string(path).ok()?;
+    let needle = format!("# {section}");
+    for (i, line) in content.lines().enumerate() {
+        if line.trim() == needle {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
+/// `pm context <id>`: print the composed CLAUDE.md chain from the root
+/// ancestor down to the target ticket. Section bodies are printed verbatim;
+/// the trailing `@artifacts/ARTIFACTS.md` line is suppressed because the
+/// composed view is for reading rather than re-import.
+pub fn cmd_context(db: &Database, pm_dir: &Path, id: &str, _include_memories: bool) {
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("context: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+
+    // Walk parent chain, root first.
+    let mut chain: Vec<crate::store::LeafId> = Vec::new();
+    let mut cursor = Some(leaf);
+    let mut guard = 0;
+    while let Some(cid) = cursor {
+        if guard > 16 { break; }
+        guard += 1;
+        let Some(task) = db.get(cid) else { break; };
+        chain.push(task.id);
+        cursor = task.parent;
+    }
+    chain.reverse();
+
+    for id in chain {
+        let Some(entry) = db.state.items.get(&id) else { continue; };
+        let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
+        let Ok(ticket) = crate::store::Ticket::read(&claude_path) else { continue; };
+        let task = db.get(id).expect("resolved above");
+        println!("# {} - {} ({})", format_kind(task.kind).to_uppercase(), task.title, id);
+        for section in &ticket.body.sections {
+            println!();
+            println!("# {}", section.name);
+            print!("{}", section.body);
+        }
+        println!();
+        println!("---");
+        println!();
+    }
+}
+
+/// `pm materialise <id> [--output <path>]`: write the composed CLAUDE.md
+/// chain to disk so non-Claude tools can read a single self-contained file.
+pub fn cmd_materialise(db: &Database, pm_dir: &Path, id: &str, output: Option<PathBuf>) {
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("materialise: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    let Some(entry) = db.state.items.get(&leaf) else {
+        eprintln!("materialise: state.json has no entry for {id}");
+        std::process::exit(1);
+    };
+
+    // Capture stdout via a temp buffer by re-using cmd_context's output, then
+    // write to the target file.
+    let mut buf = Vec::new();
+    {
+        use std::io::Write;
+        let mut cursor = Some(leaf);
+        let mut chain: Vec<crate::store::LeafId> = Vec::new();
+        let mut guard = 0;
+        while let Some(cid) = cursor {
+            if guard > 16 { break; }
+            guard += 1;
+            let Some(task) = db.get(cid) else { break; };
+            chain.push(task.id);
+            cursor = task.parent;
+        }
+        chain.reverse();
+
+        for id in chain {
+            let Some(entry) = db.state.items.get(&id) else { continue; };
+            let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
+            let Ok(ticket) = crate::store::Ticket::read(&claude_path) else { continue; };
+            let task = db.get(id).expect("resolved above");
+            writeln!(buf, "# {} - {} ({})", format_kind(task.kind).to_uppercase(), task.title, id).ok();
+            for section in &ticket.body.sections {
+                writeln!(buf).ok();
+                writeln!(buf, "# {}", section.name).ok();
+                buf.extend_from_slice(section.body.as_bytes());
+            }
+            writeln!(buf).ok();
+            writeln!(buf, "---").ok();
+            writeln!(buf).ok();
+        }
+    }
+
+    let target = output.unwrap_or_else(|| pm_dir.join(&entry.path).join("COMPOSED.md"));
+    if let Some(parent) = target.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Err(e) = fs::write(&target, &buf) {
+        eprintln!("materialise: write failed: {e}");
+        std::process::exit(1);
+    }
+    println!("Wrote composed view to {}", target.display());
+}
+
+/// `pm artifact ...`: thin wrapper over `store::artifacts`.
+pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
+    let resolve = |id: &str| -> (crate::store::LeafId, PathBuf) {
+        let leaf = match resolve_v2_id(id, db) {
+            Some(l) => l,
+            None => {
+                eprintln!("artifact: ticket not found: {id}");
+                std::process::exit(1);
+            }
+        };
+        let Some(entry) = db.state.items.get(&leaf) else {
+            eprintln!("artifact: state.json has no entry for {id}");
+            std::process::exit(1);
+        };
+        let dir = pm_dir.join(&entry.path).join("artifacts");
+        let _ = fs::create_dir_all(&dir);
+        (leaf, dir)
+    };
+
+    match action {
+        ArtifactAction::Add { id, path, desc } => {
+            let (leaf, artifacts_dir) = resolve(&id);
+            let file_name = match path.file_name() {
+                Some(n) => n.to_owned(),
+                None => {
+                    eprintln!("artifact add: source has no file name: {}", path.display());
+                    std::process::exit(1);
+                }
+            };
+            let target = artifacts_dir.join(&file_name);
+            if let Err(e) = fs::copy(&path, &target) {
+                eprintln!("artifact add: copy failed: {e}");
+                std::process::exit(1);
+            }
+            // Sweep so the new file is in ARTIFACTS.md.
+            if let Err(e) = crate::store::artifacts::sweep_dir(&artifacts_dir, leaf) {
+                eprintln!("artifact add: sweep failed: {e}");
+                std::process::exit(1);
+            }
+            if let Some(desc_text) = desc {
+                let index_path = artifacts_dir.join(crate::store::artifacts::ARTIFACTS_MD);
+                if let Ok(mut idx) = crate::store::ArtifactsIndex::load(&index_path) {
+                    if let Some(entry) = idx.find_mut(&file_name.to_string_lossy()) {
+                        entry.desc = desc_text;
+                    }
+                    let _ = idx.save(&index_path);
+                }
+            }
+            println!("Added artifact {} to {leaf}", file_name.to_string_lossy());
+        }
+        ArtifactAction::Rename { id, old, new } => {
+            let (leaf, artifacts_dir) = resolve(&id);
+            if let Err(e) = crate::store::artifacts::rename_artifact(&artifacts_dir, &old, &new) {
+                eprintln!("artifact rename: {e}");
+                std::process::exit(1);
+            }
+            println!("Renamed {old} -> {new} on {leaf}");
+        }
+        ArtifactAction::List { id } => {
+            let (_leaf, artifacts_dir) = resolve(&id);
+            let index_path = artifacts_dir.join(crate::store::artifacts::ARTIFACTS_MD);
+            match crate::store::ArtifactsIndex::load(&index_path) {
+                Ok(idx) => {
+                    if idx.entries.is_empty() {
+                        println!("(no artifacts)");
+                    } else {
+                        for entry in idx.entries {
+                            let desc = if entry.desc.is_empty() { "-" } else { entry.desc.as_str() };
+                            println!("  {}  ({})  [{}]", entry.file, desc, entry.tags.join(","));
+                        }
+                    }
+                }
+                Err(_) => println!("(no artifacts)"),
+            }
+        }
+    }
+}
+
+/// Mutate a ticket's front-matter in memory and persist via Database::save.
+/// Returns the resolved leaf id for callers that want to log the result.
+fn mutate_task<F>(db: &mut Database, pm_dir: &Path, id: &str, label: &str, f: F)
+where
+    F: FnOnce(&mut Task),
+{
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("{label}: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    if let Some(task) = db.get_mut(leaf) {
+        f(task);
+        task.updated_at_utc = Utc::now().timestamp();
+    }
+    if let Err(e) = db.save(pm_dir) {
+        eprintln!("{label}: save failed: {e}");
+        std::process::exit(1);
+    }
+    println!("{label}: {leaf} updated.");
+}
+
+/// `pm set-status <id> <new-status>`: update front-matter status.
+pub fn cmd_set_status(db: &mut Database, pm_dir: &Path, id: &str, new_status: Status) {
+    mutate_task(db, pm_dir, id, "status", |task| task.status = new_status);
+}
+
+/// `pm priority <id> <priority>`: set front-matter priority.
+pub fn cmd_priority(db: &mut Database, pm_dir: &Path, id: &str, new_priority: Priority) {
+    mutate_task(db, pm_dir, id, "priority", |task| {
+        task.priority_level = Some(new_priority);
+    });
+}
+
+/// `pm due <id> <when>`: parse the human input and store as a `NaiveDate`.
+pub fn cmd_due(db: &mut Database, pm_dir: &Path, id: &str, when: &str) {
+    let parsed = match parse_due_input(when) {
+        Some(d) => d,
+        None => {
+            eprintln!("due: could not parse {when:?}; try `today`, `next friday`, `in 1w`, or `YYYY-MM-DD`.");
+            std::process::exit(1);
+        }
+    };
+    mutate_task(db, pm_dir, id, "due", |task| task.due = Some(parsed));
+}
+
+/// `pm dep <id> needs|remove <dep_id>`: add or remove a dependency edge.
+pub fn cmd_dep(db: &mut Database, pm_dir: &Path, id: &str, op: &str, dep_id: &str) {
+    let dep = match dep_id.parse::<crate::store::IdInput>() {
+        Ok(input) => input.leaf(),
+        Err(e) => {
+            eprintln!("dep: bad dep id {dep_id}: {e}");
+            std::process::exit(1);
+        }
+    };
+    match op.to_lowercase().as_str() {
+        "needs" | "add" | "+" => {
+            mutate_task(db, pm_dir, id, "dep needs", |task| {
+                if !task.deps.contains(&dep) {
+                    task.deps.push(dep);
+                }
+            });
+        }
+        "remove" | "rm" | "-" => {
+            mutate_task(db, pm_dir, id, "dep remove", |task| {
+                task.deps.retain(|d| d != &dep);
+            });
+        }
+        other => {
+            eprintln!("dep: unknown op {other:?}; expected `needs` or `remove`.");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `pm tag <id> +foo -bar`: add and remove tags. Operations apply in order.
+pub fn cmd_tag(db: &mut Database, pm_dir: &Path, id: &str, ops: &[String]) {
+    if ops.is_empty() {
+        eprintln!("tag: supply at least one op (e.g. `+infra`, `-draft`).");
+        std::process::exit(1);
+    }
+    mutate_task(db, pm_dir, id, "tag", |task| {
+        for op in ops {
+            if let Some(name) = op.strip_prefix('+') {
+                let normalised = normalise_tag(name);
+                if !normalised.is_empty() && !task.tags.contains(&normalised) {
+                    task.tags.push(normalised);
+                }
+            } else if let Some(name) = op.strip_prefix('-') {
+                let normalised = normalise_tag(name);
+                task.tags.retain(|t| t != &normalised);
+            } else {
+                eprintln!("tag: skipping {op:?} - prefix with + to add or - to remove.");
+            }
+        }
+        task.tags.sort();
+        task.tags.dedup();
+    });
+}
+
+/// `pm link <id> <key> <url>`: set an external link on a ticket. Recognises
+/// `issue`/`issue_link` and `pr`/`pr_link` as syntactic sugar for the
+/// dedicated `Task` fields; other keys land in the front-matter `links` map
+/// once that pathway is wired (Phase 11). For now, any other key is rejected
+/// with a clear message.
+pub fn cmd_link(db: &mut Database, pm_dir: &Path, id: &str, key: &str, url: &str) {
+    let normalised = key.to_lowercase();
+    match normalised.as_str() {
+        "issue" | "issue_link" | "github_issue" => {
+            mutate_task(db, pm_dir, id, "link issue", |task| {
+                task.issue_link = Some(url.to_string());
+            });
+        }
+        "pr" | "pr_link" | "github_pr" => {
+            mutate_task(db, pm_dir, id, "link pr", |task| {
+                task.pr_link = Some(url.to_string());
+            });
+        }
+        other => {
+            eprintln!("link: only `issue` and `pr` keys are wired through Task in Phase 4; got {other:?}.");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `pm milestone <id> <MLSn>`: attach a ticket to a milestone.
+pub fn cmd_milestone(db: &mut Database, pm_dir: &Path, id: &str, milestone_id: &str) {
+    let mls = match milestone_id.parse::<crate::store::IdInput>() {
+        Ok(input) => input.leaf(),
+        Err(e) => {
+            eprintln!("milestone: bad milestone id {milestone_id}: {e}");
+            std::process::exit(1);
+        }
+    };
+    if mls.prefix() != crate::store::TypePrefix::Milestone {
+        eprintln!("milestone: expected an MLS-prefixed id, got {mls}.");
+        std::process::exit(1);
+    }
+    if db.get(mls).is_none() {
+        eprintln!("milestone: target milestone {mls} not found in workspace.");
+        std::process::exit(1);
+    }
+    mutate_task(db, pm_dir, id, "milestone", |task| task.milestone = Some(mls));
+}
+
+/// `pm doctor [--migrate]`: rebuild `state.json` from disk and (with the
+/// `--migrate` flag) import any legacy `tasks.json` files into the workspace
+/// via the Phase 3.5 bridge.
+pub fn cmd_doctor(pm_dir: &Path, migrate: bool) {
+    if migrate {
+        run_doctor_migrate(pm_dir);
+    }
+    run_doctor_rebuild(pm_dir);
+}
+
+fn run_doctor_rebuild(pm_dir: &Path) {
+    use crate::store::claude_md::CLAUDE_MD;
+    use crate::store::layout::Layout;
+    use crate::store::state::{ItemEntry, State};
+    use crate::store::Ticket;
+
+    let layout = Layout::at(pm_dir);
+    if !layout.is_initialised() {
+        eprintln!("doctor: no .pm/ workspace at {}", pm_dir.display());
+        std::process::exit(1);
+    }
+
+    let existing = State::load(&layout.state_path()).unwrap_or_else(|_| State::fresh());
+    let mut rebuilt = State::fresh();
+    // Preserve counters and tombstones; only items are rebuilt from disk.
+    rebuilt.next = existing.next.clone();
+    rebuilt.tombstones = existing.tombstones.clone();
+    rebuilt.templates = existing.templates.clone();
+
+    let mut found = 0usize;
+    let mut added = 0usize;
+    let mut removed_paths: Vec<String> = Vec::new();
+
+    walk_tickets(&layout.root, &mut |abs_path: &Path| {
+        let claude_path = abs_path.join(CLAUDE_MD);
+        if !claude_path.exists() {
+            return;
+        }
+        let Ok(ticket) = Ticket::read(&claude_path) else {
+            return;
+        };
+        let leaf = ticket.front_matter.id;
+        let Ok(rel) = abs_path.strip_prefix(&layout.root) else {
+            return;
+        };
+        found += 1;
+        if !existing.items.contains_key(&leaf) {
+            added += 1;
+        }
+        rebuilt
+            .items
+            .insert(leaf, ItemEntry { path: rel.to_path_buf() });
+        // Bump the counter past this leaf so future allocations skip it.
+        let entry = rebuilt.next.entry(leaf.prefix()).or_insert(1);
+        if leaf.number() >= *entry {
+            *entry = leaf.number() + 1;
+        }
+    });
+
+    for (leaf, entry) in &existing.items {
+        if !rebuilt.items.contains_key(leaf) {
+            removed_paths.push(entry.path.display().to_string());
+        }
+    }
+
+    if let Err(e) = rebuilt.save(&layout.state_path()) {
+        eprintln!("doctor: failed to write state.json: {e}");
+        std::process::exit(1);
+    }
+
+    println!("doctor: scanned {found} tickets at {}", layout.root.display());
+    if added > 0 {
+        println!("  added {added} entries to state.json");
+    }
+    if !removed_paths.is_empty() {
+        println!("  removed {} stale entries", removed_paths.len());
+        for p in &removed_paths {
+            println!("    - {p}");
+        }
+    }
+    if added == 0 && removed_paths.is_empty() {
+        println!("  state.json was already up to date.");
+    }
+}
+
+fn run_doctor_migrate(pm_dir: &Path) {
+    use crate::store::migrate::MigrationPlan;
+    use crate::store::layout::Layout;
+
+    let layout = Layout::at(pm_dir);
+    layout
+        .init()
+        .map(|_| ())
+        .unwrap_or_else(|e| {
+            eprintln!("doctor --migrate: layout init failed: {e}");
+            std::process::exit(1);
+        });
+
+    // Look for legacy tasks.json files inside the workspace directory and in
+    // the user's HOME/.pm/ if that's where the workspace lives.
+    let candidates: Vec<PathBuf> = collect_legacy_files(pm_dir);
+    if candidates.is_empty() {
+        println!("doctor --migrate: no legacy tasks.json files found near {}", pm_dir.display());
+        return;
+    }
+
+    let backup_dir = pm_dir.join(".legacy-backup");
+    if let Err(e) = fs::create_dir_all(&backup_dir) {
+        eprintln!("doctor --migrate: could not create {}: {e}", backup_dir.display());
+        std::process::exit(1);
+    }
+
+    let mut imported = 0usize;
+    for legacy in candidates {
+        match MigrationPlan::plan(&layout, &legacy) {
+            Ok(plan) => {
+                let mut db = Database::load(pm_dir);
+                for step in plan.steps {
+                    // Convert each legacy task into a v2 Task and let
+                    // Database::save place it at the right path.
+                    let task = crate::task::Task {
+                        id: step.leaf,
+                        title: step.title,
+                        summary: None,
+                        description: None,
+                        user_story: None,
+                        requirements: None,
+                        tags: Vec::new(),
+                        deps: Vec::new(),
+                        milestone: None,
+                        due: None,
+                        parent: step.parent,
+                        kind: step.kind,
+                        status: Status::Open,
+                        priority_level: None,
+                        urgency: None,
+                        process_stage: None,
+                        issue_link: None,
+                        pr_link: None,
+                        artifacts: Vec::new(),
+                        created_at_utc: Utc::now().timestamp(),
+                        updated_at_utc: Utc::now().timestamp(),
+                    };
+                    db.tasks.push(task);
+                    imported += 1;
+                }
+                if let Err(e) = db.save(pm_dir) {
+                    eprintln!("doctor --migrate: save after import of {}: {e}", legacy.display());
+                    continue;
+                }
+                // Archive the legacy file.
+                let dest = backup_dir.join(legacy.file_name().expect("legacy has filename"));
+                if let Err(e) = fs::rename(&legacy, &dest) {
+                    eprintln!(
+                        "doctor --migrate: warning - imported {} but could not archive to {}: {e}",
+                        legacy.display(),
+                        dest.display(),
+                    );
+                }
+            }
+            Err(e) => eprintln!("doctor --migrate: plan failed for {}: {e}", legacy.display()),
+        }
+    }
+    println!("doctor --migrate: imported {imported} tickets; legacy files archived to {}", backup_dir.display());
+}
+
+/// Collect candidate legacy `*_tasks.json` files near the workspace. Looks
+/// only at the workspace directory itself; nested directories are not
+/// traversed because v2 stores them as `CLAUDE.md` files under `state.items`.
+fn collect_legacy_files(pm_dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(pm_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = match path.file_name().and_then(|s| s.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            if name == "tasks.json" || name.ends_with("_tasks.json") {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// Recursively walk every ticket directory under `root`. A "ticket directory"
+/// is any directory that contains a `CLAUDE.md` file. The visitor receives the
+/// absolute path of each such directory.
+fn walk_tickets(root: &Path, visitor: &mut dyn FnMut(&Path)) {
+    walk_tickets_inner(root, visitor);
+}
+
+fn walk_tickets_inner(dir: &Path, visitor: &mut dyn FnMut(&Path)) {
+    if dir.join(crate::store::claude_md::CLAUDE_MD).exists() {
+        visitor(dir);
+    }
+    let Ok(entries) = fs::read_dir(dir) else { return; };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        // Skip top-level metadata directories that never contain tickets.
+        if matches!(name, "locks" | "artifacts" | ".legacy-backup" | "templates") {
+            continue;
+        }
+        walk_tickets_inner(&path, visitor);
+    }
+}
+
+/// `pm search <query>`: case-insensitive substring search across every
+/// `CLAUDE.md` body and front-matter in the workspace. Prints `path:lineno:
+/// line` for each hit.
+pub fn cmd_search(pm_dir: &Path, query: &str) {
+    use crate::store::claude_md::CLAUDE_MD;
+    use crate::store::layout::Layout;
+
+    let layout = Layout::at(pm_dir);
+    if !layout.is_initialised() {
+        eprintln!("search: no .pm/ workspace at {}", pm_dir.display());
+        std::process::exit(1);
+    }
+    let needle = query.to_lowercase();
+    let mut hits = 0usize;
+    walk_tickets(&layout.root, &mut |abs_dir: &Path| {
+        let claude_path = abs_dir.join(CLAUDE_MD);
+        let Ok(content) = fs::read_to_string(&claude_path) else { return; };
+        for (i, line) in content.lines().enumerate() {
+            if line.to_lowercase().contains(&needle) {
+                hits += 1;
+                println!("{}:{}: {}", claude_path.display(), i + 1, line);
+            }
+        }
+    });
+    if hits == 0 {
+        println!("(no matches)");
+    }
+}
+
+// ----- Phase-5+ stubs -----
+
+pub fn cmd_checkout(_pm_dir: &Path, _id: &str, _intent: Option<&str>) { cmd_deferred("checkout", "Phase 6"); }
+pub fn cmd_checkin(_pm_dir: &Path, _id: &str, _summary: Option<&str>) { cmd_deferred("checkin", "Phase 6"); }
+pub fn cmd_next(_pm_dir: &Path, _agent: Option<&str>, _filter: Option<&str>) { cmd_deferred("next", "Phase 6"); }
+pub fn cmd_locks(_pm_dir: &Path) { cmd_deferred("locks", "Phase 6"); }
+pub fn cmd_tv(_pm_dir: &Path) { cmd_deferred("tv", "Phase 9"); }
+pub fn cmd_log(_pm_dir: &Path, _id: &str) { cmd_deferred("log", "Phase 5"); }
+pub fn cmd_memory(_db: &mut Database, _pm_dir: &Path, action: MemoryAction) {
+    let verb = match action {
+        MemoryAction::Link { .. } => "memory link",
+        MemoryAction::Unlink { .. } => "memory unlink",
+        MemoryAction::List { .. } => "memory list",
+        MemoryAction::Write { .. } => "memory write",
+        MemoryAction::Promote { .. } => "memory promote",
+        MemoryAction::Show { .. } => "memory show",
+    };
+    cmd_deferred(verb, "Phase 10");
 }

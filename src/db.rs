@@ -7,63 +7,144 @@
 //! allocation goes through the embedded [`State`] counter map.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::fs;
 use std::path::Path;
 
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 use crate::fields::*;
-use crate::store::id::{IdInput, LeafId, TypePrefix};
-use crate::store::state::State;
-use crate::task::{Task, TaskTemplate};
+use crate::store::artifacts::{self, ArtifactsIndex};
+use crate::store::claude_md::{Ticket, CLAUDE_MD};
+use crate::store::id::{AddressId, IdInput, LeafId, TypePrefix};
+use crate::store::layout::Layout;
+use crate::store::state::{ItemEntry, State};
+use crate::store::task_bridge::{task_from_document, task_to_document};
+use crate::task::Task;
 
 /// In-memory database for storing and managing tasks.
 ///
 /// The `state` field carries the per-type monotonic counters used by
-/// [`allocate_id`]. It also doubles as the source of truth for tombstones so
-/// reused numbers stay out of circulation.
+/// [`Database::allocate_id`], the tombstone set so reused numbers stay out of
+/// circulation, the on-disk path index for each ticket, and the named
+/// [`crate::task::TaskTemplate`] presets used by the template commands.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Database {
     pub tasks: Vec<Task>,
-    #[serde(default)]
-    pub templates: Vec<TaskTemplate>,
     #[serde(default)]
     pub state: State,
 }
 
 impl Database {
-    /// Load database from JSON file, creating a new empty database if file doesn't exist.
-    pub fn load(path: &Path) -> Self {
-        if !path.exists() {
+    /// Load the database from a `.pm/` workspace directory.
+    ///
+    /// Reads `<pm_dir>/state.json`, then for each indexed leaf id reads the
+    /// per-ticket `CLAUDE.md` and reconstructs a [`Task`] through the
+    /// [`task_from_document`] bridge. Artifact filenames are sourced from the
+    /// ticket's `artifacts/` directory (preferring `ARTIFACTS.md` when
+    /// present, falling back to a directory listing).
+    ///
+    /// Returns an empty database when the workspace has not been initialised.
+    pub fn load(pm_dir: &Path) -> Self {
+        if !pm_dir.exists() {
             return Database::default();
         }
-        let mut buf = String::new();
-        match File::open(path).and_then(|mut f| f.read_to_string(&mut buf)) {
-            Ok(_) => match serde_json::from_str(&buf) {
-                Ok(db) => db,
-                Err(e) => {
-                    eprintln!("Error parsing DB, starting fresh: {e}");
-                    Database::default()
-                }
-            },
+        let layout = Layout::at(pm_dir);
+        let state = match State::load(&layout.state_path()) {
+            Ok(s) => s,
             Err(e) => {
-                eprintln!("Error reading DB, starting fresh: {e}");
-                Database::default()
+                eprintln!("Error parsing state.json, starting fresh: {e}");
+                State::fresh()
             }
+        };
+
+        let mut tasks: Vec<Task> = Vec::with_capacity(state.items.len());
+        for (_leaf, entry) in &state.items {
+            let abs_dir = pm_dir.join(&entry.path);
+            let claude_md_path = abs_dir.join(CLAUDE_MD);
+            if !claude_md_path.exists() {
+                eprintln!("state.json references missing {}; skipping.", claude_md_path.display());
+                continue;
+            }
+            let ticket = match Ticket::read(&claude_md_path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("Error reading {}: {e}; skipping.", claude_md_path.display());
+                    continue;
+                }
+            };
+            let artifact_files = read_artifact_filenames(&abs_dir.join("artifacts"));
+            let task = task_from_document(&ticket.front_matter, &ticket.body, artifact_files);
+            tasks.push(task);
         }
+        Database { tasks, state }
     }
 
-    /// Save database to JSON file using atomic write (temp file + rename).
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        // Atomic-ish write via temp + rename.
-        let tmp = path.with_extension("json.tmp");
-        let mut f = File::create(&tmp)?;
-        let data = serde_json::to_string_pretty(self).unwrap();
-        f.write_all(data.as_bytes())?;
-        f.flush()?;
-        fs::rename(tmp, path)?;
+    /// Save the database to a `.pm/` workspace directory.
+    ///
+    /// For each [`Task`] in `self.tasks`, writes a `CLAUDE.md` to its
+    /// addressed path under `pm_dir`. The ticket's `artifacts/` directory is
+    /// created if missing; existing artifact files are left untouched.
+    /// `state.json` is rewritten so `state.items` reflects the current set of
+    /// tasks; `state.next` and `state.tombstones` are preserved across the
+    /// save so id allocation history survives.
+    pub fn save(&self, pm_dir: &Path) -> std::io::Result<()> {
+        let layout = Layout::at(pm_dir);
+        layout
+            .init()
+            .map_err(|e| std::io::Error::other(format!("layout init: {e}")))?;
+
+        // Cloning state lets us rebuild items without losing the next /
+        // tombstones counters held on the in-memory db.
+        let mut state = self.state.clone();
+        state.items.clear();
+
+        let id_index: HashMap<LeafId, usize> = self
+            .tasks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.id, i))
+            .collect();
+
+        for task in &self.tasks {
+            let address = match build_address(task, &self.tasks, &id_index) {
+                Some(a) => a,
+                None => {
+                    // A task referencing a missing parent in this Database
+                    // gets demoted to an orphan record so the save doesn't
+                    // lose it.
+                    AddressId::new(vec![task.id]).expect("single-leaf address always valid")
+                }
+            };
+            let rel = layout.directory_for(&address);
+            let abs_dir = pm_dir.join(&rel);
+            layout
+                .ensure_node_path(&rel)
+                .map_err(|e| std::io::Error::other(format!("ensure node path: {e}")))?;
+
+            // Build the front-matter + body via the bridge, render via Ticket
+            // (which wraps the YAML delimiters and trailing @artifacts import
+            // around the body).
+            let (fm, body) = task_to_document(task);
+            let ticket = Ticket { front_matter: fm, body };
+            ticket
+                .write_to(&abs_dir)
+                .map_err(|e| std::io::Error::other(format!("write CLAUDE.md: {e}")))?;
+
+            // Make sure ARTIFACTS.md reflects whatever is in the artifacts/
+            // directory. Hand-curated `desc:` survives via the existing sweep.
+            let artifacts_dir = abs_dir.join("artifacts");
+            std::fs::create_dir_all(&artifacts_dir)?;
+            if let Err(e) = artifacts::sweep_dir(&artifacts_dir, task.id) {
+                eprintln!("artifact sweep for {}: {e}", task.id);
+            }
+
+            state.items.insert(task.id, ItemEntry { path: rel });
+        }
+
+        state
+            .save(&layout.state_path())
+            .map_err(|e| std::io::Error::other(format!("state.save: {e}")))?;
         Ok(())
     }
 
@@ -107,6 +188,69 @@ impl Database {
             }
         }
     }
+}
+
+/// Walk a task's parent chain up to the root and return the resulting
+/// [`AddressId`]. Returns `None` if any parent reference in the chain is
+/// missing from the supplied id index. A cycle is broken at 16 hops; if the
+/// chain does not terminate within that bound `None` is returned.
+fn build_address(
+    task: &Task,
+    tasks: &[Task],
+    id_index: &HashMap<LeafId, usize>,
+) -> Option<AddressId> {
+    let mut chain: Vec<LeafId> = Vec::with_capacity(5);
+    chain.push(task.id);
+    let mut cursor = task.parent;
+    for _ in 0..16 {
+        match cursor {
+            None => break,
+            Some(pid) => {
+                let idx = *id_index.get(&pid)?;
+                let parent = tasks.get(idx)?;
+                chain.push(parent.id);
+                cursor = parent.parent;
+            }
+        }
+    }
+    if cursor.is_some() {
+        // Chain did not terminate within the hop guard.
+        return None;
+    }
+    chain.reverse();
+    AddressId::new(chain).ok()
+}
+
+/// Read the artifact filenames recorded for a ticket. Prefers parsing the
+/// ticket's `ARTIFACTS.md` (which carries hand-curated descriptions); falls
+/// back to a directory listing for tickets that have never been swept.
+fn read_artifact_filenames(artifacts_dir: &Path) -> Vec<String> {
+    let index_path = artifacts_dir.join(crate::store::artifacts::ARTIFACTS_MD);
+    if index_path.exists() {
+        if let Ok(idx) = ArtifactsIndex::load(&index_path) {
+            return idx.entries.into_iter().map(|e| e.file).collect();
+        }
+    }
+    if !artifacts_dir.exists() {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    if let Ok(entries) = fs::read_dir(artifacts_dir) {
+        for entry in entries.flatten() {
+            if let Ok(ft) = entry.file_type() {
+                if !ft.is_file() {
+                    continue;
+                }
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == crate::store::artifacts::ARTIFACTS_MD || name.starts_with('.') {
+                continue;
+            }
+            out.push(name);
+        }
+    }
+    out.sort();
+    out
 }
 
 /// Normalize a tag string by trimming, lowercasing, and replacing spaces with hyphens.
@@ -270,7 +414,7 @@ pub fn format_kind(k: Kind) -> &'static str {
 
 /// Map the data-layer [`Kind`] to its v2 [`TypePrefix`]. Used wherever a Task
 /// needs to be turned into an addressed v2 ticket (id allocation, on-disk
-/// directory naming, the future Task <-> Document bridge).
+/// directory naming, the Task <-> Document bridge).
 pub fn kind_to_prefix(k: Kind) -> TypePrefix {
     match k {
         Kind::Project => TypePrefix::Project,
@@ -279,6 +423,19 @@ pub fn kind_to_prefix(k: Kind) -> TypePrefix {
         Kind::Task => TypePrefix::Task,
         Kind::Subtask => TypePrefix::Subtask,
         Kind::Milestone => TypePrefix::Milestone,
+    }
+}
+
+/// Inverse of [`kind_to_prefix`]. A `TypePrefix` carries the canonical kind of
+/// its `LeafId`, so the bridge can recover the data-layer `Kind` on read.
+pub fn prefix_to_kind(p: TypePrefix) -> Kind {
+    match p {
+        TypePrefix::Project => Kind::Project,
+        TypePrefix::Product => Kind::Product,
+        TypePrefix::Epic => Kind::Epic,
+        TypePrefix::Task => Kind::Task,
+        TypePrefix::Subtask => Kind::Subtask,
+        TypePrefix::Milestone => Kind::Milestone,
     }
 }
 

@@ -7,9 +7,12 @@
 //! - `tombstones`: per-type lists of leaf numbers that have been allocated and
 //!   then deleted; never reused.
 //! - `items`: a map from leaf id to its on-disk path (relative to `.pm/`).
+//! - `templates`: named [`TaskTemplate`] presets used by the `pm template ...`
+//!   commands for rapid task creation.
 //!
-//! The file is treated as a derived cache: it can always be rebuilt from the
-//! filesystem via `pm doctor`. State writes are atomic (temp-file + rename).
+//! The file is treated as a derived cache for the ticket tree: it can always
+//! be rebuilt from the filesystem via `pm doctor`. State writes are atomic
+//! (temp-file + rename).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -17,6 +20,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::task::TaskTemplate;
 
 use super::id::{IdParseError, LeafId, TypePrefix};
 
@@ -33,6 +38,10 @@ pub struct State {
     /// Map from leaf id to on-disk entry. Path is relative to `.pm/`.
     #[serde(default)]
     pub items: BTreeMap<LeafId, ItemEntry>,
+    /// Named task-creation templates. Carried in state.json so the v2
+    /// workspace owns both the ID index and the templates the UI uses.
+    #[serde(default)]
+    pub templates: Vec<TaskTemplate>,
 }
 
 /// Per-ticket index entry. Currently only carries the relative path; future
@@ -53,7 +62,7 @@ impl State {
             next.insert(*prefix, 1);
             tombstones.insert(*prefix, BTreeSet::new());
         }
-        State { next, tombstones, items: BTreeMap::new() }
+        State { next, tombstones, items: BTreeMap::new(), templates: Vec::new() }
     }
 
     /// Load from a `.pm/state.json` path. If the file does not exist, returns
@@ -301,6 +310,51 @@ mod tests {
         atomic_write(&path, b"world").unwrap();
         let read = fs::read_to_string(&path).unwrap();
         assert_eq!(read, "world");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn templates_round_trip_through_save_and_load() {
+        use crate::fields::{Kind, Priority, ProcessStage, Status};
+        use crate::task::TaskTemplate;
+
+        let dir = tmp_dir();
+        let path = dir.join("state.json");
+
+        let mut s = State::fresh();
+        s.templates.push(TaskTemplate {
+            name: "spike".to_string(),
+            title_template: Some("Spike: {title}".to_string()),
+            description_template: Some("Time-boxed exploration.".to_string()),
+            tags: vec!["research".to_string()],
+            kind: Kind::Task,
+            priority_level: Some(Priority::NiceToHave),
+            urgency: None,
+            process_stage: Some(ProcessStage::Ideation),
+            status: Status::Open,
+        });
+        s.save(&path).unwrap();
+
+        let loaded = State::load(&path).unwrap();
+        assert_eq!(loaded.templates.len(), 1);
+        let t = &loaded.templates[0];
+        assert_eq!(t.name, "spike");
+        assert_eq!(t.title_template.as_deref(), Some("Spike: {title}"));
+        assert_eq!(t.kind, Kind::Task);
+        assert_eq!(t.priority_level, Some(Priority::NiceToHave));
+        assert_eq!(t.tags, vec!["research".to_string()]);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pre_templates_state_json_loads_with_empty_templates() {
+        let dir = tmp_dir();
+        let path = dir.join("state.json");
+        // A state.json from before the templates field existed.
+        fs::write(&path, r#"{ "next": { "TSK": 3 } }"#).unwrap();
+        let s = State::load(&path).unwrap();
+        assert!(s.templates.is_empty(), "missing field must backfill to empty Vec");
         fs::remove_dir_all(&dir).ok();
     }
 }
