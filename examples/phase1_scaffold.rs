@@ -47,23 +47,16 @@ fn main() -> ExitCode {
     let mls = state.allocate(TypePrefix::Milestone);
 
     let address = AddressId::new(vec![prj, prd, epc, tsk, sbt]).unwrap();
-    let slugs = vec!["pm", "core", "checkouts", "lock-protocol", "stale-cleanup"];
-    let task_dir = match layout.directory_for(&address, &slugs) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("directory_for failed: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let mls_dir = layout
-        .directory_for(&AddressId::new(vec![prj, mls]).unwrap(), &["pm", "v1-release"])
-        .unwrap();
+    let task_dir = layout.directory_for(&address);
+    let mls_dir = layout.directory_for(&AddressId::new(vec![prj, mls]).unwrap());
 
-    for (leaf, rel) in [(prj, "projects/pm".into()), (prd, "projects/pm/products/core".into()),
-        (epc, "projects/pm/products/core/epics/checkouts".into()),
-        (tsk, "projects/pm/products/core/epics/checkouts/tasks/lock-protocol".into()),
-        (sbt, task_dir.clone()),
-        (mls, mls_dir),
+    let prj_dir = layout.directory_for(&AddressId::new(vec![prj]).unwrap());
+    let prd_dir = layout.directory_for(&AddressId::new(vec![prj, prd]).unwrap());
+    let epc_dir = layout.directory_for(&AddressId::new(vec![prj, prd, epc]).unwrap());
+    let tsk_dir = layout.directory_for(&AddressId::new(vec![prj, prd, epc, tsk]).unwrap());
+
+    for (leaf, rel) in [(prj, prj_dir), (prd, prd_dir), (epc, epc_dir),
+        (tsk, tsk_dir), (sbt, task_dir.clone()), (mls, mls_dir),
     ] {
         let rel: PathBuf = rel;
         if let Err(e) = layout.ensure_node_path(&rel) {

@@ -13,6 +13,8 @@ use std::fs;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
 use crate::db::*;
 use crate::fields::*;
+use crate::store::id::{IdInput, LeafId};
+use crate::store::migrate::kind_to_prefix;
 use crate::task::{Task, TaskTemplate};
 use crate::tui::run::{run_tui, run_tui_with_edit};
 use crate::tui::menu::MenuApp;
@@ -37,9 +39,6 @@ pub enum Commands {
         /// Optional longer description.
         #[arg(long)]
         desc: Option<String>,
-        /// Project name.
-        #[arg(long)]
-        project: Option<String>,
         /// Comma-separated tags. May be repeated.
         #[arg(long = "tag")]
         tags: Vec<String>,
@@ -135,8 +134,6 @@ pub enum Commands {
         title: Option<String>,
         #[arg(long)]
         desc: Option<String>,
-        #[arg(long)]
-        project: Option<String>,
         #[arg(long)]
         due: Option<String>,
         /// Parent task ID or name.
@@ -286,9 +283,6 @@ pub enum TemplateAction {
         /// Description template
         #[arg(long)]
         description: Option<String>,
-        /// Default project
-        #[arg(long)]
-        project: Option<String>,
         /// Default tags (comma-separated)
         #[arg(long)]
         tags: Option<String>,
@@ -326,7 +320,6 @@ pub fn cmd_add(
     title: String,
     template: Option<String>,
     desc: Option<String>,
-    project: Option<String>,
     tags: Vec<String>,
     due: Option<String>,
     parent: Option<String>,
@@ -343,18 +336,17 @@ pub fn cmd_add(
     status: Status,
 ) {
     // Apply template defaults if specified
-    let (task_kind, final_project, final_tags, final_priority, final_urgency, final_process_stage, final_status, final_desc) = 
+    let (task_kind, final_tags, final_priority, final_urgency, final_process_stage, final_status, final_desc) =
         if let Some(template_name) = template {
             let template = db.templates.iter()
                 .find(|t| t.name == template_name)
                 .cloned();
-            
+
             match template {
                 Some(tmpl) => {
                     let template_tags = if tags.is_empty() { tmpl.tags } else { split_and_normalise_tags(&tags) };
                     (
                         if kind == Kind::Task { tmpl.kind } else { kind },
-                        project.or(tmpl.project),
                         template_tags,
                         priority_level.or(tmpl.priority_level),
                         urgency.or(tmpl.urgency),
@@ -369,11 +361,11 @@ pub fn cmd_add(
                 }
             }
         } else {
-            (kind, project, split_and_normalise_tags(&tags), priority_level, urgency, process_stage, status, desc)
+            (kind, split_and_normalise_tags(&tags), priority_level, urgency, process_stage, status, desc)
         };
-    
+
     let now_utc = Utc::now().timestamp();
-    let id = db.next_id();
+    let id = db.allocate_id(kind_to_prefix(task_kind));
 
     // Resolve and validate parent
     let parent_id = if let Some(parent_str) = parent {
@@ -383,11 +375,11 @@ pub fn cmd_add(
                     eprintln!("Parent cannot equal child.");
                     std::process::exit(1);
                 }
-                
+
                 // Check hierarchy rules
                 if let Some(parent_task) = db.get(pid) {
                     if !validate_hierarchy(parent_task.kind, task_kind) {
-                        eprintln!("Invalid hierarchy: {} cannot be child of {}. Valid hierarchy: Product > Epic > Task > Subtask",
+                        eprintln!("Invalid hierarchy: {} cannot be child of {}. Valid hierarchy: Project > Product > Epic > Task > Subtask",
                             format_kind(task_kind), format_kind(parent_task.kind));
                         std::process::exit(1);
                     }
@@ -418,7 +410,6 @@ pub fn cmd_add(
         user_story,
         requirements,
         tags: final_tags,
-        project: final_project.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()),
         due,
         parent: parent_id,
         kind: task_kind,
@@ -475,7 +466,7 @@ pub fn cmd_list(
                 }
             }
             if let Some(ref p) = project {
-                if t.project.as_deref() != Some(p.as_str()) {
+                if project_label(db, t) != *p {
                     return false;
                 }
             }
@@ -572,7 +563,7 @@ pub fn cmd_list(
 
     if tree {
         // Compute depths for indentation using ancestry in the full DB.
-        let mut depth_map: HashMap<u64, usize> = HashMap::new();
+        let mut depth_map: HashMap<LeafId, usize> = HashMap::new();
         for t in &db.tasks {
             let mut depth = 0usize;
             let mut cur = t.parent;
@@ -585,9 +576,9 @@ pub fn cmd_list(
             }
             depth_map.insert(t.id, depth);
         }
-        print_table(&filtered, Some(&depth_map));
+        print_table(db, &filtered, Some(&depth_map));
     } else {
-        print_table(&filtered, None);
+        print_table(db, &filtered, None);
     }
 }
 
@@ -606,12 +597,13 @@ pub fn cmd_view(db: &Database, id: String, children: bool, parents: bool) {
         std::process::exit(1);
     };
     let today = Local::now().date_naive();
+    let project_for_view = project_label(db, &task);
     println!("ID:           {}", task.id);
     println!("Title:        {}", task.title);
     println!("Kind:         {}", format_kind(task.kind));
     println!("Status:       {}", format_status(task.status));
     println!("Priority:     {}", format_priority(task.priority_level));
-    println!("Project:      {}", task.project.clone().unwrap_or_else(|| "-".into()));
+    println!("Project:      {}", project_for_view);
     println!("Due:          {}", match task.due { Some(d) => format!("{d} ({})", format_due_relative(Some(d), today)), None => "-".into() });
     println!("Parent:       {}", task.parent.map(|p| p.to_string()).unwrap_or_else(|| "-".into()));
     println!("Tags:         {}", if task.tags.is_empty() { "-".into() } else { task.tags.join(",") });
@@ -636,9 +628,9 @@ pub fn cmd_view(db: &Database, id: String, children: bool, parents: bool) {
             // Depth-first print.
             let idx = db.index();
             pub fn dfs(
-                id: u64,
-                child_map: &BTreeMap<u64, Vec<u64>>,
-                idx: &HashMap<u64, usize>,
+                id: LeafId,
+                child_map: &BTreeMap<LeafId, Vec<LeafId>>,
+                idx: &HashMap<LeafId, usize>,
                 db: &Database,
                 depth: usize,
             ) {
@@ -646,7 +638,7 @@ pub fn cmd_view(db: &Database, id: String, children: bool, parents: bool) {
                     for &c in children {
                         if let Some(&i) = idx.get(&c) {
                             let t = &db.tasks[i];
-                            println!("{}- {} [{}] (#{})", "  ".repeat(depth), t.title, format_status(t.status), t.id);
+                            println!("{}- {} [{}] ({})", "  ".repeat(depth), t.title, format_status(t.status), t.id);
                             dfs(c, child_map, idx, db, depth + 1);
                         }
                     }
@@ -666,7 +658,6 @@ pub fn cmd_update(
     id: String,
     title: Option<String>,
     desc: Option<String>,
-    project: Option<String>,
     due: Option<String>,
     parent: Option<String>,
     kind: Option<Kind>,
@@ -729,7 +720,6 @@ pub fn cmd_update(
         };
         if let Some(s) = title { t.title = s; }
         if let Some(d) = desc { t.description = if d.is_empty() { None } else { Some(d) }; }
-        if let Some(p) = project { t.project = if p.trim().is_empty() { None } else { Some(p.trim().to_string()) }; }
         if clear_due { t.due = None; }
         if let Some(ds) = due {
             t.due = parse_due_input(&ds);
@@ -752,7 +742,7 @@ pub fn cmd_update(
     if let Some(parent_id) = final_parent {
         if let Some(parent_task) = db.get(parent_id) {
             if !validate_hierarchy(parent_task.kind, final_kind) {
-                eprintln!("Invalid hierarchy: {} cannot be child of {}. Valid hierarchy: Product > Epic > Task > Subtask",
+                eprintln!("Invalid hierarchy: {} cannot be child of {}. Valid hierarchy: Project > Product > Epic > Task > Subtask",
                     format_kind(final_kind), format_kind(parent_task.kind));
                 std::process::exit(1);
             }
@@ -799,8 +789,8 @@ pub fn cmd_complete(
         std::process::exit(1);
     }
     
-    let mut to_mark: HashSet<u64> = HashSet::new();
-    
+    let mut to_mark: HashSet<LeafId> = HashSet::new();
+
     if let Some(id_str) = id {
         // Single task completion
         let task_id = match resolve_task_identifier(&id_str, db) {
@@ -810,12 +800,12 @@ pub fn cmd_complete(
                 std::process::exit(1);
             }
         };
-        
+
         let Some(_) = db.get(task_id) else {
             eprintln!("Task {} not found.", task_id);
             std::process::exit(1);
         };
-        
+
         to_mark.insert(task_id);
         if recurse {
             let child_map = build_children_map(&db.tasks);
@@ -827,23 +817,23 @@ pub fn cmd_complete(
             let matches = if let Some(ref tag_filter) = tag {
                 task.tags.iter().any(|t| t == tag_filter)
             } else if let Some(ref project_filter) = project {
-                task.project.as_ref() == Some(project_filter)
+                project_label(db, task) == *project_filter
             } else if let Some(status_val) = status_filter {
                 task.status == status_val
             } else {
                 false
             };
-            
+
             if matches {
                 to_mark.insert(task.id);
             }
         }
-        
+
         if to_mark.is_empty() {
             println!("No tasks found matching the criteria.");
             return;
         }
-        
+
         // Show what will be completed
         println!("Will complete {} task(s):", to_mark.len());
         for &task_id in &to_mark {
@@ -905,8 +895,8 @@ pub fn cmd_delete(
         std::process::exit(1);
     }
     
-    let mut to_delete: HashSet<u64> = HashSet::new();
-    
+    let mut to_delete: HashSet<LeafId> = HashSet::new();
+
     if let Some(id_str) = id {
         // Single task deletion
         let task_id = match resolve_task_identifier(&id_str, db) {
@@ -916,14 +906,14 @@ pub fn cmd_delete(
                 std::process::exit(1);
             }
         };
-        
+
         let Some(_) = db.get(task_id) else {
             eprintln!("Task {} not found.", task_id);
             std::process::exit(1);
         };
-        
+
         let child_map = build_children_map(&db.tasks);
-        let mut children: HashSet<u64> = HashSet::new();
+        let mut children: HashSet<LeafId> = HashSet::new();
         collect_descendants(task_id, &child_map, &mut children);
         if !children.is_empty() && !cascade {
             eprintln!("Task {} has {} descendant(s). Use --cascade to delete all.", task_id, children.len());
@@ -937,23 +927,23 @@ pub fn cmd_delete(
             let matches = if let Some(ref tag_filter) = tag {
                 task.tags.iter().any(|t| t == tag_filter)
             } else if let Some(ref project_filter) = project {
-                task.project.as_ref() == Some(project_filter)
+                project_label(db, task) == *project_filter
             } else if let Some(status_val) = status_filter {
                 task.status == status_val
             } else {
                 false
             };
-            
+
             if matches {
                 to_delete.insert(task.id);
             }
         }
-        
+
         if to_delete.is_empty() {
             println!("No tasks found matching the criteria.");
             return;
         }
-        
+
         // Show what will be deleted
         println!("Will delete {} task(s):", to_delete.len());
         for &task_id in &to_delete {
@@ -972,11 +962,12 @@ pub fn cmd_delete(
     println!("Deleted.");
 }
 
-/// List all distinct project names in the database.
+/// List all distinct project names derived from each task's parent chain.
+/// A task without a Project ancestor is bucketed under `-`.
 pub fn cmd_projects(db: &Database) {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for t in &db.tasks {
-        let key = t.project.clone().unwrap_or_else(|| "-".into());
+        let key = project_label(db, t);
         *counts.entry(key).or_default() += 1;
     }
     println!("{:<16} {}", "Project", "Count");
@@ -1036,7 +1027,6 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
                 name: template_name.clone(),
                 title_template: Some(task.title.clone()),
                 description_template: task.description.clone(),
-                project: task.project.clone(),
                 tags: task.tags.clone(),
                 kind: task.kind,
                 priority_level: task.priority_level,
@@ -1060,16 +1050,14 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
                 println!("No templates found.");
                 return;
             }
-            
-            println!("{:<20} {:<10} {:<12} {:<15}", "Name", "Kind", "Status", "Project");
+
+            println!("{:<20} {:<10} {:<12}", "Name", "Kind", "Status");
             for template in &db.templates {
-                let project = template.project.as_deref().unwrap_or("-");
                 println!(
-                    "{:<20} {:<10} {:<12} {:<15}",
+                    "{:<20} {:<10} {:<12}",
                     truncate(&template.name, 20),
                     format_kind(template.kind),
                     format_status(template.status),
-                    truncate(project, 15)
                 );
             }
         },
@@ -1095,7 +1083,6 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
             name,
             title_template,
             description,
-            project,
             tags,
             kind,
             priority,
@@ -1108,18 +1095,17 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
                 eprintln!("Template '{}' already exists. Use a different name.", name);
                 std::process::exit(1);
             }
-            
+
             let template_tags = if let Some(tags_str) = tags {
                 split_and_normalise_tags(&[tags_str])
             } else {
                 Vec::new()
             };
-            
+
             let template = TaskTemplate {
                 name: name.clone(),
                 title_template,
                 description_template: description,
-                project,
                 tags: template_tags,
                 kind,
                 priority_level: priority,
@@ -1157,45 +1143,45 @@ pub fn cmd_export(
             if !all && task.status == Status::Done {
                 return false;
             }
-            
-            // Project filter
+
+            // Project filter derives the project label from the parent chain.
             if let Some(ref proj_filter) = project {
-                if task.project.as_ref() != Some(proj_filter) {
+                if project_label(db, task) != *proj_filter {
                     return false;
                 }
             }
-            
+
             // Tag filter
             if let Some(ref tag_filter) = tag {
                 if !task.tags.iter().any(|t| t == tag_filter) {
                     return false;
                 }
             }
-            
+
             true
         })
         .collect();
-    
+
     // Create CSV content
     let mut csv_content = String::new();
-    
+
     // CSV Header
     csv_content.push_str("ID,Title,Kind,Status,Priority,Urgency,ProcessStage,Project,Tags,Due,Parent,CreatedUTC,UpdatedUTC,Description\n");
-    
+
     // CSV Rows
     let task_count = tasks.len();
     for task in &tasks {
         let priority = task.priority_level.map(|p| format_priority(Some(p))).unwrap_or("-");
         let urgency = task.urgency.map(|u| format_urgency(Some(u))).unwrap_or("-");
         let process_stage = task.process_stage.map(|ps| format_process_stage(Some(ps))).unwrap_or("-");
-        let project = task.project.as_deref().unwrap_or("-");
+        let project_col = project_label(db, task);
         let tags = if task.tags.is_empty() { "-".to_string() } else { task.tags.join(";") };
         let due = task.due.map(|d| d.to_string()).unwrap_or("-".to_string());
         let parent = task.parent.map(|p| p.to_string()).unwrap_or("-".to_string());
         let created = chrono::Utc.timestamp_opt(task.created_at_utc, 0).single().unwrap().to_rfc3339();
         let updated = chrono::Utc.timestamp_opt(task.updated_at_utc, 0).single().unwrap().to_rfc3339();
         let description = task.description.as_deref().unwrap_or("-");
-        
+
         // Escape CSV fields that contain commas or quotes
         let escape_csv = |s: &str| {
             if s.contains(',') || s.contains('"') || s.contains('\n') {
@@ -1204,7 +1190,7 @@ pub fn cmd_export(
                 s.to_string()
             }
         };
-        
+
         csv_content.push_str(&format!(
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             task.id,
@@ -1214,7 +1200,7 @@ pub fn cmd_export(
             escape_csv(&priority),
             escape_csv(&urgency),
             escape_csv(&process_stage),
-            escape_csv(project),
+            escape_csv(&project_col),
             escape_csv(&tags),
             escape_csv(&due),
             escape_csv(&parent),
@@ -1314,12 +1300,11 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
     
     let mut imported_count = 0;
     let mut skipped_count = 0;
-    let mut next_id = db.next_id();
-    
+
     // Process each CSV row (skip header)
     for (line_num, line) in lines.iter().skip(1).enumerate() {
         let line_num = line_num + 2; // +2 because we skip header and line numbers are 1-based
-        
+
         // Simple CSV parsing (handles quoted fields)
         let fields = parse_csv_line(line);
         if fields.len() != 14 {
@@ -1327,44 +1312,51 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
             skipped_count += 1;
             continue;
         }
-        
-        // Parse fields
-        let _original_id = fields[0].parse::<u64>().unwrap_or(0);
+
+        // Parse fields. The legacy ID column is ignored; the new id is
+        // allocated through `db.allocate_id` so the v2 counters stay
+        // authoritative. The Project column (fields[7]) is read but not stored
+        // since Task.project has been dropped; project membership derives from
+        // the parent chain.
         let title = fields[1].clone();
         let kind = parse_kind(&fields[2]);
         let status = parse_status(&fields[3]);
         let priority = parse_priority(&fields[4]);
         let urgency = parse_urgency(&fields[5]);
         let process_stage = parse_process_stage(&fields[6]);
-        let project = if fields[7] == "-" { None } else { Some(fields[7].clone()) };
         let tags = if fields[8] == "-" { Vec::new() } else { fields[8].split(';').map(|s| s.to_string()).collect() };
         let due = if fields[9] == "-" { None } else { NaiveDate::parse_from_str(&fields[9], "%Y-%m-%d").ok() };
-        let parent = if fields[10] == "-" { None } else { fields[10].parse::<u64>().ok() };
+        let parent = if fields[10] == "-" {
+            None
+        } else {
+            fields[10]
+                .parse::<IdInput>()
+                .ok()
+                .map(|input| input.leaf())
+        };
         let description = if fields[13] == "-" { None } else { Some(fields[13].clone()) };
-        
+
         if title.is_empty() {
             eprintln!("Warning: Line {} has empty title. Skipping.", line_num);
             skipped_count += 1;
             continue;
         }
-        
+
         // Check if task with same title already exists
         if db.tasks.iter().any(|t| t.title == title) {
             eprintln!("Warning: Task with title '{}' already exists. Skipping.", title);
             skipped_count += 1;
             continue;
         }
-        
-        // Create new task with sequential ID
+
         let new_task = Task {
-            id: next_id,
+            id: db.allocate_id(kind_to_prefix(kind)),
             title,
             summary: None, // CSV doesn't include summary field
             description,
-            user_story: None, // CSV doesn't include user_story field  
+            user_story: None, // CSV doesn't include user_story field
             requirements: None, // CSV doesn't include requirements field
             tags,
-            project,
             due,
             parent,
             kind,
@@ -1378,10 +1370,9 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
             created_at_utc: Utc::now().timestamp(),
             updated_at_utc: Utc::now().timestamp(),
         };
-        
+
         db.tasks.push(new_task);
         imported_count += 1;
-        next_id += 1;
     }
     
     // Save database
@@ -1513,8 +1504,10 @@ pub fn cmd_export_all(pm_dir: &Path, output: Option<String>, include_completed: 
     }
     
     let output_path = output.unwrap_or_else(|| "all_projects.csv".to_string());
-    let mut all_tasks = Vec::new();
-    
+    // Collect (project, task, derived_project_label) so the CSV row writer
+    // does not need the db handle later.
+    let mut all_rows: Vec<(crate::project::Project, Task, String)> = Vec::new();
+
     // Collect tasks from all projects
     for project in &projects {
         let db = project.load_database();
@@ -1523,37 +1516,37 @@ pub fn cmd_export_all(pm_dir: &Path, output: Option<String>, include_completed: 
             if !include_completed && task.status == Status::Done {
                 continue;
             }
-            
+
             if let Some(ref tag_filter) = tag_filter {
                 if !task.tags.iter().any(|t| t == tag_filter) {
                     continue;
                 }
             }
-            
-            all_tasks.push((project.clone(), task.clone()));
+
+            let project_col = project_label(&db, task);
+            all_rows.push((project.clone(), task.clone(), project_col));
         }
     }
-    
+
     // Create CSV content
     let mut csv_content = String::new();
-    
+
     // CSV Header (add project name column)
     csv_content.push_str("ProjectName,ID,Title,Kind,Status,Priority,Urgency,ProcessStage,Project,Tags,Due,Parent,CreatedUTC,UpdatedUTC,Description\n");
-    
+
     // CSV Rows
-    let task_count = all_tasks.len();
-    for (project, task) in &all_tasks {
+    let task_count = all_rows.len();
+    for (project, task, project_col) in &all_rows {
         let priority = task.priority_level.map(|p| format_priority(Some(p))).unwrap_or("-");
         let urgency = task.urgency.map(|u| format_urgency(Some(u))).unwrap_or("-");
         let process_stage = task.process_stage.map(|ps| format_process_stage(Some(ps))).unwrap_or("-");
-        let project_field = task.project.as_deref().unwrap_or("-");
         let tags = if task.tags.is_empty() { "-".to_string() } else { task.tags.join(";") };
         let due = task.due.map(|d| d.to_string()).unwrap_or("-".to_string());
         let parent = task.parent.map(|p| p.to_string()).unwrap_or("-".to_string());
         let created = chrono::Utc.timestamp_opt(task.created_at_utc, 0).single().unwrap().to_rfc3339();
         let updated = chrono::Utc.timestamp_opt(task.updated_at_utc, 0).single().unwrap().to_rfc3339();
         let description = task.description.as_deref().unwrap_or("-");
-        
+
         // Escape CSV fields that contain commas or quotes
         let escape_csv = |s: &str| {
             if s.contains(',') || s.contains('"') || s.contains('\n') {
@@ -1562,7 +1555,7 @@ pub fn cmd_export_all(pm_dir: &Path, output: Option<String>, include_completed: 
                 s.to_string()
             }
         };
-        
+
         csv_content.push_str(&format!(
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             escape_csv(&project.display_name),
@@ -1573,7 +1566,7 @@ pub fn cmd_export_all(pm_dir: &Path, output: Option<String>, include_completed: 
             escape_csv(&priority),
             escape_csv(&urgency),
             escape_csv(&process_stage),
-            escape_csv(project_field),
+            escape_csv(project_col),
             escape_csv(&tags),
             escape_csv(&due),
             escape_csv(&parent),

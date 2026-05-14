@@ -60,7 +60,7 @@ impl<'a> Resolver<'a> {
 
         // Direct lookup against state.items. Leaves are stable for life, so this
         // covers any address-form input whose leaf is still live (even if the
-        // address chain or slugs have changed since the input was written).
+        // address chain has changed since the input was written).
         if let Some(entry) = self.state.lookup(leaf) {
             return Ok(self.build_resolved(leaf, entry, None));
         }
@@ -194,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn slugged_address_resolves_to_leaf() {
+    fn labelled_address_resolves_to_leaf() {
         let (layout, mut state, aliases) = fresh_setup();
         let tsk = state.allocate(TypePrefix::Task);
         let rel = PathBuf::from("tasks/lock-protocol");

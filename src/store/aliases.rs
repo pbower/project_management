@@ -1,11 +1,11 @@
 //! `aliases.json` - the redirect table for moved or renamed tickets.
 //!
-//! When a ticket moves (its parent chain changes) or its slug changes, the
-//! address form of its id changes. Aliases preserve resolvability of the old
-//! form by recording a redirect from the old string to the new one.
+//! When a ticket moves (its parent chain changes), the address form of its id
+//! changes. Aliases preserve resolvability of the old form by recording a
+//! redirect from the old string to the new one.
 //!
-//! Leaf-form lookups never need aliases (leaf ids are stable for life). Address
-//! and slugged-address forms consult aliases when the direct lookup fails.
+//! Leaf-form lookups never need aliases (leaf ids are stable for life).
+//! Address-form lookups consult aliases when the direct lookup fails.
 
 use std::collections::BTreeMap;
 use std::fs;

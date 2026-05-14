@@ -179,10 +179,10 @@ fn main() {
         Commands::Ui => unreachable!("UI command handled above"),
         Commands::Wf => unreachable!("Workflow command handled above"),
         Commands::Add {
-            title, template, desc, project, tags, due, parent, kind, priority_level,
+            title, template, desc, tags, due, parent, kind, priority_level,
             urgency, process_stage, issue_link, pr_link, summary, user_story,
             requirements, artifacts, status,
-        } => cmd_add(&mut db, &db_path, title, template, desc, project, tags, due, parent,
+        } => cmd_add(&mut db, &db_path, title, template, desc, tags, due, parent,
                      kind, priority_level, urgency, process_stage, issue_link,
                      pr_link, summary, user_story, requirements, artifacts, status),
 
@@ -191,9 +191,9 @@ fn main() {
 
         Commands::View { id, children, parents } => cmd_view(&db, id, children, parents),
 
-        Commands::Update { id, title, desc, project, due, parent, kind, status,
+        Commands::Update { id, title, desc, due, parent, kind, status,
                           add_tags, rm_tags, clear_due, clear_parent } =>
-            cmd_update(&mut db, &db_path, id, title, desc, project, due, parent, kind,
+            cmd_update(&mut db, &db_path, id, title, desc, due, parent, kind,
                       status, add_tags, rm_tags, clear_due, clear_parent),
 
         Commands::Complete { id, recurse, tag, project, status } =>

@@ -5,11 +5,11 @@
 //!
 //! - Leaf: `TSK7` (durable, stored in front-matter, never changes)
 //! - Address: `PRJ1-PRD3-EPC7-TSK22` (derived hierarchy, regenerated on move)
-//! - Slug: `TSK7-lock-protocol` (tab-completion / disk path tail)
-//! - Slugged address: `PRJ1-pm/PRD3-core/EPC7-checkouts/TSK22-lock-protocol`
+//! - Labelled leaf: `TSK7-lock-protocol` (parser tolerates a trailing label; the label is not part of any on-disk directory name)
+//! - Labelled address: `PRJ1/PRD3/EPC7-checkouts/TSK22-lock-protocol`
 //!
 //! The parser keys on `(PRJ|PRD|EPC|TSK|SBT|MLS)\d+` and ignores any trailing
-//! slug text after the digits.
+//! label text after the digits.
 
 use std::fmt;
 use std::str::FromStr;
@@ -22,19 +22,19 @@ use serde::{Deserialize, Serialize};
 /// structure on disk, not by the prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TypePrefix {
-    /// Top-level container. Lives under `.pm/projects/<slug>/`.
+    /// Top-level container. Lives under `.pm/projects/<PRJ>/`.
     #[serde(rename = "PRJ")]
     Project,
-    /// Product within a project. Lives under `<project>/products/<slug>/`.
+    /// Product within a project. Lives under `<project>/products/<PRD>/`.
     #[serde(rename = "PRD")]
     Product,
-    /// Epic within a product. Lives under `<product>/epics/<slug>/`.
+    /// Epic within a product. Lives under `<product>/epics/<EPC>/`.
     #[serde(rename = "EPC")]
     Epic,
-    /// Task within an epic. Lives under `<epic>/tasks/<slug>/`.
+    /// Task within an epic. Lives under `<epic>/tasks/<TSK>/`.
     #[serde(rename = "TSK")]
     Task,
-    /// Subtask within a task. Lives under `<task>/subtasks/<slug>/`.
+    /// Subtask within a task. Lives under `<task>/subtasks/<SBT>/`.
     #[serde(rename = "SBT")]
     Subtask,
     /// Milestone marker. Cross-cutting; project-scoped by default.
@@ -230,12 +230,12 @@ impl FromStr for AddressId {
 ///
 /// Accepts (and remembers which form it came from):
 /// - Leaf: `TSK7`
-/// - Leaf with slug suffix: `TSK7-lock-protocol`
+/// - Leaf with label suffix: `TSK7-lock-protocol`
 /// - Address: `PRJ1-PRD3-EPC7-TSK22`
-/// - Slugged address: `PRJ1-pm/PRD3-core/EPC7-checkouts/TSK22-lock-protocol`
+/// - Labelled address: `PRJ1/PRD3/EPC7-checkouts/TSK22-lock-protocol`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdInput {
-    /// A bare leaf or leaf-with-slug.
+    /// A bare leaf or leaf-with-label.
     Leaf(LeafId),
     /// A multi-segment address; the leaf is always `.leaf()`.
     Address(AddressId),
@@ -259,8 +259,9 @@ impl FromStr for IdInput {
             return Err(IdParseError::Empty);
         }
 
-        // Slugged-address form: contains '/' separators. Pick up the leaf of each path
-        // segment in turn (each segment of the form `<LEAF>` or `<LEAF>-<slug>`).
+        // Labelled-address form: contains '/' separators. Pick up the leaf of
+        // each path segment in turn (each segment of the form `<LEAF>` or
+        // `<LEAF>-<label>`).
         if raw.contains('/') {
             let mut segments = Vec::new();
             for part in raw.split('/').filter(|p| !p.is_empty()) {
@@ -270,9 +271,10 @@ impl FromStr for IdInput {
             return Ok(IdInput::Address(AddressId::new(segments)?));
         }
 
-        // Single segment: either a leaf-with-slug, a multi-leaf address, or both.
-        // Try parsing successive leaves separated by '-' until we run out of leaves
-        // (the residual must then be either empty or a slug starting with `-`).
+        // Single segment: either a leaf-with-label, a multi-leaf address, or
+        // both. Try parsing successive leaves separated by '-' until we run
+        // out of leaves (the residual must then be either empty or a label
+        // starting with `-`).
         let mut segments = Vec::new();
         let mut rest = raw;
         loop {
@@ -281,14 +283,14 @@ impl FromStr for IdInput {
             if after.is_empty() {
                 break;
             }
-            // A '-' may introduce either the next leaf or a slug. Peek ahead.
+            // A '-' may introduce either the next leaf or a label. Peek ahead.
             let candidate = after.strip_prefix('-').ok_or_else(|| {
                 IdParseError::UnexpectedSeparator(after.to_string())
             })?;
             if looks_like_leaf_start(candidate) {
                 rest = candidate;
             } else {
-                // Slug suffix; we are done collecting leaves.
+                // Label suffix; we are done collecting leaves.
                 break;
             }
         }
@@ -407,7 +409,7 @@ mod tests {
     #[test]
     fn leaf_rejects_trailing_input_in_from_str() {
         // FromStr for LeafId is strict; use IdInput for tolerant parsing.
-        let err: Result<LeafId, _> = "TSK7-slug".parse();
+        let err: Result<LeafId, _> = "TSK7-label".parse();
         assert!(matches!(err, Err(IdParseError::TrailingInput(_))));
     }
 
@@ -440,9 +442,9 @@ mod tests {
     }
 
     #[test]
-    fn idinput_accepts_leaf_with_slug() {
+    fn idinput_accepts_leaf_with_label() {
         let input: IdInput = "TSK7-lock-protocol".parse().unwrap();
-        // The slug `lock-protocol` does not start with a known prefix so the
+        // The label `lock-protocol` does not start with a known prefix so the
         // parser stops after `TSK7` and the result is a bare leaf.
         assert!(matches!(input, IdInput::Leaf(_)));
         assert_eq!(input.leaf().to_string(), "TSK7");
@@ -458,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn idinput_accepts_slugged_address() {
+    fn idinput_accepts_labelled_address() {
         let input: IdInput = "PRJ1-pm/PRD3-core/EPC7-checkouts/TSK22-lock-protocol".parse().unwrap();
         match input {
             IdInput::Address(a) => {
@@ -471,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn idinput_distinguishes_address_from_leaf_with_slug() {
+    fn idinput_distinguishes_address_from_leaf_with_label() {
         // `TSK22-lock-protocol` - residual starts with non-leaf text, so leaf form.
         let a: IdInput = "TSK22-lock-protocol".parse().unwrap();
         assert!(matches!(a, IdInput::Leaf(_)));

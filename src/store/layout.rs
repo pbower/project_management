@@ -16,10 +16,11 @@
 //! └── milestones/        # cross-project milestones
 //! ```
 //!
-//! Each ticket lives at a path computed from its slugged-address (e.g.
-//! `projects/pm/products/core/epics/checkouts/tasks/lock-protocol/`). This
-//! module knows how to derive that path from an [`AddressId`] plus a slug map,
-//! and how to ensure the layout exists.
+//! Each ticket lives at a path composed of its address chain, with each
+//! directory named after the corresponding `LeafId`. For an address
+//! `PRJ1-PRD3-EPC7-TSK22` the directory is
+//! `projects/PRJ1/products/PRD3/epics/EPC7/tasks/TSK22/`. `LeafId`s are
+//! unique by construction, so there's no name-clash question.
 
 use std::fs;
 use std::io;
@@ -110,35 +111,27 @@ impl Layout {
     }
 
     /// Compute the relative directory path for a ticket given its full
-    /// address-id and a slug for every segment. Slug count must match address
-    /// depth. Returns a path relative to `.pm/`.
+    /// address-id. Each segment becomes `<type-folder>/<LeafId>/`. The path
+    /// returned is relative to `.pm/`.
     ///
-    /// Example: address `PRJ1-PRD3-EPC7-TSK22` with slugs `["pm", "core",
-    /// "checkouts", "lock-protocol"]` -> `projects/pm/products/core/epics/checkouts/tasks/lock-protocol/`.
-    pub fn directory_for(&self, address: &AddressId, slugs: &[&str]) -> Result<PathBuf, LayoutError> {
-        if address.depth() != slugs.len() {
-            return Err(LayoutError::SlugDepthMismatch {
-                address_depth: address.depth(),
-                slugs: slugs.len(),
-            });
-        }
+    /// Example: address `PRJ1-PRD3-EPC7-TSK22` ->
+    /// `projects/PRJ1/products/PRD3/epics/EPC7/tasks/TSK22`.
+    pub fn directory_for(&self, address: &AddressId) -> PathBuf {
         let mut p = PathBuf::new();
-        for (leaf, slug) in address.segments().iter().zip(slugs.iter()) {
-            validate_slug(slug)?;
+        for leaf in address.segments() {
             p.push(leaf.prefix().type_folder());
-            p.push(slug);
+            p.push(leaf.to_string());
         }
-        Ok(p)
+        p
     }
 
-    /// Compute the on-disk directory for an orphan leaf with the given slug.
-    /// Orphans live directly under the root type folder.
-    pub fn orphan_directory_for(&self, leaf: LeafId, slug: &str) -> Result<PathBuf, LayoutError> {
-        validate_slug(slug)?;
+    /// Compute the on-disk directory for an orphan leaf. Orphans live directly
+    /// under the root type folder, named by their `LeafId`.
+    pub fn orphan_directory_for(&self, leaf: LeafId) -> PathBuf {
         let mut p = PathBuf::new();
         p.push(leaf.prefix().type_folder());
-        p.push(slug);
-        Ok(p)
+        p.push(leaf.to_string());
+        p
     }
 
     /// Create a ticket directory plus its `artifacts/` subdirectory, relative
@@ -151,33 +144,10 @@ impl Layout {
     }
 }
 
-/// Slug rules: lowercase ASCII letters, digits, hyphens. Must start with a
-/// letter or digit. 1-63 characters. Matches the validator described in
-/// PM_DESIGN.md Section 5.1.
-fn validate_slug(slug: &str) -> Result<(), LayoutError> {
-    if slug.is_empty() || slug.len() > 63 {
-        return Err(LayoutError::InvalidSlug(slug.to_string()));
-    }
-    let bytes = slug.as_bytes();
-    let first_ok = bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit();
-    if !first_ok {
-        return Err(LayoutError::InvalidSlug(slug.to_string()));
-    }
-    for &b in &bytes[1..] {
-        let ok = b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
-        if !ok { return Err(LayoutError::InvalidSlug(slug.to_string())); }
-    }
-    Ok(())
-}
-
 #[derive(Debug)]
 pub enum LayoutError {
     Io(io::Error),
     Parse(serde_json::Error),
-    /// Caller passed N slugs for an address with a different depth.
-    SlugDepthMismatch { address_depth: usize, slugs: usize },
-    /// Slug failed the validator (case, length, or character set).
-    InvalidSlug(String),
 }
 
 impl std::fmt::Display for LayoutError {
@@ -185,10 +155,6 @@ impl std::fmt::Display for LayoutError {
         match self {
             LayoutError::Io(e) => write!(f, "layout io error: {e}"),
             LayoutError::Parse(e) => write!(f, "layout parse error: {e}"),
-            LayoutError::SlugDepthMismatch { address_depth, slugs } => {
-                write!(f, "slug depth mismatch: address has {address_depth} segments, got {slugs} slugs")
-            }
-            LayoutError::InvalidSlug(s) => write!(f, "invalid slug: {s:?}"),
         }
     }
 }
@@ -245,10 +211,10 @@ mod tests {
     fn directory_for_full_chain() {
         let layout = Layout::under("/tmp");
         let addr: AddressId = "PRJ1-PRD3-EPC7-TSK22".parse().unwrap();
-        let path = layout.directory_for(&addr, &["pm", "core", "checkouts", "lock-protocol"]).unwrap();
+        let path = layout.directory_for(&addr);
         assert_eq!(
             path,
-            PathBuf::from("projects/pm/products/core/epics/checkouts/tasks/lock-protocol"),
+            PathBuf::from("projects/PRJ1/products/PRD3/epics/EPC7/tasks/TSK22"),
         );
     }
 
@@ -256,10 +222,10 @@ mod tests {
     fn directory_for_with_subtask() {
         let layout = Layout::under("/tmp");
         let addr: AddressId = "PRJ1-PRD3-EPC7-TSK22-SBT1".parse().unwrap();
-        let path = layout.directory_for(&addr, &["pm", "core", "checkouts", "lock-protocol", "stale-cleanup"]).unwrap();
+        let path = layout.directory_for(&addr);
         assert_eq!(
             path,
-            PathBuf::from("projects/pm/products/core/epics/checkouts/tasks/lock-protocol/subtasks/stale-cleanup"),
+            PathBuf::from("projects/PRJ1/products/PRD3/epics/EPC7/tasks/TSK22/subtasks/SBT1"),
         );
     }
 
@@ -267,8 +233,8 @@ mod tests {
     fn orphan_directory_for_root_task() {
         let layout = Layout::under("/tmp");
         let input: IdInput = "TSK15".parse().unwrap();
-        let path = layout.orphan_directory_for(input.leaf(), "quick-thought").unwrap();
-        assert_eq!(path, PathBuf::from("tasks/quick-thought"));
+        let path = layout.orphan_directory_for(input.leaf());
+        assert_eq!(path, PathBuf::from("tasks/TSK15"));
     }
 
     #[test]
@@ -276,42 +242,10 @@ mod tests {
         let base = tmp_dir();
         let layout = Layout::under(&base);
         layout.init().unwrap();
-        let rel = PathBuf::from("tasks/lock-protocol");
+        let rel = PathBuf::from("tasks/TSK1");
         let abs = layout.ensure_node_path(&rel).unwrap();
         assert!(abs.is_dir());
         assert!(abs.join("artifacts").is_dir());
         fs::remove_dir_all(&base).ok();
-    }
-
-    #[test]
-    fn directory_for_rejects_slug_depth_mismatch() {
-        let layout = Layout::under("/tmp");
-        let addr: AddressId = "PRJ1-PRD3".parse().unwrap();
-        let err = layout.directory_for(&addr, &["pm"]).unwrap_err();
-        assert!(matches!(err, LayoutError::SlugDepthMismatch { address_depth: 2, slugs: 1 }));
-    }
-
-    #[test]
-    fn directory_for_rejects_bad_slug() {
-        let layout = Layout::under("/tmp");
-        let addr: AddressId = "PRJ1".parse().unwrap();
-        let err = layout.directory_for(&addr, &["Bad-Slug"]).unwrap_err();
-        assert!(matches!(err, LayoutError::InvalidSlug(_)));
-
-        let err = layout.directory_for(&addr, &["bad slug"]).unwrap_err();
-        assert!(matches!(err, LayoutError::InvalidSlug(_)));
-
-        let err = layout.directory_for(&addr, &["-leading-hyphen"]).unwrap_err();
-        assert!(matches!(err, LayoutError::InvalidSlug(_)));
-
-        let err = layout.directory_for(&addr, &[""]).unwrap_err();
-        assert!(matches!(err, LayoutError::InvalidSlug(_)));
-    }
-
-    #[test]
-    fn slug_validator_accepts_typical_kebab() {
-        for ok in &["a", "z", "0", "lock-protocol", "v1-release", "core", "pm-tool-2"] {
-            assert!(validate_slug(ok).is_ok(), "rejected legal slug: {ok}");
-        }
     }
 }
