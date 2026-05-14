@@ -356,7 +356,9 @@ pub enum Commands {
     Tag {
         /// Ticket id.
         id: String,
-        /// Tag ops in the form `+foo` to add, `-bar` to remove.
+        /// Tag ops in the form `+foo` to add, `-bar` to remove. Values may
+        /// start with `-` because clap is told these are not flags.
+        #[arg(allow_hyphen_values = true)]
         ops: Vec<String>,
     },
 
@@ -685,6 +687,8 @@ pub fn cmd_add(
         user_story,
         requirements,
         tags: final_tags,
+        deps: Vec::new(),
+        milestone: None,
         due,
         parent: parent_id,
         kind: task_kind,
@@ -1723,6 +1727,8 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
             user_story: None, // CSV doesn't include user_story field
             requirements: None, // CSV doesn't include requirements field
             tags,
+            deps: Vec::new(),
+            milestone: None,
             due,
             parent,
             kind,
@@ -2530,39 +2536,151 @@ pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
     }
 }
 
-/// `pm set-status <id> <new-status>`: deferred to Phase 4 task 41.
-pub fn cmd_set_status(_db: &mut Database, _pm_dir: &Path, id: &str, _status: Status) {
-    eprintln!("set-status {id}: pending Phase 4 metadata-handler work.");
+/// Mutate a ticket's front-matter in memory and persist via Database::save.
+/// Returns the resolved leaf id for callers that want to log the result.
+fn mutate_task<F>(db: &mut Database, pm_dir: &Path, id: &str, label: &str, f: F)
+where
+    F: FnOnce(&mut Task),
+{
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("{label}: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    if let Some(task) = db.get_mut(leaf) {
+        f(task);
+        task.updated_at_utc = Utc::now().timestamp();
+    }
+    if let Err(e) = db.save(pm_dir) {
+        eprintln!("{label}: save failed: {e}");
+        std::process::exit(1);
+    }
+    println!("{label}: {leaf} updated.");
 }
 
-/// `pm priority <id> <priority>`: deferred to Phase 4 task 41.
-pub fn cmd_priority(_db: &mut Database, _pm_dir: &Path, id: &str, _priority: Priority) {
-    eprintln!("priority {id}: pending Phase 4 metadata-handler work.");
+/// `pm set-status <id> <new-status>`: update front-matter status.
+pub fn cmd_set_status(db: &mut Database, pm_dir: &Path, id: &str, new_status: Status) {
+    mutate_task(db, pm_dir, id, "status", |task| task.status = new_status);
 }
 
-/// `pm due <id> <when>`: deferred to Phase 4 task 41.
-pub fn cmd_due(_db: &mut Database, _pm_dir: &Path, id: &str, _when: &str) {
-    eprintln!("due {id}: pending Phase 4 metadata-handler work.");
+/// `pm priority <id> <priority>`: set front-matter priority.
+pub fn cmd_priority(db: &mut Database, pm_dir: &Path, id: &str, new_priority: Priority) {
+    mutate_task(db, pm_dir, id, "priority", |task| {
+        task.priority_level = Some(new_priority);
+    });
 }
 
-/// `pm dep <id> needs <dep_id>`: deferred to Phase 4 task 41.
-pub fn cmd_dep(_db: &mut Database, _pm_dir: &Path, id: &str, _op: &str, _dep_id: &str) {
-    eprintln!("dep {id}: pending Phase 4 metadata-handler work.");
+/// `pm due <id> <when>`: parse the human input and store as a `NaiveDate`.
+pub fn cmd_due(db: &mut Database, pm_dir: &Path, id: &str, when: &str) {
+    let parsed = match parse_due_input(when) {
+        Some(d) => d,
+        None => {
+            eprintln!("due: could not parse {when:?}; try `today`, `next friday`, `in 1w`, or `YYYY-MM-DD`.");
+            std::process::exit(1);
+        }
+    };
+    mutate_task(db, pm_dir, id, "due", |task| task.due = Some(parsed));
 }
 
-/// `pm tag <id> +foo -bar`: deferred to Phase 4 task 41.
-pub fn cmd_tag(_db: &mut Database, _pm_dir: &Path, id: &str, _ops: &[String]) {
-    eprintln!("tag {id}: pending Phase 4 metadata-handler work.");
+/// `pm dep <id> needs|remove <dep_id>`: add or remove a dependency edge.
+pub fn cmd_dep(db: &mut Database, pm_dir: &Path, id: &str, op: &str, dep_id: &str) {
+    let dep = match dep_id.parse::<crate::store::IdInput>() {
+        Ok(input) => input.leaf(),
+        Err(e) => {
+            eprintln!("dep: bad dep id {dep_id}: {e}");
+            std::process::exit(1);
+        }
+    };
+    match op.to_lowercase().as_str() {
+        "needs" | "add" | "+" => {
+            mutate_task(db, pm_dir, id, "dep needs", |task| {
+                if !task.deps.contains(&dep) {
+                    task.deps.push(dep);
+                }
+            });
+        }
+        "remove" | "rm" | "-" => {
+            mutate_task(db, pm_dir, id, "dep remove", |task| {
+                task.deps.retain(|d| d != &dep);
+            });
+        }
+        other => {
+            eprintln!("dep: unknown op {other:?}; expected `needs` or `remove`.");
+            std::process::exit(1);
+        }
+    }
 }
 
-/// `pm link <id> <key> <url>`: deferred to Phase 4 task 41.
-pub fn cmd_link(_db: &mut Database, _pm_dir: &Path, id: &str, _key: &str, _url: &str) {
-    eprintln!("link {id}: pending Phase 4 metadata-handler work.");
+/// `pm tag <id> +foo -bar`: add and remove tags. Operations apply in order.
+pub fn cmd_tag(db: &mut Database, pm_dir: &Path, id: &str, ops: &[String]) {
+    if ops.is_empty() {
+        eprintln!("tag: supply at least one op (e.g. `+infra`, `-draft`).");
+        std::process::exit(1);
+    }
+    mutate_task(db, pm_dir, id, "tag", |task| {
+        for op in ops {
+            if let Some(name) = op.strip_prefix('+') {
+                let normalised = normalise_tag(name);
+                if !normalised.is_empty() && !task.tags.contains(&normalised) {
+                    task.tags.push(normalised);
+                }
+            } else if let Some(name) = op.strip_prefix('-') {
+                let normalised = normalise_tag(name);
+                task.tags.retain(|t| t != &normalised);
+            } else {
+                eprintln!("tag: skipping {op:?} - prefix with + to add or - to remove.");
+            }
+        }
+        task.tags.sort();
+        task.tags.dedup();
+    });
 }
 
-/// `pm milestone <id> <MLSn>`: deferred to Phase 4 task 41.
-pub fn cmd_milestone(_db: &mut Database, _pm_dir: &Path, id: &str, _milestone_id: &str) {
-    eprintln!("milestone {id}: pending Phase 4 metadata-handler work.");
+/// `pm link <id> <key> <url>`: set an external link on a ticket. Recognises
+/// `issue`/`issue_link` and `pr`/`pr_link` as syntactic sugar for the
+/// dedicated `Task` fields; other keys land in the front-matter `links` map
+/// once that pathway is wired (Phase 11). For now, any other key is rejected
+/// with a clear message.
+pub fn cmd_link(db: &mut Database, pm_dir: &Path, id: &str, key: &str, url: &str) {
+    let normalised = key.to_lowercase();
+    match normalised.as_str() {
+        "issue" | "issue_link" | "github_issue" => {
+            mutate_task(db, pm_dir, id, "link issue", |task| {
+                task.issue_link = Some(url.to_string());
+            });
+        }
+        "pr" | "pr_link" | "github_pr" => {
+            mutate_task(db, pm_dir, id, "link pr", |task| {
+                task.pr_link = Some(url.to_string());
+            });
+        }
+        other => {
+            eprintln!("link: only `issue` and `pr` keys are wired through Task in Phase 4; got {other:?}.");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `pm milestone <id> <MLSn>`: attach a ticket to a milestone.
+pub fn cmd_milestone(db: &mut Database, pm_dir: &Path, id: &str, milestone_id: &str) {
+    let mls = match milestone_id.parse::<crate::store::IdInput>() {
+        Ok(input) => input.leaf(),
+        Err(e) => {
+            eprintln!("milestone: bad milestone id {milestone_id}: {e}");
+            std::process::exit(1);
+        }
+    };
+    if mls.prefix() != crate::store::TypePrefix::Milestone {
+        eprintln!("milestone: expected an MLS-prefixed id, got {mls}.");
+        std::process::exit(1);
+    }
+    if db.get(mls).is_none() {
+        eprintln!("milestone: target milestone {mls} not found in workspace.");
+        std::process::exit(1);
+    }
+    mutate_task(db, pm_dir, id, "milestone", |task| task.milestone = Some(mls));
 }
 
 /// `pm doctor [--migrate]`: rebuild `state.json` from disk and (with the
@@ -2693,6 +2811,8 @@ fn run_doctor_migrate(pm_dir: &Path) {
                         user_story: None,
                         requirements: None,
                         tags: Vec::new(),
+                        deps: Vec::new(),
+                        milestone: None,
                         due: None,
                         parent: step.parent,
                         kind: step.kind,
@@ -2778,9 +2898,33 @@ fn walk_tickets_inner(dir: &Path, visitor: &mut dyn FnMut(&Path)) {
     }
 }
 
-/// `pm search <query>`: deferred to Phase 4 task 41.
-pub fn cmd_search(_pm_dir: &Path, _query: &str) {
-    eprintln!("search: pending Phase 4 metadata-handler work.");
+/// `pm search <query>`: case-insensitive substring search across every
+/// `CLAUDE.md` body and front-matter in the workspace. Prints `path:lineno:
+/// line` for each hit.
+pub fn cmd_search(pm_dir: &Path, query: &str) {
+    use crate::store::claude_md::CLAUDE_MD;
+    use crate::store::layout::Layout;
+
+    let layout = Layout::at(pm_dir);
+    if !layout.is_initialised() {
+        eprintln!("search: no .pm/ workspace at {}", pm_dir.display());
+        std::process::exit(1);
+    }
+    let needle = query.to_lowercase();
+    let mut hits = 0usize;
+    walk_tickets(&layout.root, &mut |abs_dir: &Path| {
+        let claude_path = abs_dir.join(CLAUDE_MD);
+        let Ok(content) = fs::read_to_string(&claude_path) else { return; };
+        for (i, line) in content.lines().enumerate() {
+            if line.to_lowercase().contains(&needle) {
+                hits += 1;
+                println!("{}:{}: {}", claude_path.display(), i + 1, line);
+            }
+        }
+    });
+    if hits == 0 {
+        println!("(no matches)");
+    }
 }
 
 // ----- Phase-5+ stubs -----

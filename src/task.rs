@@ -26,6 +26,10 @@ pub struct Task {
     #[serde(default)]
     pub requirements: Option<String>,
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub deps: Vec<LeafId>,
+    #[serde(default)]
+    pub milestone: Option<LeafId>,
     pub due: Option<NaiveDate>,
     pub parent: Option<LeafId>,
     pub kind: Kind,

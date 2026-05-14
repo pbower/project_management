@@ -15,10 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::fields::*;
 use crate::store::artifacts::{self, ArtifactsIndex};
-use crate::store::claude_md::{Ticket, ARTIFACTS_IMPORT, CLAUDE_MD};
+use crate::store::claude_md::{Ticket, CLAUDE_MD};
 use crate::store::id::{AddressId, IdInput, LeafId, TypePrefix};
 use crate::store::layout::Layout;
-use crate::store::sections::ParsedBody;
 use crate::store::state::{ItemEntry, State};
 use crate::store::task_bridge::{task_from_document, task_to_document};
 use crate::task::Task;

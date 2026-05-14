@@ -871,6 +871,8 @@ impl App {
                 Some(self.task_form.requirements.value.trim().to_string())
             },
             tags: split_and_normalise_tags(&[self.task_form.tags.value.clone()]),
+            deps: Vec::new(),
+            milestone: None,
             due,
             parent,
             kind: task_kind,

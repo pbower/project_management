@@ -212,6 +212,8 @@ mod tests {
             user_story: None,
             requirements: None,
             tags: Vec::new(),
+            deps: Vec::new(),
+            milestone: None,
             due: None,
             parent,
             kind,

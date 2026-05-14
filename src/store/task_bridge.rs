@@ -55,6 +55,8 @@ pub fn task_to_document(task: &Task) -> (FrontMatter, ParsedBody) {
     fm.process_stage = task.process_stage;
     fm.due = task.due;
     fm.tags = task.tags.clone();
+    fm.deps = task.deps.clone();
+    fm.milestone = task.milestone;
     if let Some(link) = task.issue_link.as_ref() {
         fm.links.insert("issue".to_string(), link.clone());
     }
@@ -100,6 +102,8 @@ pub fn task_from_document(
         user_story: body.find(SECTION_USER_STORY).and_then(section_to_optional),
         requirements: body.find(SECTION_REQUIREMENTS).and_then(section_to_optional),
         tags: fm.tags.clone(),
+        deps: fm.deps.clone(),
+        milestone: fm.milestone,
         due: fm.due,
         parent: fm.parent,
         kind: prefix_to_kind(fm.id.prefix()),
@@ -190,6 +194,8 @@ mod tests {
             user_story: Some("As an agent, I want my lock to auto-release on crash.".to_string()),
             requirements: Some("- TTL: 60s\n- Cleanup runs on pm doctor".to_string()),
             tags: vec!["infra".to_string(), "locking".to_string()],
+            deps: vec![LeafId::new(TypePrefix::Task, 6), LeafId::new(TypePrefix::Task, 11)],
+            milestone: Some(LeafId::new(TypePrefix::Milestone, 1)),
             due: NaiveDate::from_ymd_opt(2026, 5, 25),
             parent: Some(LeafId::new(TypePrefix::Epic, 3)),
             kind: Kind::Task,
@@ -243,6 +249,8 @@ mod tests {
             user_story: None,
             requirements: None,
             tags: Vec::new(),
+            deps: Vec::new(),
+            milestone: None,
             due: None,
             parent: None,
             kind: Kind::Task,
@@ -296,6 +304,8 @@ mod tests {
             user_story: None,
             requirements: None,
             tags: Vec::new(),
+            deps: Vec::new(),
+            milestone: None,
             due: None,
             parent: None,
             kind: Kind::Project,
@@ -351,6 +361,8 @@ mod tests {
             user_story: None,
             requirements: None,
             tags: Vec::new(),
+            deps: Vec::new(),
+            milestone: None,
             due: None,
             parent,
             kind,
