@@ -79,7 +79,7 @@ impl App {
     /// Create a new App instance, loading the database from the specified path.
     pub fn new(db_path: &Path) -> io::Result<Self> {
         let db = Database::load(db_path);
-        let navigation_context = NavigationContext::new_all_products();
+        let navigation_context = NavigationContext::new_all_projects();
         let pm_dir = db_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
         
         let mut app = App {

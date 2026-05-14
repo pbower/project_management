@@ -84,10 +84,11 @@ pub struct NavigationContext {
 }
 
 impl NavigationContext {
-    /// Create a context for viewing all products.
-    pub fn new_all_products() -> Self {
+    /// Create a context for viewing all projects - the top of the v2
+    /// hierarchy and the default landing view for a workspace.
+    pub fn new_all_projects() -> Self {
         NavigationContext {
-            level: HierarchyLevel::Product,
+            level: HierarchyLevel::Project,
             parent_id: None,
             parent_title: None,
         }
