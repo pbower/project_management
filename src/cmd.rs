@@ -3019,7 +3019,130 @@ pub fn cmd_checkin(_pm_dir: &Path, _id: &str, _summary: Option<&str>) { cmd_defe
 pub fn cmd_next(_pm_dir: &Path, _agent: Option<&str>, _filter: Option<&str>) { cmd_deferred("next", "Phase 6"); }
 pub fn cmd_locks(_pm_dir: &Path) { cmd_deferred("locks", "Phase 6"); }
 pub fn cmd_tv(_pm_dir: &Path) { cmd_deferred("tv", "Phase 9"); }
-pub fn cmd_log(_pm_dir: &Path, _id: &str) { cmd_deferred("log", "Phase 5"); }
+/// `pm log <id>`: print the git log filtered to commits that touched the
+/// ticket's directory. Walks HEAD's ancestry, diffing each commit against its
+/// parent and keeping commits whose diff intersects the ticket's path slice.
+pub fn cmd_log(pm_dir: &Path, id: &str) {
+    use git2::{DiffOptions, Pathspec};
+
+    let db = Database::load(pm_dir);
+    let leaf = match resolve_v2_id(id, db_ref(&db), ).or_else(|| {
+        // Allow logging tickets that exist in state.json even when Database::load
+        // could not reconstruct them (e.g. a missing CLAUDE.md). Fall back to the
+        // raw IdInput so the user still sees history for a half-broken ticket.
+        id.parse::<crate::store::IdInput>().ok().map(|p| p.leaf())
+    }) {
+        Some(l) => l,
+        None => {
+            eprintln!("log: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+
+    let layout = crate::store::layout::Layout::at(pm_dir);
+    let state = crate::store::state::State::load(&layout.state_path()).unwrap_or_default();
+    let Some(entry) = state.items.get(&leaf) else {
+        eprintln!("log: state.json has no path for {leaf}; run `pm doctor`.");
+        std::process::exit(1);
+    };
+
+    let repo = match crate::store::git::ensure_repo(pm_dir) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("log: could not open git repository: {e}");
+            std::process::exit(1);
+        }
+    };
+    let workdir = repo.workdir().expect("non-bare repo");
+    let workdir_canonical = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+    let pm_canonical = std::fs::canonicalize(pm_dir).unwrap_or_else(|_| pm_dir.to_path_buf());
+    let ticket_path_in_repo = match pm_canonical
+        .join(&entry.path)
+        .strip_prefix(&workdir_canonical)
+    {
+        Ok(p) => p.to_path_buf(),
+        Err(_) => {
+            eprintln!("log: workspace lies outside repository workdir.");
+            std::process::exit(1);
+        }
+    };
+    let pathspec_str = ticket_path_in_repo.to_string_lossy().into_owned();
+    let mut diff_opts = DiffOptions::new();
+    diff_opts.pathspec(&pathspec_str);
+    let pathspec = Pathspec::new(std::iter::once(pathspec_str.as_str())).expect("valid pathspec");
+
+    let mut revwalk = repo.revwalk().expect("revwalk");
+    revwalk.push_head().ok();
+    revwalk.set_sorting(git2::Sort::TIME).ok();
+
+    let mut printed = 0usize;
+    for oid in revwalk.flatten() {
+        let commit = match repo.find_commit(oid) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if !commit_touches_path(&repo, &commit, &pathspec) {
+            continue;
+        }
+        let summary = commit.summary().unwrap_or("");
+        let ts = commit.time().seconds();
+        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(ts, 0)
+            .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "?".into());
+        println!("{}  {dt}  {}", &oid.to_string()[..8], summary);
+        printed += 1;
+    }
+    if printed == 0 {
+        println!("(no commits touch {leaf} - check `pm doctor` if you expect history.)");
+    }
+}
+
+/// Borrow helper so the deferred id resolution can fall back when Database::load
+/// returns an empty set.
+fn db_ref(db: &Database) -> &Database { db }
+
+/// True if `commit` (compared against its first parent) modifies any path
+/// matching `pathspec`. Root commits use an empty tree as the parent so the
+/// initial state is treated as added.
+fn commit_touches_path(repo: &git2::Repository, commit: &git2::Commit, pathspec: &git2::Pathspec) -> bool {
+    let tree = match commit.tree() {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let parent_tree = if commit.parent_count() == 0 {
+        None
+    } else {
+        commit.parent(0).ok().and_then(|p| p.tree().ok())
+    };
+    let diff = repo
+        .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+        .ok();
+    let Some(diff) = diff else { return false; };
+    let mut hit = false;
+    diff.foreach(
+        &mut |delta, _| {
+            let matched_old = delta
+                .old_file()
+                .path()
+                .map(|p| pathspec.matches_path(p, git2::PathspecFlags::DEFAULT))
+                .unwrap_or(false);
+            let matched_new = delta
+                .new_file()
+                .path()
+                .map(|p| pathspec.matches_path(p, git2::PathspecFlags::DEFAULT))
+                .unwrap_or(false);
+            if matched_old || matched_new {
+                hit = true;
+            }
+            true
+        },
+        None,
+        None,
+        None,
+    )
+    .ok();
+    hit
+}
 pub fn cmd_memory(_db: &mut Database, _pm_dir: &Path, action: MemoryAction) {
     let verb = match action {
         MemoryAction::Link { .. } => "memory link",
