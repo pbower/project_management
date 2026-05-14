@@ -2800,6 +2800,22 @@ pub fn cmd_doctor(pm_dir: &Path, migrate: bool) {
         run_doctor_migrate(pm_dir);
     }
     run_doctor_rebuild(pm_dir);
+    run_doctor_reap_locks(pm_dir);
+}
+
+/// Reap any stale locks as part of `pm doctor`, mirroring `pm locks`. A lock
+/// whose heartbeat is older than its TTL is removed and a `lock-reaped` event
+/// is recorded.
+fn run_doctor_reap_locks(pm_dir: &Path) {
+    match crate::store::locks::reap_stale(pm_dir, Utc::now()) {
+        Ok(reaped) => {
+            for id in &reaped {
+                println!("doctor: reaped stale lock on {id}");
+                emit_or_warn(pm_dir, "lock-reaped", Some(*id), None);
+            }
+        }
+        Err(e) => eprintln!("doctor: could not reap stale locks: {e}"),
+    }
 }
 
 fn run_doctor_rebuild(pm_dir: &Path) {
