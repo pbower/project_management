@@ -25,7 +25,7 @@ use crate::task::Task;
 use crate::{
     db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
     tui::{
-        enums::{AppState, InputMode, HierarchyLevel, NavigationContext},
+        enums::{AppState, InputMode, HierarchyLevel, Mode, NavigationContext},
         task_form::{
             TaskForm, ARTIFACTS_GLOBAL_ORDER, DESCRIPTION_GLOBAL_ORDER, DUE_GLOBAL_ORDER,
             ISSUE_LINK_GLOBAL_ORDER, KIND_GLOBAL_ORDER, PARENT_GLOBAL_ORDER, PRIORITY_GLOBAL_ORDER,
@@ -50,6 +50,7 @@ struct NavigationSnapshot {
 /// Manages all TUI state including current screen, database operations,
 /// task filtering, navigation context, and user interactions.
 pub struct App {
+    mode: Mode,
     state: AppState,
     db: Database,
     db_path: std::path::PathBuf,
@@ -82,6 +83,7 @@ impl App {
         let pm_dir = db_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
         
         let mut app = App {
+            mode: Mode::Tickets,
             state: AppState::TaskList,
             db,
             db_path: db_path.to_path_buf(),
@@ -1248,20 +1250,50 @@ impl App {
     /// Poll for and handle keyboard events based on current application state.
     /// 
     /// Returns true if the application should quit.
+    /// True when a keystroke should be treated as literal text rather than a
+    /// navigation command - inside a form field or an active filter prompt.
+    /// Mode-switch keys are suppressed in this situation.
+    fn is_capturing_text(&self) -> bool {
+        matches!(self.input_mode, InputMode::Text) || self.filter_active
+    }
+
+    /// Intercept the mode-switch keys. Returns `true` if the key was consumed
+    /// as a mode switch.
+    fn try_mode_switch(&mut self, key: KeyCode) -> bool {
+        if self.is_capturing_text() {
+            return false;
+        }
+        match key {
+            KeyCode::Tab => { self.mode = self.mode.next(); true }
+            KeyCode::BackTab => { self.mode = self.mode.prev(); true }
+            KeyCode::Char('1') => { self.mode = Mode::Tickets; true }
+            KeyCode::Char('2') => { self.mode = Mode::Documents; true }
+            KeyCode::Char('3') => { self.mode = Mode::Activity; true }
+            _ => false,
+        }
+    }
+
     fn handle_input(&mut self) -> io::Result<bool> {
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 self.clear_status_message();
 
-                let should_quit = match self.state {
-                    AppState::TaskList => self.handle_task_list_input(key.code, key.modifiers)?,
-                    AppState::TaskDetail => self.handle_detail_input(key.code, key.modifiers)?,
-                    AppState::AddTask => self.handle_form_input(key.code, key.modifiers, false)?,
-                    AppState::EditTask => self.handle_form_input(key.code, key.modifiers, true)?,
-                    AppState::UserStoryDialog => self.handle_dialog_input(key.code, key.modifiers, true)?,
-                    AppState::RequirementsDialog => self.handle_dialog_input(key.code, key.modifiers, false)?,
-                    AppState::Help => self.handle_help_input(key.code, key.modifiers)?,
-                    AppState::Confirm => self.handle_confirm_input(key.code, key.modifiers)?,
+                if self.try_mode_switch(key.code) {
+                    return Ok(false);
+                }
+
+                let should_quit = match self.mode {
+                    Mode::Tickets => match self.state {
+                        AppState::TaskList => self.handle_task_list_input(key.code, key.modifiers)?,
+                        AppState::TaskDetail => self.handle_detail_input(key.code, key.modifiers)?,
+                        AppState::AddTask => self.handle_form_input(key.code, key.modifiers, false)?,
+                        AppState::EditTask => self.handle_form_input(key.code, key.modifiers, true)?,
+                        AppState::UserStoryDialog => self.handle_dialog_input(key.code, key.modifiers, true)?,
+                        AppState::RequirementsDialog => self.handle_dialog_input(key.code, key.modifiers, false)?,
+                        AppState::Help => self.handle_help_input(key.code, key.modifiers)?,
+                        AppState::Confirm => self.handle_confirm_input(key.code, key.modifiers)?,
+                    },
+                    Mode::Documents | Mode::Activity => self.handle_mode_stub_input(key.code)?,
                 };
                 if should_quit {
                     return Ok(true);
@@ -1269,6 +1301,16 @@ impl App {
             }
         }
         Ok(false)
+    }
+
+    /// Input handler for the not-yet-built Modes 2 and 3. Only `q` is live -
+    /// it exits the TUI back to the launcher. Mode-switch keys are already
+    /// consumed before dispatch reaches here.
+    fn handle_mode_stub_input(&mut self, key: KeyCode) -> io::Result<bool> {
+        match key {
+            KeyCode::Char('q') | KeyCode::Esc => Ok(true),
+            _ => Ok(false),
+        }
     }
 
     /// Render the main task list view with table and hierarchy context.
@@ -1287,10 +1329,15 @@ impl App {
         
         // Render ASCII header with consistent app styling and context
         let project_name = self.get_current_project_name();
-        let context_display = format!("Current Project: {}  Current View: {}", 
+        let context_display = format!("Current Project: {}  Current View: {}",
             project_name, self.navigation_context.get_display_name());
         let header_text = vec![
             Line::from(vec![
+                Span::styled(
+                    format!("[ {} ]", self.mode.label()),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                ),
+                Span::raw("  "),
                 Span::styled(
                     "PROJECT MANAGEMENT",
                     Style::default().add_modifier(Modifier::BOLD)
@@ -2191,21 +2238,49 @@ impl App {
             .constraints([Constraint::Min(0), Constraint::Length(1)].as_ref())
             .split(f.area());
 
-        match self.state {
-            AppState::TaskList => self.render_task_list(f, chunks[0]),
-            AppState::TaskDetail => self.render_task_detail(f, chunks[0]),
-            AppState::AddTask => self.render_task_form(f, chunks[0], false),
-            AppState::EditTask => self.render_task_form(f, chunks[0], true),
-            AppState::UserStoryDialog => self.render_dialog(f, chunks[0], "User Story"),
-            AppState::RequirementsDialog => self.render_dialog(f, chunks[0], "Requirements"),
-            AppState::Help => self.render_help(f, chunks[0]),
-            AppState::Confirm => {
-                self.render_task_list(f, chunks[0]);
-                self.render_confirm(f, chunks[0]);
-            }
+        match self.mode {
+            Mode::Tickets => match self.state {
+                AppState::TaskList => self.render_task_list(f, chunks[0]),
+                AppState::TaskDetail => self.render_task_detail(f, chunks[0]),
+                AppState::AddTask => self.render_task_form(f, chunks[0], false),
+                AppState::EditTask => self.render_task_form(f, chunks[0], true),
+                AppState::UserStoryDialog => self.render_dialog(f, chunks[0], "User Story"),
+                AppState::RequirementsDialog => self.render_dialog(f, chunks[0], "Requirements"),
+                AppState::Help => self.render_help(f, chunks[0]),
+                AppState::Confirm => {
+                    self.render_task_list(f, chunks[0]);
+                    self.render_confirm(f, chunks[0]);
+                }
+            },
+            Mode::Documents => self.render_mode_stub(f, chunks[0], "Document Workspace", "Phase 8"),
+            Mode::Activity => self.render_mode_stub(f, chunks[0], "Activity View", "Phase 9"),
         }
 
         self.render_status_bar(f, chunks[1]);
+    }
+
+    /// Placeholder screen for Modes 2 and 3 until Phases 8 and 9 build them
+    /// out. Shows which mode is selected and how to switch away.
+    fn render_mode_stub(&mut self, f: &mut Frame, area: Rect, title: &str, arrives_in: &str) {
+        let body = vec![
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                self.mode.label(),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(""),
+            Line::from(format!("{title} arrives in {arrives_in}.")),
+            Line::from(""),
+            Line::from("Tab / Shift+Tab / 1 / 2 / 3 to switch modes      q to exit"),
+        ];
+        let widget = Paragraph::new(body)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!("[ {} ]", self.mode.label())),
+            )
+            .alignment(Alignment::Center);
+        f.render_widget(widget, area);
     }
 
     /// Main event loop for the TUI application.

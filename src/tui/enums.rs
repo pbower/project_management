@@ -2,6 +2,48 @@
 
 use crate::store::LeafId;
 
+/// Top-level TUI mode. Mode 1 (Tickets) hosts the existing per-screen
+/// [`AppState`] flow; Modes 2 and 3 are their own surfaces, stubbed until
+/// Phases 8 and 9 land.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Mode {
+    /// Mode 1 - the hierarchical Ticket View.
+    Tickets,
+    /// Mode 2 - the Document Workspace (Phase 8).
+    Documents,
+    /// Mode 3 - the Activity View (Phase 9).
+    Activity,
+}
+
+impl Mode {
+    /// The next mode in the `Tab` cycle.
+    pub fn next(self) -> Mode {
+        match self {
+            Mode::Tickets => Mode::Documents,
+            Mode::Documents => Mode::Activity,
+            Mode::Activity => Mode::Tickets,
+        }
+    }
+
+    /// The previous mode in the `Shift+Tab` cycle.
+    pub fn prev(self) -> Mode {
+        match self {
+            Mode::Tickets => Mode::Activity,
+            Mode::Documents => Mode::Tickets,
+            Mode::Activity => Mode::Documents,
+        }
+    }
+
+    /// Short label shown in the header.
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Tickets => "Mode 1 Tickets",
+            Mode::Documents => "Mode 2 Documents",
+            Mode::Activity => "Mode 3 Activity",
+        }
+    }
+}
+
 /// Application state for the terminal user interface.
 #[derive(Clone, Copy, PartialEq)]
 pub enum AppState {
