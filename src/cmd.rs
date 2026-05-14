@@ -702,11 +702,13 @@ pub fn cmd_add(
         created_at_utc: now_utc,
         updated_at_utc: now_utc,
     };
+    let title_for_msg = task.title.clone();
     db.tasks.push(task);
     if let Err(e) = db.save(db_path) {
         eprintln!("Failed to save DB: {e}");
         std::process::exit(1);
     }
+    commit_or_warn(db_path, &commit_subject_for(id, "add", Some(&title_for_msg)));
     println!("Added task {}", id);
 }
 
@@ -1048,6 +1050,7 @@ pub fn cmd_update(
         eprintln!("Failed to save DB: {e}");
         std::process::exit(1);
     }
+    commit_or_warn(db_path, &commit_subject_for(task_id, "update", None));
     println!("Updated task {}", task_id);
 }
 
@@ -1121,6 +1124,7 @@ pub fn cmd_complete(
             }
         }
     }
+    let completed = to_mark.clone();
     for tid in to_mark {
         if let Some(t) = db.get_mut(tid) {
             t.status = Status::Done;
@@ -1131,6 +1135,13 @@ pub fn cmd_complete(
         eprintln!("Failed to save DB: {e}");
         std::process::exit(1);
     }
+    let summary = if completed.len() == 1 {
+        let only = *completed.iter().next().expect("len checked");
+        commit_subject_for(only, "complete", None)
+    } else {
+        format!("pm: complete batch ({} tickets)", completed.len())
+    };
+    commit_or_warn(db_path, &summary);
     println!("Marked done.");
 }
 
@@ -1154,6 +1165,7 @@ pub fn cmd_reopen(db: &mut Database, db_path: &Path, id: String) {
         eprintln!("Failed to save DB: {e}");
         std::process::exit(1);
     }
+    commit_or_warn(db_path, &commit_subject_for(task_id, "reopen", None));
     println!("Reopened {}", task_id);
 }
 
@@ -1233,11 +1245,18 @@ pub fn cmd_delete(
     }
     
     let ids = to_delete;
+    let count = ids.len();
+    let first = ids.iter().next().copied();
     db.remove_ids(&ids);
     if let Err(e) = db.save(db_path) {
         eprintln!("Failed to save DB: {e}");
         std::process::exit(1);
     }
+    let summary = match (count, first) {
+        (1, Some(id)) => commit_subject_for(id, "delete", None),
+        (n, _) => format!("pm: delete batch ({n} tickets)"),
+    };
+    commit_or_warn(db_path, &summary);
     println!("Deleted.");
 }
 
@@ -1493,6 +1512,10 @@ pub fn cmd_template_apply(db: &mut Database, pm_dir: &Path, id: &str) {
         eprintln!("template apply: write failed: {e}");
         std::process::exit(1);
     }
+    commit_or_warn(
+        pm_dir,
+        &commit_subject_for(leaf, "template apply", Some(templates::template_stem(leaf.prefix()))),
+    );
     println!("Applied {} template to {leaf}", templates::template_stem(leaf.prefix()));
 }
 
@@ -2091,17 +2114,42 @@ fn cmd_deferred(verb: &str, phase: &str) {
     std::process::exit(0);
 }
 
-/// `pm init`: scaffold a `.pm/` workspace in the current directory.
+/// `pm init`: scaffold a `.pm/` workspace in the current directory and ensure
+/// a git repository encloses it. If `pm_dir` is already inside an existing
+/// repo, that repo is reused; otherwise a fresh repo is initialised at
+/// `pm_dir`. An initial commit (`pm: init`) records the scaffold so
+/// subsequent state-mutating commits have a parent.
 pub fn cmd_init(pm_dir: &Path) {
     use crate::store::layout::Layout;
     let layout = Layout::at(pm_dir);
-    match layout.init() {
-        Ok(()) => println!("Initialised .pm/ workspace at {}", pm_dir.display()),
-        Err(e) => {
-            eprintln!("init failed: {e}");
-            std::process::exit(1);
-        }
+    if let Err(e) = layout.init() {
+        eprintln!("init failed: {e}");
+        std::process::exit(1);
     }
+
+    if let Err(e) = crate::store::git::ensure_repo(pm_dir) {
+        eprintln!("init: git repository setup failed: {e}");
+        std::process::exit(1);
+    }
+    commit_or_warn(pm_dir, "pm: init");
+
+    println!("Initialised .pm/ workspace at {}", pm_dir.display());
+}
+
+/// Commit any staged workspace changes under `pm_dir` with `message`. Logs a
+/// warning on failure rather than aborting, since the on-disk state is
+/// already saved and a failed commit should not propagate as a CLI error.
+fn commit_or_warn(pm_dir: &Path, message: &str) {
+    if let Err(e) = crate::store::git::commit_workspace(pm_dir, message) {
+        eprintln!("warning: git commit failed: {e}");
+    }
+}
+
+/// Build a commit subject for a ticket mutation. Wraps
+/// [`crate::store::git::subject`] so handlers only need the verb and optional
+/// summary.
+fn commit_subject_for(leaf: crate::store::LeafId, verb: &str, summary: Option<&str>) -> String {
+    crate::store::git::subject(&leaf, verb, summary)
 }
 
 /// `pm show <id>`: print front-matter and section names for a ticket.
@@ -2259,8 +2307,14 @@ pub fn cmd_move(
         }
     }
 
-    println!("Moved {leaf} -> {}",
-        target_parent.map(|p| p.to_string()).unwrap_or_else(|| "(orphan)".into()));
+    let dest_label = target_parent
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "(orphan)".into());
+    commit_or_warn(
+        pm_dir,
+        &commit_subject_for(leaf, "move", Some(&format!("-> {dest_label}"))),
+    );
+    println!("Moved {leaf} -> {dest_label}");
 
     // Suppress unused-import warning on `AddressId` if no other site brings it.
     let _ = std::marker::PhantomData::<AddressId>;
@@ -2506,6 +2560,10 @@ pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
                     let _ = idx.save(&index_path);
                 }
             }
+            commit_or_warn(
+                pm_dir,
+                &commit_subject_for(leaf, "artifact add", Some(&file_name.to_string_lossy())),
+            );
             println!("Added artifact {} to {leaf}", file_name.to_string_lossy());
         }
         ArtifactAction::Rename { id, old, new } => {
@@ -2514,6 +2572,10 @@ pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
                 eprintln!("artifact rename: {e}");
                 std::process::exit(1);
             }
+            commit_or_warn(
+                pm_dir,
+                &commit_subject_for(leaf, "artifact rename", Some(&format!("{old} -> {new}"))),
+            );
             println!("Renamed {old} -> {new} on {leaf}");
         }
         ArtifactAction::List { id } => {
@@ -2536,9 +2598,24 @@ pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
     }
 }
 
-/// Mutate a ticket's front-matter in memory and persist via Database::save.
-/// Returns the resolved leaf id for callers that want to log the result.
+/// Mutate a ticket's front-matter in memory, persist via Database::save, and
+/// record a structured commit. The `label` doubles as both the user-facing
+/// status message and the verb in the commit subject.
 fn mutate_task<F>(db: &mut Database, pm_dir: &Path, id: &str, label: &str, f: F)
+where
+    F: FnOnce(&mut Task),
+{
+    mutate_task_with_summary(db, pm_dir, id, label, None, f)
+}
+
+fn mutate_task_with_summary<F>(
+    db: &mut Database,
+    pm_dir: &Path,
+    id: &str,
+    label: &str,
+    summary: Option<&str>,
+    f: F,
+)
 where
     F: FnOnce(&mut Task),
 {
@@ -2557,6 +2634,7 @@ where
         eprintln!("{label}: save failed: {e}");
         std::process::exit(1);
     }
+    commit_or_warn(pm_dir, &commit_subject_for(leaf, label, summary));
     println!("{label}: {leaf} updated.");
 }
 
@@ -2751,6 +2829,13 @@ fn run_doctor_rebuild(pm_dir: &Path) {
     if let Err(e) = rebuilt.save(&layout.state_path()) {
         eprintln!("doctor: failed to write state.json: {e}");
         std::process::exit(1);
+    }
+
+    if added > 0 || !removed_paths.is_empty() {
+        commit_or_warn(
+            pm_dir,
+            &format!("pm: doctor rebuild (+{added}/-{} entries)", removed_paths.len()),
+        );
     }
 
     println!("doctor: scanned {found} tickets at {}", layout.root.display());
