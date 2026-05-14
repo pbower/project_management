@@ -80,12 +80,12 @@ impl LockFile {
         base_commit: Option<String>,
     ) -> Self {
         let now = Utc::now();
-        let host = gethostname::gethostname().to_string_lossy().into_owned();
+        let host = super::events::system_hostname().unwrap_or_else(|| "host".into());
         LockFile {
             id,
             agent: super::events::actor(),
             pid: std::process::id(),
-            host: if host.trim().is_empty() { "host".into() } else { host },
+            host,
             started_at: now,
             intent,
             ttl_seconds,

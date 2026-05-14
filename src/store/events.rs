@@ -62,7 +62,7 @@ pub type EventResult<T> = Result<T, EventError>;
 /// otherwise the actor is `claude-<host>-<pid>`.
 pub fn actor() -> String {
     let env = std::env::var("PM_AGENT_ID").ok();
-    let host = gethostname::gethostname().to_string_lossy().into_owned();
+    let host = system_hostname().unwrap_or_default();
     actor_from(env.as_deref(), &host, std::process::id())
 }
 
@@ -77,6 +77,38 @@ fn actor_from(env_value: Option<&str>, host: &str, pid: u32) -> String {
     }
     let host = if host.trim().is_empty() { "host" } else { host.trim() };
     format!("claude-{host}-{pid}")
+}
+
+/// The machine hostname, or `None` if it cannot be resolved or is empty.
+///
+/// On Unix this is the POSIX `gethostname(3)` call. The hostname is cosmetic -
+/// it only flavours the default `claude-<host>-<pid>` actor string, which
+/// `PM_AGENT_ID` overrides entirely - so a `None` here is harmless.
+#[cfg(unix)]
+pub(crate) fn system_hostname() -> Option<String> {
+    use core::ffi::{c_char, c_int};
+    extern "C" {
+        fn gethostname(name: *mut c_char, len: usize) -> c_int;
+    }
+    let mut buf = [0u8; 256];
+    // SAFETY: `gethostname` writes at most `buf.len()` bytes into `buf`. On a
+    // name that fits it null-terminates; on truncation POSIX may leave it
+    // unterminated, so the NUL search below is capped at the buffer length.
+    let rc = unsafe { gethostname(buf.as_mut_ptr() as *mut c_char, buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).into_owned();
+    if name.trim().is_empty() { None } else { Some(name) }
+}
+
+/// Non-Unix fallback: best-effort via the environment. Windows sets
+/// `COMPUTERNAME`. A proper Windows `GetComputerNameExW` path is left for the
+/// cross-platform pass (PM_BUILD_PLAN.md Phase 12).
+#[cfg(not(unix))]
+pub(crate) fn system_hostname() -> Option<String> {
+    std::env::var("COMPUTERNAME").ok().filter(|s| !s.trim().is_empty())
 }
 
 /// Record one event in `pm_dir`'s activity feed. The actor and timestamp are
@@ -160,6 +192,15 @@ mod tests {
         assert_eq!(actor_from(Some("claude-be"), "workstation", 42), "claude-be");
         // Whitespace is trimmed.
         assert_eq!(actor_from(Some("  claude-fe  "), "workstation", 42), "claude-fe");
+    }
+
+    #[test]
+    fn system_hostname_is_none_or_non_empty() {
+        // The value is environment-specific, so the contract is only: it does
+        // not panic, and a Some is never empty.
+        if let Some(name) = system_hostname() {
+            assert!(!name.trim().is_empty(), "a resolved hostname must be non-empty");
+        }
     }
 
     #[test]
