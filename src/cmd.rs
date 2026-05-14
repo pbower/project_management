@@ -414,6 +414,16 @@ pub enum Commands {
         /// Summary written to the activity feed.
         #[arg(long)]
         summary: Option<String>,
+        /// Keep the individual checkout-span commits instead of squashing
+        /// them into a single checkin commit.
+        #[arg(long)]
+        granular: bool,
+    },
+
+    /// (Phase 6) Refresh the heartbeat on a held lock so it does not go stale.
+    Heartbeat {
+        /// Ticket id.
+        id: String,
     },
 
     /// (Phase 6) Return the next ready task for an agent.
@@ -709,6 +719,7 @@ pub fn cmd_add(
         std::process::exit(1);
     }
     commit_or_warn(db_path, &commit_subject_for(id, "add", Some(&title_for_msg)));
+    emit_or_warn(db_path, "add", Some(id), Some(&title_for_msg));
     println!("Added task {}", id);
 }
 
@@ -1051,6 +1062,7 @@ pub fn cmd_update(
         std::process::exit(1);
     }
     commit_or_warn(db_path, &commit_subject_for(task_id, "update", None));
+    emit_or_warn(db_path, "update", Some(task_id), None);
     println!("Updated task {}", task_id);
 }
 
@@ -1142,6 +1154,10 @@ pub fn cmd_complete(
         format!("pm: complete batch ({} tickets)", completed.len())
     };
     commit_or_warn(db_path, &summary);
+    // One event per completed ticket so the feed credits each id.
+    for tid in &completed {
+        emit_or_warn(db_path, "complete", Some(*tid), None);
+    }
     println!("Marked done.");
 }
 
@@ -1166,6 +1182,7 @@ pub fn cmd_reopen(db: &mut Database, db_path: &Path, id: String) {
         std::process::exit(1);
     }
     commit_or_warn(db_path, &commit_subject_for(task_id, "reopen", None));
+    emit_or_warn(db_path, "reopen", Some(task_id), None);
     println!("Reopened {}", task_id);
 }
 
@@ -1247,6 +1264,8 @@ pub fn cmd_delete(
     let ids = to_delete;
     let count = ids.len();
     let first = ids.iter().next().copied();
+    // Snapshot the ids before they are removed so the feed can credit each.
+    let deleted: Vec<crate::store::LeafId> = ids.iter().copied().collect();
     db.remove_ids(&ids);
     if let Err(e) = db.save(db_path) {
         eprintln!("Failed to save DB: {e}");
@@ -1257,6 +1276,9 @@ pub fn cmd_delete(
         (n, _) => format!("pm: delete batch ({n} tickets)"),
     };
     commit_or_warn(db_path, &summary);
+    for id in &deleted {
+        emit_or_warn(db_path, "delete", Some(*id), None);
+    }
     println!("Deleted.");
 }
 
@@ -1512,11 +1534,13 @@ pub fn cmd_template_apply(db: &mut Database, pm_dir: &Path, id: &str) {
         eprintln!("template apply: write failed: {e}");
         std::process::exit(1);
     }
+    let stem = templates::template_stem(leaf.prefix());
     commit_or_warn(
         pm_dir,
-        &commit_subject_for(leaf, "template apply", Some(templates::template_stem(leaf.prefix()))),
+        &commit_subject_for(leaf, "template apply", Some(stem)),
     );
-    println!("Applied {} template to {leaf}", templates::template_stem(leaf.prefix()));
+    emit_or_warn(pm_dir, "template-apply", Some(leaf), Some(stem));
+    println!("Applied {stem} template to {leaf}");
 }
 
 /// Export tasks to CSV format for external analysis and time tracking.
@@ -2132,6 +2156,7 @@ pub fn cmd_init(pm_dir: &Path) {
         std::process::exit(1);
     }
     commit_or_warn(pm_dir, "pm: init");
+    emit_or_warn(pm_dir, "init", None, None);
 
     println!("Initialised .pm/ workspace at {}", pm_dir.display());
 }
@@ -2314,6 +2339,7 @@ pub fn cmd_move(
         pm_dir,
         &commit_subject_for(leaf, "move", Some(&format!("-> {dest_label}"))),
     );
+    emit_or_warn(pm_dir, "move", Some(leaf), Some(&format!("-> {dest_label}")));
     println!("Moved {leaf} -> {dest_label}");
 
     // Suppress unused-import warning on `AddressId` if no other site brings it.
@@ -2560,11 +2586,13 @@ pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
                     let _ = idx.save(&index_path);
                 }
             }
+            let name = file_name.to_string_lossy().into_owned();
             commit_or_warn(
                 pm_dir,
-                &commit_subject_for(leaf, "artifact add", Some(&file_name.to_string_lossy())),
+                &commit_subject_for(leaf, "artifact add", Some(&name)),
             );
-            println!("Added artifact {} to {leaf}", file_name.to_string_lossy());
+            emit_or_warn(pm_dir, "artifact-add", Some(leaf), Some(&name));
+            println!("Added artifact {name} to {leaf}");
         }
         ArtifactAction::Rename { id, old, new } => {
             let (leaf, artifacts_dir) = resolve(&id);
@@ -2572,10 +2600,12 @@ pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
                 eprintln!("artifact rename: {e}");
                 std::process::exit(1);
             }
+            let detail = format!("{old} -> {new}");
             commit_or_warn(
                 pm_dir,
-                &commit_subject_for(leaf, "artifact rename", Some(&format!("{old} -> {new}"))),
+                &commit_subject_for(leaf, "artifact rename", Some(&detail)),
             );
+            emit_or_warn(pm_dir, "artifact-rename", Some(leaf), Some(&detail));
             println!("Renamed {old} -> {new} on {leaf}");
         }
         ArtifactAction::List { id } => {
@@ -2635,6 +2665,7 @@ where
         std::process::exit(1);
     }
     commit_or_warn(pm_dir, &commit_subject_for(leaf, label, summary));
+    emit_or_warn(pm_dir, label, Some(leaf), summary);
     println!("{label}: {leaf} updated.");
 }
 
@@ -2769,6 +2800,22 @@ pub fn cmd_doctor(pm_dir: &Path, migrate: bool) {
         run_doctor_migrate(pm_dir);
     }
     run_doctor_rebuild(pm_dir);
+    run_doctor_reap_locks(pm_dir);
+}
+
+/// Reap any stale locks as part of `pm doctor`, mirroring `pm locks`. A lock
+/// whose heartbeat is older than its TTL is removed and a `lock-reaped` event
+/// is recorded.
+fn run_doctor_reap_locks(pm_dir: &Path) {
+    match crate::store::locks::reap_stale(pm_dir, Utc::now()) {
+        Ok(reaped) => {
+            for id in &reaped {
+                println!("doctor: reaped stale lock on {id}");
+                emit_or_warn(pm_dir, "lock-reaped", Some(*id), None);
+            }
+        }
+        Err(e) => eprintln!("doctor: could not reap stale locks: {e}"),
+    }
 }
 
 fn run_doctor_rebuild(pm_dir: &Path) {
@@ -2835,6 +2882,12 @@ fn run_doctor_rebuild(pm_dir: &Path) {
         commit_or_warn(
             pm_dir,
             &format!("pm: doctor rebuild (+{added}/-{} entries)", removed_paths.len()),
+        );
+        emit_or_warn(
+            pm_dir,
+            "doctor",
+            None,
+            Some(&format!("+{added}/-{} entries", removed_paths.len())),
         );
     }
 
@@ -3012,12 +3065,236 @@ pub fn cmd_search(pm_dir: &Path, query: &str) {
     }
 }
 
-// ----- Phase-5+ stubs -----
+// ----- Phase 6: lock protocol + activity feed -----
 
-pub fn cmd_checkout(_pm_dir: &Path, _id: &str, _intent: Option<&str>) { cmd_deferred("checkout", "Phase 6"); }
-pub fn cmd_checkin(_pm_dir: &Path, _id: &str, _summary: Option<&str>) { cmd_deferred("checkin", "Phase 6"); }
-pub fn cmd_next(_pm_dir: &Path, _agent: Option<&str>, _filter: Option<&str>) { cmd_deferred("next", "Phase 6"); }
-pub fn cmd_locks(_pm_dir: &Path) { cmd_deferred("locks", "Phase 6"); }
+/// Record an activity-feed event, warning rather than aborting on failure -
+/// a missed event line should not fail the command whose state is already
+/// saved. Mirrors [`commit_or_warn`].
+fn emit_or_warn(pm_dir: &Path, verb: &str, id: Option<crate::store::LeafId>, detail: Option<&str>) {
+    if let Err(e) = crate::store::events::emit_event(pm_dir, verb, id, detail) {
+        eprintln!("warning: could not write events.log: {e}");
+    }
+}
+
+/// `pm checkout <id> [--intent ...]`: acquire an advisory lock on a ticket and
+/// open a checkout span. The lock records the git HEAD as `base_commit` so
+/// `pm checkin` can squash everything done during the span into one commit.
+/// A live soft lock by another agent warns but does not block; a live hard
+/// lock blocks.
+pub fn cmd_checkout(pm_dir: &Path, id: &str, intent: Option<&str>) {
+    use crate::store::locks::{self, AcquireOutcome, LockFile, LockMode, DEFAULT_TTL_SECONDS};
+
+    let db = Database::load(pm_dir);
+    let leaf = match resolve_v2_id(id, &db) {
+        Some(l) => l,
+        None => {
+            eprintln!("checkout: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+
+    // The squash base is the HEAD before any checkout-span work.
+    let base_commit = crate::store::git::head_commit(pm_dir).ok().flatten();
+
+    let lock = LockFile::new(
+        leaf,
+        intent.map(|s| s.to_string()),
+        DEFAULT_TTL_SECONDS,
+        LockMode::Soft,
+        base_commit,
+    );
+
+    match locks::acquire(pm_dir, &lock, Utc::now()) {
+        Ok(AcquireOutcome::Acquired) => {
+            println!("checkout: {leaf} locked by {}.", lock.agent);
+        }
+        Ok(AcquireOutcome::Overlapped { previous }) => {
+            eprintln!(
+                "checkout: warning - {leaf} was already checked out by {} (soft lock; proceeding).",
+                previous.agent
+            );
+            println!("checkout: {leaf} locked by {}.", lock.agent);
+        }
+        Ok(AcquireOutcome::Blocked { holder }) => {
+            eprintln!("checkout: {leaf} is hard-locked by {}; cannot check out.", holder.agent);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("checkout: could not acquire lock: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    emit_or_warn(pm_dir, "checkout", Some(leaf), intent);
+    commit_or_warn(pm_dir, &commit_subject_for(leaf, "checkout", intent));
+}
+
+/// `pm checkin <id> [--summary ...] [--granular]`: release the lock and close
+/// the checkout span. By default every commit made since the lock's
+/// `base_commit` is squashed into one checkin commit; `--granular` keeps the
+/// individual commits.
+pub fn cmd_checkin(pm_dir: &Path, id: &str, summary: Option<&str>, granular: bool) {
+    use crate::store::locks;
+
+    let db = Database::load(pm_dir);
+    let leaf = match resolve_v2_id(id, &db) {
+        Some(l) => l,
+        None => {
+            eprintln!("checkin: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+
+    // Read the lock first so we have the squash base before releasing it.
+    let base_commit = match locks::read(pm_dir, leaf) {
+        Ok(Some(lock)) => lock.base_commit,
+        Ok(None) => {
+            eprintln!("checkin: no active lock on {leaf} (committing work anyway).");
+            None
+        }
+        Err(e) => {
+            eprintln!("checkin: could not read lock: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = locks::release(pm_dir, leaf) {
+        eprintln!("checkin: could not release lock: {e}");
+        std::process::exit(1);
+    }
+    emit_or_warn(pm_dir, "checkin", Some(leaf), summary);
+
+    let message = commit_subject_for(leaf, "checkin", summary);
+    commit_or_warn(pm_dir, &message);
+
+    // Squash the checkout span unless --granular or there is no recorded base.
+    match (granular, base_commit) {
+        (false, Some(base)) => {
+            if let Err(e) = crate::store::git::squash_since(pm_dir, &base, &message) {
+                eprintln!("checkin: squash failed, leaving individual commits: {e}");
+            } else {
+                println!("checkin: {leaf} released; checkout span squashed.");
+                return;
+            }
+        }
+        (true, _) => {
+            println!("checkin: {leaf} released; checkout-span commits kept (--granular).");
+            return;
+        }
+        (false, None) => {}
+    }
+    println!("checkin: {leaf} released.");
+}
+
+/// `pm heartbeat <id>`: refresh the heartbeat on a held lock so it does not
+/// go stale. Intended to be called periodically by a lock holder - a TUI or
+/// an agent loop. It only touches the lock file; it neither commits nor emits
+/// an event, since heartbeats are high-frequency and that would be noise.
+pub fn cmd_heartbeat(pm_dir: &Path, id: &str) {
+    use crate::store::locks;
+
+    let db = Database::load(pm_dir);
+    let leaf = match resolve_v2_id(id, &db) {
+        Some(l) => l,
+        None => {
+            eprintln!("heartbeat: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    match locks::refresh_heartbeat(pm_dir, leaf, Utc::now()) {
+        Ok(true) => println!("heartbeat: {leaf} refreshed."),
+        Ok(false) => {
+            eprintln!("heartbeat: no active lock on {leaf}.");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("heartbeat: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `pm locks`: reap any stale locks, then list the live ones. A lock is stale
+/// once its heartbeat is older than its TTL window.
+pub fn cmd_locks(pm_dir: &Path) {
+    use crate::store::locks;
+
+    let now = Utc::now();
+    match locks::reap_stale(pm_dir, now) {
+        Ok(reaped) => {
+            for id in &reaped {
+                println!("locks: reaped stale lock on {id}");
+                emit_or_warn(pm_dir, "lock-reaped", Some(*id), None);
+            }
+        }
+        Err(e) => {
+            eprintln!("locks: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    let live = match locks::list(pm_dir) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("locks: {e}");
+            std::process::exit(1);
+        }
+    };
+    if live.is_empty() {
+        println!("locks: no active locks.");
+        return;
+    }
+    for lock in live {
+        let started = lock.started_at.format("%Y-%m-%d %H:%M:%S");
+        let intent = lock.intent.as_deref().unwrap_or("");
+        println!("{}  {}  since {started}  {intent}", lock.id, lock.agent);
+    }
+}
+
+/// `pm next [--agent ...]`: print the first ready work item - a Task or
+/// Subtask that is open, has every dependency done, and carries no live lock.
+/// Container kinds (Project/Product/Epic) and Milestones are not work an
+/// agent picks up, so they are excluded. Stale locks are reaped first so a
+/// dead hold does not hide a ready ticket. Ties break on the lowest id for a
+/// deterministic answer.
+pub fn cmd_next(pm_dir: &Path, agent: Option<&str>, _filter: Option<&str>) {
+    use crate::store::locks;
+    use std::collections::HashSet;
+
+    let db = Database::load(pm_dir);
+    let now = Utc::now();
+    // Reap stale locks so a dead hold does not mask a ready ticket.
+    let _ = locks::reap_stale(pm_dir, now);
+    let locked: HashSet<crate::store::LeafId> = locks::list(pm_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| l.id)
+        .collect();
+
+    let done: HashSet<crate::store::LeafId> = db
+        .tasks
+        .iter()
+        .filter(|t| t.status == Status::Done)
+        .map(|t| t.id)
+        .collect();
+
+    let mut ready: Vec<&Task> = db
+        .tasks
+        .iter()
+        .filter(|t| matches!(t.kind, Kind::Task | Kind::Subtask))
+        .filter(|t| t.status == Status::Open)
+        .filter(|t| !locked.contains(&t.id))
+        .filter(|t| t.deps.iter().all(|d| done.contains(d)))
+        .collect();
+    ready.sort_by_key(|t| t.id);
+
+    let who = agent.map(|s| s.to_string()).unwrap_or_else(crate::store::events::actor);
+    match ready.first() {
+        Some(t) => println!("next ({who}): {}  {}  [{}]", t.id, t.title, format_kind(t.kind)),
+        None => println!("next ({who}): no ready tickets."),
+    }
+}
+
 pub fn cmd_tv(_pm_dir: &Path) { cmd_deferred("tv", "Phase 9"); }
 /// `pm log <id>`: print the git history filtered to commits that touched the
 /// ticket's directory. Shells out to `git log -- <ticket-path>`, which does
