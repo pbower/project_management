@@ -7,7 +7,7 @@
 use clap::Subcommand;
 use clap_complete::{generate, Shell};
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
@@ -255,6 +255,270 @@ pub enum Commands {
 
     /// Open project main menu (interactive mode).
     Menu,
+
+    // ----- v2 lifecycle verbs -----
+
+    /// Initialise a `.pm/` workspace in the current directory.
+    Init,
+
+    /// Show a ticket's front-matter and CLAUDE.md sections.
+    Show {
+        /// Ticket id (e.g. `TSK7`, `PRJ1-PRD3-EPC7-TSK22`).
+        id: String,
+    },
+
+    /// Move a ticket under a different parent.
+    #[command(name = "move")]
+    Move {
+        /// Ticket id to move.
+        id: String,
+        /// New parent id; pass `--orphan` to clear the parent.
+        new_parent: Option<String>,
+        /// Promote the ticket to orphan-scope (no parent).
+        #[arg(long)]
+        orphan: bool,
+    },
+
+    // ----- v2 content verbs -----
+
+    /// Open a ticket's CLAUDE.md in `$EDITOR`.
+    Edit {
+        /// Ticket id.
+        id: String,
+        /// Position the cursor at this section heading (e.g. `--section "User Story"`).
+        #[arg(long)]
+        section: Option<String>,
+    },
+
+    /// Print the composed CLAUDE.md chain for a ticket.
+    Context {
+        /// Ticket id.
+        id: String,
+        /// Suppress the linked memories section.
+        #[arg(long)]
+        no_memories: bool,
+    },
+
+    /// Write a composed view to disk next to the ticket.
+    Materialise {
+        /// Ticket id.
+        id: String,
+        /// Output file path. Defaults to `<ticket-dir>/COMPOSED.md`.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Artifact directory management.
+    Artifact {
+        #[command(subcommand)]
+        action: ArtifactAction,
+    },
+
+    // ----- v2 metadata verbs -----
+
+    /// Set a ticket's status.
+    SetStatus {
+        /// Ticket id.
+        id: String,
+        /// New status.
+        #[arg(value_enum)]
+        new_status: Status,
+    },
+
+    /// Set a ticket's priority.
+    Priority {
+        /// Ticket id.
+        id: String,
+        /// New priority.
+        #[arg(value_enum)]
+        new_priority: Priority,
+    },
+
+    /// Set a ticket's due date.
+    Due {
+        /// Ticket id.
+        id: String,
+        /// Due date in any form `parse_due_input` accepts (e.g. `"next friday"`).
+        when: String,
+    },
+
+    /// Manage a ticket's dependencies.
+    Dep {
+        /// Ticket id.
+        id: String,
+        /// Operation: `needs` or `remove`.
+        op: String,
+        /// Dependency id (the ticket the operation targets).
+        dep_id: String,
+    },
+
+    /// Add or remove tags on a ticket.
+    Tag {
+        /// Ticket id.
+        id: String,
+        /// Tag ops in the form `+foo` to add, `-bar` to remove.
+        ops: Vec<String>,
+    },
+
+    /// Set a key in a ticket's `links:` map.
+    Link {
+        /// Ticket id.
+        id: String,
+        /// Link key (e.g. `github_issue`).
+        key: String,
+        /// Link value (URL or `owner/repo#issue`).
+        url: String,
+    },
+
+    /// Attach a ticket to a milestone.
+    Milestone {
+        /// Ticket id.
+        id: String,
+        /// Milestone id (`MLSn`).
+        milestone_id: String,
+    },
+
+    // ----- v2 views and maintenance -----
+
+    /// Rebuild state.json from the on-disk tree. Pass `--migrate` to import a
+    /// legacy `tasks.json` archive into the workspace via the bridge.
+    Doctor {
+        /// Run the legacy `tasks.json` migration into the current workspace.
+        #[arg(long)]
+        migrate: bool,
+    },
+
+    /// Search CLAUDE.md content across the workspace.
+    Search {
+        /// Substring or regex pattern.
+        query: String,
+    },
+
+    // ----- v2 verbs deferred to later phases -----
+
+    /// (Phase 6) Acquire a soft lock on a ticket.
+    Checkout {
+        /// Ticket id.
+        id: String,
+        /// Optional intent string recorded on the lock.
+        #[arg(long)]
+        intent: Option<String>,
+    },
+
+    /// (Phase 6) Release a lock and commit work in progress.
+    Checkin {
+        /// Ticket id.
+        id: String,
+        /// Summary written to the activity feed.
+        #[arg(long)]
+        summary: Option<String>,
+    },
+
+    /// (Phase 6) Return the next ready task for an agent.
+    Next {
+        /// Acting agent name (defaults to `PM_AGENT_ID`).
+        #[arg(long)]
+        agent: Option<String>,
+        /// Filter expression.
+        #[arg(long)]
+        filter: Option<String>,
+    },
+
+    /// (Phase 6) List active locks.
+    Locks,
+
+    /// (Phase 9) Open the full-screen activity feed.
+    Tv,
+
+    /// (Phase 5) Filter git log to the ticket's slice of the tree.
+    Log {
+        /// Ticket id.
+        id: String,
+    },
+
+    /// (Phase 10) Memory tier management.
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ArtifactAction {
+    /// Drop a file into a ticket's `artifacts/` directory and sweep.
+    Add {
+        /// Ticket id.
+        id: String,
+        /// Path to the file to add.
+        path: PathBuf,
+        /// Description for the artifact entry.
+        #[arg(long)]
+        desc: Option<String>,
+    },
+    /// Rename an artifact, preserving its description.
+    Rename {
+        /// Ticket id.
+        id: String,
+        /// Existing filename.
+        old: String,
+        /// New filename.
+        new: String,
+    },
+    /// List artifacts for a ticket.
+    List {
+        /// Ticket id.
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MemoryAction {
+    /// Link a memory to a ticket.
+    Link {
+        /// Ticket id.
+        id: String,
+        /// Memory name.
+        name: String,
+    },
+    /// Unlink a memory from a ticket.
+    Unlink {
+        /// Ticket id.
+        id: String,
+        /// Memory name.
+        name: String,
+    },
+    /// List memories linked to a ticket.
+    List {
+        /// Ticket id.
+        id: String,
+    },
+    /// Write a memory at the given scope.
+    Write {
+        /// Scope: `user`, `project`, or `ticket`.
+        #[arg(long)]
+        scope: String,
+        /// Memory type: `feedback`, `project`, `reference`, or `user`.
+        #[arg(long)]
+        ty: String,
+        /// Memory name (file slug).
+        #[arg(long)]
+        name: String,
+        /// Memory content.
+        content: String,
+    },
+    /// Promote a memory between scopes.
+    Promote {
+        /// Memory name.
+        name: String,
+        /// Target scope.
+        #[arg(long)]
+        to: String,
+    },
+    /// Print a memory's contents.
+    Show {
+        /// Memory name.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -272,6 +536,17 @@ pub enum TemplateAction {
     Delete {
         /// Template name to delete
         template_name: String,
+    },
+    /// Open a per-kind section template in `$EDITOR`.
+    Edit {
+        /// Ticket kind (project|product|epic|task|subtask|milestone).
+        kind: String,
+    },
+    /// Re-apply the section template to an existing ticket, preserving any
+    /// content under sections that match the template by name.
+    Apply {
+        /// Ticket id.
+        id: String,
     },
     /// Create a new template from scratch.
     Create {
@@ -1115,15 +1390,33 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
             };
             
             db.state.templates.push(template);
-            
+
             if let Err(e) = db.save(db_path) {
                 eprintln!("Failed to save database: {}", e);
                 std::process::exit(1);
             }
-            
+
             println!("Created template '{}'", name);
         },
+        TemplateAction::Edit { kind } => {
+            cmd_template_edit(db_path, &kind);
+        },
+        TemplateAction::Apply { id } => {
+            cmd_template_apply(db, db_path, &id);
+        },
     }
+}
+
+/// Open a per-kind section template in `$EDITOR`. Stub until Phase 4 task 40
+/// wires the `$EDITOR` handoff.
+pub fn cmd_template_edit(_pm_dir: &Path, kind: &str) {
+    eprintln!("template edit {kind}: pending Phase 4 content-handler work.");
+}
+
+/// Re-apply the section template to an existing ticket. Stub until Phase 4
+/// task 40 wires the template-apply path through `store::claude_md::Ticket`.
+pub fn cmd_template_apply(_db: &mut Database, _pm_dir: &Path, id: &str) {
+    eprintln!("template apply {id}: pending Phase 4 content-handler work.");
 }
 
 /// Export tasks to CSV format for external analysis and time tracking.
@@ -1706,4 +1999,170 @@ pub fn cmd_wf(db_path: &Path) {
             }
         }
     }
+}
+
+// =============================================================================
+// v2 verb handlers - skeletons populated by Phase 4 tasks 39-42
+// =============================================================================
+
+/// Print a "deferred to Phase N" message and exit successfully. Used as the
+/// handler for verbs whose implementation belongs to a later phase.
+fn cmd_deferred(verb: &str, phase: &str) {
+    eprintln!("`{verb}` is part of {phase} and is not yet wired up. The CLI surface is shape-complete; the handler will land in that phase.");
+    std::process::exit(0);
+}
+
+/// `pm init`: scaffold a `.pm/` workspace in the current directory.
+pub fn cmd_init(pm_dir: &Path) {
+    use crate::store::layout::Layout;
+    let layout = Layout::at(pm_dir);
+    match layout.init() {
+        Ok(()) => println!("Initialised .pm/ workspace at {}", pm_dir.display()),
+        Err(e) => {
+            eprintln!("init failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `pm show <id>`: print front-matter and section names for a ticket.
+pub fn cmd_show(db: &Database, id: &str) {
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    let Some(task) = db.get(leaf) else {
+        eprintln!("ticket not found: {id}");
+        std::process::exit(1);
+    };
+    println!("{} {}", task.id, task.title);
+    println!("  kind: {:?}", task.kind);
+    println!("  status: {:?}", task.status);
+    if let Some(p) = task.parent {
+        println!("  parent: {p}");
+    }
+    if !task.tags.is_empty() {
+        println!("  tags: {}", task.tags.join(", "));
+    }
+    if let Some(d) = task.due {
+        println!("  due: {d}");
+    }
+    if let Some(ref text) = task.description {
+        println!("\n# Description\n{text}");
+    }
+}
+
+/// Resolve a user-supplied id string against the loaded Database. Accepts the
+/// v2 forms understood by [`crate::store::id::IdInput`] (leaf, address, with
+/// trailing labels). Returns the canonical `LeafId` if it appears in the db.
+fn resolve_v2_id(input: &str, db: &Database) -> Option<crate::store::LeafId> {
+    use crate::store::id::IdInput;
+    let parsed: IdInput = input.parse().ok()?;
+    let leaf = parsed.leaf();
+    if db.get(leaf).is_some() {
+        Some(leaf)
+    } else {
+        None
+    }
+}
+
+/// `pm move <id> <new_parent>`: deferred to Phase 4 task 39.
+pub fn cmd_move(_db: &mut Database, _pm_dir: &Path, id: &str, _new_parent: Option<&str>, _orphan: bool) {
+    eprintln!("move {id}: pending Phase 4 lifecycle-handler work.");
+}
+
+/// `pm edit <id> [--section <name>]`: deferred to Phase 4 task 40.
+pub fn cmd_edit(_pm_dir: &Path, id: &str, _section: Option<&str>) {
+    eprintln!("edit {id}: pending Phase 4 content-handler work.");
+}
+
+/// `pm context <id>`: deferred to Phase 4 task 40.
+pub fn cmd_context(_db: &Database, _pm_dir: &Path, id: &str, _include_memories: bool) {
+    eprintln!("context {id}: pending Phase 4 content-handler work.");
+}
+
+/// `pm materialise <id>`: deferred to Phase 4 task 40.
+pub fn cmd_materialise(_db: &Database, _pm_dir: &Path, id: &str, _output: Option<PathBuf>) {
+    eprintln!("materialise {id}: pending Phase 4 content-handler work.");
+}
+
+/// `pm artifact ...`: deferred to Phase 4 task 40.
+pub fn cmd_artifact(_db: &Database, _pm_dir: &Path, action: ArtifactAction) {
+    match action {
+        ArtifactAction::Add { id, .. } => eprintln!("artifact add {id}: pending Phase 4 content-handler work."),
+        ArtifactAction::Rename { id, .. } => eprintln!("artifact rename {id}: pending Phase 4 content-handler work."),
+        ArtifactAction::List { id } => eprintln!("artifact list {id}: pending Phase 4 content-handler work."),
+    }
+}
+
+/// `pm set-status <id> <new-status>`: deferred to Phase 4 task 41.
+pub fn cmd_set_status(_db: &mut Database, _pm_dir: &Path, id: &str, _status: Status) {
+    eprintln!("set-status {id}: pending Phase 4 metadata-handler work.");
+}
+
+/// `pm priority <id> <priority>`: deferred to Phase 4 task 41.
+pub fn cmd_priority(_db: &mut Database, _pm_dir: &Path, id: &str, _priority: Priority) {
+    eprintln!("priority {id}: pending Phase 4 metadata-handler work.");
+}
+
+/// `pm due <id> <when>`: deferred to Phase 4 task 41.
+pub fn cmd_due(_db: &mut Database, _pm_dir: &Path, id: &str, _when: &str) {
+    eprintln!("due {id}: pending Phase 4 metadata-handler work.");
+}
+
+/// `pm dep <id> needs <dep_id>`: deferred to Phase 4 task 41.
+pub fn cmd_dep(_db: &mut Database, _pm_dir: &Path, id: &str, _op: &str, _dep_id: &str) {
+    eprintln!("dep {id}: pending Phase 4 metadata-handler work.");
+}
+
+/// `pm tag <id> +foo -bar`: deferred to Phase 4 task 41.
+pub fn cmd_tag(_db: &mut Database, _pm_dir: &Path, id: &str, _ops: &[String]) {
+    eprintln!("tag {id}: pending Phase 4 metadata-handler work.");
+}
+
+/// `pm link <id> <key> <url>`: deferred to Phase 4 task 41.
+pub fn cmd_link(_db: &mut Database, _pm_dir: &Path, id: &str, _key: &str, _url: &str) {
+    eprintln!("link {id}: pending Phase 4 metadata-handler work.");
+}
+
+/// `pm milestone <id> <MLSn>`: deferred to Phase 4 task 41.
+pub fn cmd_milestone(_db: &mut Database, _pm_dir: &Path, id: &str, _milestone_id: &str) {
+    eprintln!("milestone {id}: pending Phase 4 metadata-handler work.");
+}
+
+/// `pm doctor [--migrate]`: deferred to Phase 4 task 39.
+pub fn cmd_doctor(_pm_dir: &Path, migrate: bool) {
+    if migrate {
+        eprintln!("doctor --migrate: pending Phase 4 lifecycle-handler work.");
+    } else {
+        eprintln!("doctor: pending Phase 4 lifecycle-handler work.");
+    }
+}
+
+/// `pm search <query>`: deferred to Phase 4 task 41.
+pub fn cmd_search(_pm_dir: &Path, _query: &str) {
+    eprintln!("search: pending Phase 4 metadata-handler work.");
+}
+
+// ----- Phase-5+ stubs -----
+
+pub fn cmd_checkout(_pm_dir: &Path, _id: &str, _intent: Option<&str>) { cmd_deferred("checkout", "Phase 6"); }
+pub fn cmd_checkin(_pm_dir: &Path, _id: &str, _summary: Option<&str>) { cmd_deferred("checkin", "Phase 6"); }
+pub fn cmd_next(_pm_dir: &Path, _agent: Option<&str>, _filter: Option<&str>) { cmd_deferred("next", "Phase 6"); }
+pub fn cmd_locks(_pm_dir: &Path) { cmd_deferred("locks", "Phase 6"); }
+pub fn cmd_tv(_pm_dir: &Path) { cmd_deferred("tv", "Phase 9"); }
+pub fn cmd_log(_pm_dir: &Path, _id: &str) { cmd_deferred("log", "Phase 5"); }
+pub fn cmd_memory(_db: &mut Database, _pm_dir: &Path, action: MemoryAction) {
+    let verb = match action {
+        MemoryAction::Link { .. } => "memory link",
+        MemoryAction::Unlink { .. } => "memory unlink",
+        MemoryAction::List { .. } => "memory list",
+        MemoryAction::Write { .. } => "memory write",
+        MemoryAction::Promote { .. } => "memory promote",
+        MemoryAction::Show { .. } => "memory show",
+    };
+    cmd_deferred(verb, "Phase 10");
 }

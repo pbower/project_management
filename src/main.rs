@@ -179,5 +179,42 @@ fn main() {
             cmd_backup(&pm_dir, all),
 
         Commands::Menu => cmd_menu(&pm_dir),
+
+        // v2 lifecycle
+        Commands::Init => cmd_init(&pm_dir),
+        Commands::Show { id } => cmd_show(&db, &id),
+        Commands::Move { id, new_parent, orphan } => {
+            cmd_move(&mut db, &pm_dir, &id, new_parent.as_deref(), orphan);
+        },
+
+        // v2 content
+        Commands::Edit { id, section } => cmd_edit(&pm_dir, &id, section.as_deref()),
+        Commands::Context { id, no_memories } => cmd_context(&db, &pm_dir, &id, !no_memories),
+        Commands::Materialise { id, output } => cmd_materialise(&db, &pm_dir, &id, output),
+        Commands::Artifact { action } => cmd_artifact(&db, &pm_dir, action),
+
+        // v2 metadata
+        Commands::SetStatus { id, new_status } => cmd_set_status(&mut db, &pm_dir, &id, new_status),
+        Commands::Priority { id, new_priority } => cmd_priority(&mut db, &pm_dir, &id, new_priority),
+        Commands::Due { id, when } => cmd_due(&mut db, &pm_dir, &id, &when),
+        Commands::Dep { id, op, dep_id } => cmd_dep(&mut db, &pm_dir, &id, &op, &dep_id),
+        Commands::Tag { id, ops } => cmd_tag(&mut db, &pm_dir, &id, &ops),
+        Commands::Link { id, key, url } => cmd_link(&mut db, &pm_dir, &id, &key, &url),
+        Commands::Milestone { id, milestone_id } => {
+            cmd_milestone(&mut db, &pm_dir, &id, &milestone_id);
+        },
+
+        // v2 views / maintenance
+        Commands::Doctor { migrate } => cmd_doctor(&pm_dir, migrate),
+        Commands::Search { query } => cmd_search(&pm_dir, &query),
+
+        // Deferred to later phases
+        Commands::Checkout { id, intent } => cmd_checkout(&pm_dir, &id, intent.as_deref()),
+        Commands::Checkin { id, summary } => cmd_checkin(&pm_dir, &id, summary.as_deref()),
+        Commands::Next { agent, filter } => cmd_next(&pm_dir, agent.as_deref(), filter.as_deref()),
+        Commands::Locks => cmd_locks(&pm_dir),
+        Commands::Tv => cmd_tv(&pm_dir),
+        Commands::Log { id } => cmd_log(&pm_dir, &id),
+        Commands::Memory { action } => cmd_memory(&mut db, &pm_dir, action),
     }
 }
