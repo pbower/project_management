@@ -20,7 +20,6 @@ ratatui = "0.29"
 crossterm = "0.29"
 serde_yml = "0.0.12"
 notify-debouncer-mini = "0.7.0"
-git2 = "0.20.4"
 
 [[bin]]
 name = "pm"
