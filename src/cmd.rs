@@ -719,6 +719,7 @@ pub fn cmd_add(
         std::process::exit(1);
     }
     commit_or_warn(db_path, &commit_subject_for(id, "add", Some(&title_for_msg)));
+    emit_or_warn(db_path, "add", Some(id), Some(&title_for_msg));
     println!("Added task {}", id);
 }
 
@@ -1061,6 +1062,7 @@ pub fn cmd_update(
         std::process::exit(1);
     }
     commit_or_warn(db_path, &commit_subject_for(task_id, "update", None));
+    emit_or_warn(db_path, "update", Some(task_id), None);
     println!("Updated task {}", task_id);
 }
 
@@ -1152,6 +1154,10 @@ pub fn cmd_complete(
         format!("pm: complete batch ({} tickets)", completed.len())
     };
     commit_or_warn(db_path, &summary);
+    // One event per completed ticket so the feed credits each id.
+    for tid in &completed {
+        emit_or_warn(db_path, "complete", Some(*tid), None);
+    }
     println!("Marked done.");
 }
 
@@ -1176,6 +1182,7 @@ pub fn cmd_reopen(db: &mut Database, db_path: &Path, id: String) {
         std::process::exit(1);
     }
     commit_or_warn(db_path, &commit_subject_for(task_id, "reopen", None));
+    emit_or_warn(db_path, "reopen", Some(task_id), None);
     println!("Reopened {}", task_id);
 }
 
@@ -1257,6 +1264,8 @@ pub fn cmd_delete(
     let ids = to_delete;
     let count = ids.len();
     let first = ids.iter().next().copied();
+    // Snapshot the ids before they are removed so the feed can credit each.
+    let deleted: Vec<crate::store::LeafId> = ids.iter().copied().collect();
     db.remove_ids(&ids);
     if let Err(e) = db.save(db_path) {
         eprintln!("Failed to save DB: {e}");
@@ -1267,6 +1276,9 @@ pub fn cmd_delete(
         (n, _) => format!("pm: delete batch ({n} tickets)"),
     };
     commit_or_warn(db_path, &summary);
+    for id in &deleted {
+        emit_or_warn(db_path, "delete", Some(*id), None);
+    }
     println!("Deleted.");
 }
 
@@ -1522,11 +1534,13 @@ pub fn cmd_template_apply(db: &mut Database, pm_dir: &Path, id: &str) {
         eprintln!("template apply: write failed: {e}");
         std::process::exit(1);
     }
+    let stem = templates::template_stem(leaf.prefix());
     commit_or_warn(
         pm_dir,
-        &commit_subject_for(leaf, "template apply", Some(templates::template_stem(leaf.prefix()))),
+        &commit_subject_for(leaf, "template apply", Some(stem)),
     );
-    println!("Applied {} template to {leaf}", templates::template_stem(leaf.prefix()));
+    emit_or_warn(pm_dir, "template-apply", Some(leaf), Some(stem));
+    println!("Applied {stem} template to {leaf}");
 }
 
 /// Export tasks to CSV format for external analysis and time tracking.
@@ -2142,6 +2156,7 @@ pub fn cmd_init(pm_dir: &Path) {
         std::process::exit(1);
     }
     commit_or_warn(pm_dir, "pm: init");
+    emit_or_warn(pm_dir, "init", None, None);
 
     println!("Initialised .pm/ workspace at {}", pm_dir.display());
 }
@@ -2324,6 +2339,7 @@ pub fn cmd_move(
         pm_dir,
         &commit_subject_for(leaf, "move", Some(&format!("-> {dest_label}"))),
     );
+    emit_or_warn(pm_dir, "move", Some(leaf), Some(&format!("-> {dest_label}")));
     println!("Moved {leaf} -> {dest_label}");
 
     // Suppress unused-import warning on `AddressId` if no other site brings it.
@@ -2570,11 +2586,13 @@ pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
                     let _ = idx.save(&index_path);
                 }
             }
+            let name = file_name.to_string_lossy().into_owned();
             commit_or_warn(
                 pm_dir,
-                &commit_subject_for(leaf, "artifact add", Some(&file_name.to_string_lossy())),
+                &commit_subject_for(leaf, "artifact add", Some(&name)),
             );
-            println!("Added artifact {} to {leaf}", file_name.to_string_lossy());
+            emit_or_warn(pm_dir, "artifact-add", Some(leaf), Some(&name));
+            println!("Added artifact {name} to {leaf}");
         }
         ArtifactAction::Rename { id, old, new } => {
             let (leaf, artifacts_dir) = resolve(&id);
@@ -2582,10 +2600,12 @@ pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
                 eprintln!("artifact rename: {e}");
                 std::process::exit(1);
             }
+            let detail = format!("{old} -> {new}");
             commit_or_warn(
                 pm_dir,
-                &commit_subject_for(leaf, "artifact rename", Some(&format!("{old} -> {new}"))),
+                &commit_subject_for(leaf, "artifact rename", Some(&detail)),
             );
+            emit_or_warn(pm_dir, "artifact-rename", Some(leaf), Some(&detail));
             println!("Renamed {old} -> {new} on {leaf}");
         }
         ArtifactAction::List { id } => {
@@ -2645,6 +2665,7 @@ where
         std::process::exit(1);
     }
     commit_or_warn(pm_dir, &commit_subject_for(leaf, label, summary));
+    emit_or_warn(pm_dir, label, Some(leaf), summary);
     println!("{label}: {leaf} updated.");
 }
 
@@ -2845,6 +2866,12 @@ fn run_doctor_rebuild(pm_dir: &Path) {
         commit_or_warn(
             pm_dir,
             &format!("pm: doctor rebuild (+{added}/-{} entries)", removed_paths.len()),
+        );
+        emit_or_warn(
+            pm_dir,
+            "doctor",
+            None,
+            Some(&format!("+{added}/-{} entries", removed_paths.len())),
         );
     }
 
