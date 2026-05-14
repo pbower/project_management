@@ -214,6 +214,7 @@ mod tests {
             tags: Vec::new(),
             deps: Vec::new(),
             milestone: None,
+            memories: Vec::new(),
             due: None,
             parent,
             kind,

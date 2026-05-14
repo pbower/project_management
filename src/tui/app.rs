@@ -880,6 +880,7 @@ impl App {
             tags: split_and_normalise_tags(&[self.task_form.tags.value.clone()]),
             deps: Vec::new(),
             milestone: None,
+            memories: Vec::new(),
             due,
             parent,
             kind: task_kind,
@@ -1437,7 +1438,15 @@ impl App {
     
                 let depth = depth_map.get(&task.id).copied().unwrap_or(0);
                 let indent_str = " ".repeat(depth);
-                let title_with_tags = format!("{}{}", task.title, tags_str);
+                // M:n badge for tickets with linked memories. The count comes
+                // straight from front-matter; memory file content is a Mode 2
+                // concern, not loaded here.
+                let memory_badge = if task.memories.is_empty() {
+                    String::new()
+                } else {
+                    format!("  M:{}", task.memories.len())
+                };
+                let title_with_tags = format!("{}{}{}", task.title, tags_str, memory_badge);
 
                 // Lock state: empty when free, STALE past the TTL window,
                 // otherwise the holding agent (truncated to the column).
