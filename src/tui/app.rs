@@ -19,8 +19,13 @@ use ratatui::{
     Frame, Terminal,
 };
 
+use std::collections::HashMap;
+
+use chrono::Utc;
+
 use crate::{fields::*, tui::colors::{DARK_GREEN, DARK_PURPLE, DARK_RED, GOLD}};
 use crate::store::{IdInput, LeafId};
+use crate::store::locks::{self, LockFile};
 use crate::task::Task;
 use crate::{
     db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
@@ -1356,7 +1361,7 @@ impl App {
         f.render_widget(header_block, chunks[0]);
     
         let header_cells = [
-            "ID", "Kind", "Status", "Priority", "Urgency", "Stage", "Due", "Project", "Title",
+            "ID", "Kind", "Status", "Priority", "Urgency", "Stage", "Due", "Project", "Lock", "Title",
         ]
         .iter()
         .map(|h| {
@@ -1373,7 +1378,7 @@ impl App {
             .height(1);
     
         // Calculate depth map for tree view
-        let mut depth_map: std::collections::HashMap<LeafId, usize> = std::collections::HashMap::new();
+        let mut depth_map: HashMap<LeafId, usize> = HashMap::new();
         for task in &self.db.tasks {
             let mut depth = 0usize;
             let mut cur = task.parent;
@@ -1386,6 +1391,15 @@ impl App {
             }
             depth_map.insert(task.id, depth);
         }
+
+        // Load active locks once per render, keyed by ticket id, so each row
+        // can show its lock state without a per-row directory read.
+        let lock_map: HashMap<LeafId, LockFile> = locks::list(&self.pm_dir)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|lock| (lock.id, lock))
+            .collect();
+        let now = Utc::now();
 
         let rows: Vec<Row> = self
             .filtered_tasks
@@ -1424,7 +1438,17 @@ impl App {
                 let depth = depth_map.get(&task.id).copied().unwrap_or(0);
                 let indent_str = " ".repeat(depth);
                 let title_with_tags = format!("{}{}", task.title, tags_str);
-    
+
+                // Lock state: empty when free, STALE past the TTL window,
+                // otherwise the holding agent (truncated to the column).
+                let lock_cell = match lock_map.get(&task.id) {
+                    None => ratatui::widgets::Cell::from(""),
+                    Some(lock) if lock.is_stale(now) => ratatui::widgets::Cell::from("STALE")
+                        .style(Style::default().fg(DARK_RED).add_modifier(Modifier::BOLD)),
+                    Some(lock) => ratatui::widgets::Cell::from(truncate(&lock.agent, 16))
+                        .style(Style::default().fg(GOLD)),
+                };
+
                 Row::new(vec![
                     ratatui::widgets::Cell::from(task.id.to_string()),
                     ratatui::widgets::Cell::from(format_kind(task.kind)),
@@ -1434,6 +1458,7 @@ impl App {
                     ratatui::widgets::Cell::from(format_process_stage(task.process_stage)),
                     ratatui::widgets::Cell::from(due_str),
                     ratatui::widgets::Cell::from(project_str),
+                    lock_cell,
                     ratatui::widgets::Cell::from(if depth == 0 {
                         title_with_tags
                     } else {
@@ -1453,6 +1478,7 @@ impl App {
             Constraint::Length(13), // Stage
             Constraint::Length(12), // Due
             Constraint::Length(12), // Project
+            Constraint::Length(16), // Lock
             Constraint::Min(25),    // Title
         ];
     
