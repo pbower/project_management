@@ -122,21 +122,38 @@ impl Database {
                 .ensure_node_path(&rel)
                 .map_err(|e| std::io::Error::other(format!("ensure node path: {e}")))?;
 
-            // Build the front-matter + body via the bridge, render via Ticket
-            // (which wraps the YAML delimiters and trailing @artifacts import
-            // around the body).
+            // Build the front-matter + body via the bridge, then render the
+            // CLAUDE.md directly through the Ticket's renderer. We deliberately
+            // bypass Ticket::write_to so unchanged tickets keep their existing
+            // `updated` timestamp; the per-handler mutate_task helper is the
+            // single place that bumps updated_at_utc for the target ticket.
             let (fm, body) = task_to_document(task);
             let ticket = Ticket { front_matter: fm, body };
-            ticket
-                .write_to(&abs_dir)
-                .map_err(|e| std::io::Error::other(format!("write CLAUDE.md: {e}")))?;
+            let rendered = ticket
+                .render()
+                .map_err(|e| std::io::Error::other(format!("render CLAUDE.md: {e}")))?;
+            let claude_path = abs_dir.join(crate::store::claude_md::CLAUDE_MD);
+            let needs_write = match std::fs::read(&claude_path) {
+                Ok(existing) => existing != rendered.as_bytes(),
+                Err(_) => true,
+            };
+            if needs_write {
+                crate::store::state::atomic_write(&claude_path, rendered.as_bytes())
+                    .map_err(|e| std::io::Error::other(format!("write CLAUDE.md: {e}")))?;
+            }
 
-            // Make sure ARTIFACTS.md reflects whatever is in the artifacts/
-            // directory. Hand-curated `desc:` survives via the existing sweep.
+            // Make sure the artifacts/ directory exists and carries an
+            // ARTIFACTS.md so Claude Code's @-import doesn't 404. The full
+            // sweep is owned by cmd_artifact and the file-watcher; saving
+            // unrelated tickets must not touch every ARTIFACTS.md or the
+            // per-ticket git log filter loses precision.
             let artifacts_dir = abs_dir.join("artifacts");
             std::fs::create_dir_all(&artifacts_dir)?;
-            if let Err(e) = artifacts::sweep_dir(&artifacts_dir, task.id) {
-                eprintln!("artifact sweep for {}: {e}", task.id);
+            let artifacts_md = artifacts_dir.join(crate::store::artifacts::ARTIFACTS_MD);
+            if !artifacts_md.exists() {
+                if let Err(e) = artifacts::sweep_dir(&artifacts_dir, task.id) {
+                    eprintln!("artifact sweep for {}: {e}", task.id);
+                }
             }
 
             state.items.insert(task.id, ItemEntry { path: rel });
