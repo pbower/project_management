@@ -9,7 +9,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use chrono::Local;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
+};
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::{
     backend::Backend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -28,6 +34,7 @@ use crate::store::{IdInput, LeafId, MemoryRef};
 use crate::store::locks::{self, LockFile, LockMode, AcquireOutcome, DEFAULT_TTL_SECONDS};
 use crate::store::events;
 use crate::store::git;
+use crate::store::artifacts;
 use crate::task::Task;
 use crate::{
     db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
@@ -50,6 +57,25 @@ struct NavigationSnapshot {
     state: AppState,
     context: NavigationContext,
     selected_task: Option<LeafId>,
+}
+
+/// A deferred operation that cannot run inside the render loop because it
+/// suspends the terminal - the `$EDITOR` handoff being the case here.
+enum PendingAction {
+    /// Open the given ticket's `CLAUDE.md` in `$EDITOR`.
+    EditTicket(LeafId),
+}
+
+/// What an active single-line input prompt is collecting.
+enum PromptKind {
+    /// A path to a file to copy into the given ticket's `artifacts/` dir.
+    ArtifactPath(LeafId),
+}
+
+/// An active single-line input prompt overlaid on the current mode.
+struct PromptState {
+    kind: PromptKind,
+    buffer: String,
 }
 
 /// Main application state for the terminal user interface.
@@ -87,6 +113,10 @@ pub struct App {
     help_scroll: u16,
     /// Whether the memory side-panel is showing for the selected ticket.
     memory_panel_open: bool,
+    /// A deferred terminal-suspending action picked up by the run loop.
+    pending_action: Option<PendingAction>,
+    /// An active single-line input prompt, when one is collecting input.
+    prompt: Option<PromptState>,
 }
 
 impl App {
@@ -123,6 +153,8 @@ impl App {
             help_open: false,
             help_scroll: 0,
             memory_panel_open: false,
+            pending_action: None,
+            prompt: None,
         };
         
         app.update_filtered_tasks();
@@ -577,17 +609,15 @@ impl App {
                     }
                 }
             }
-            // `n` opens the quick-entry form for a new child ticket. `a` is
-            // kept as an alias until commit 7b reassigns it to add-artifact.
-            KeyCode::Char('n') | KeyCode::Char('a') => {
+            // `n` opens the quick-entry form for a new child ticket.
+            KeyCode::Char('n') => {
                 self.task_form = TaskForm::new_with_context_and_pm_dir(&self.navigation_context, &self.pm_dir);
                 self.task_form.update_active_field();
                 self.push_state(AppState::AddTask, None);
                 self.input_mode = InputMode::Text;
             }
-            // `f` opens the quick-entry form on the selected ticket. `e` is
-            // kept as an alias until commit 7b reassigns it to $EDITOR.
-            KeyCode::Char('f') | KeyCode::Char('e') => {
+            // `f` opens the quick-entry form on the selected ticket.
+            KeyCode::Char('f') => {
                 if let Some(selected) = self.task_list_state.selected() {
                     if let Some(&task_id) = self.filtered_tasks.get(selected) {
                         if let Some(task) = self.db.get(task_id) {
@@ -598,6 +628,26 @@ impl App {
                             self.input_mode = InputMode::Text;
                         }
                     }
+                }
+            }
+            // `e` opens the selected ticket's CLAUDE.md in `$EDITOR`. The run
+            // loop performs the terminal suspend/resume around the handoff.
+            KeyCode::Char('e') => {
+                if let Some(task_id) = self.selected_task_id() {
+                    self.pending_action = Some(PendingAction::EditTicket(task_id));
+                } else {
+                    self.set_status_message("No ticket selected".to_string());
+                }
+            }
+            // `a` adds an artifact to the selected ticket via a path prompt.
+            KeyCode::Char('a') => {
+                if let Some(task_id) = self.selected_task_id() {
+                    self.prompt = Some(PromptState {
+                        kind: PromptKind::ArtifactPath(task_id),
+                        buffer: String::new(),
+                    });
+                } else {
+                    self.set_status_message("No ticket selected".to_string());
                 }
             }
             KeyCode::Char('i') => self.do_checkin(),
@@ -1307,10 +1357,78 @@ impl App {
     /// 
     /// Returns true if the application should quit.
     /// True when a keystroke should be treated as literal text rather than a
-    /// navigation command - inside a form field or an active filter prompt.
-    /// Mode-switch keys and the help shortcut are suppressed in this situation.
+    /// navigation command - inside a form field, an active filter, or an
+    /// input prompt. Mode-switch keys and the help shortcut are suppressed
+    /// in this situation.
     fn is_capturing_text(&self) -> bool {
-        matches!(self.input_mode, InputMode::Text) || self.filter_active
+        matches!(self.input_mode, InputMode::Text) || self.filter_active || self.prompt.is_some()
+    }
+
+    /// Handle a keystroke while an input prompt is collecting text.
+    fn handle_prompt_input(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Esc => {
+                self.prompt = None;
+            }
+            KeyCode::Enter => {
+                if let Some(prompt) = self.prompt.take() {
+                    self.complete_prompt(prompt);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(prompt) = self.prompt.as_mut() {
+                    prompt.buffer.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(prompt) = self.prompt.as_mut() {
+                    prompt.buffer.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Act on a confirmed prompt.
+    fn complete_prompt(&mut self, prompt: PromptState) {
+        match prompt.kind {
+            PromptKind::ArtifactPath(leaf) => {
+                let raw = prompt.buffer.trim();
+                if raw.is_empty() {
+                    return;
+                }
+                let src = std::path::PathBuf::from(raw);
+                let Some(entry) = self.db.state.items.get(&leaf) else {
+                    self.set_status_message(format!("{leaf}: not in state.json"));
+                    return;
+                };
+                let artifacts_dir = self.pm_dir.join(&entry.path).join("artifacts");
+                if let Err(e) = std::fs::create_dir_all(&artifacts_dir) {
+                    self.set_status_message(format!("artifact add: {e}"));
+                    return;
+                }
+                let Some(file_name) = src.file_name() else {
+                    self.set_status_message("artifact add: source has no file name".to_string());
+                    return;
+                };
+                let target = artifacts_dir.join(file_name);
+                match std::fs::copy(&src, &target) {
+                    Ok(_) => {
+                        let _ = artifacts::sweep_dir(&artifacts_dir, leaf);
+                        let name = file_name.to_string_lossy().into_owned();
+                        let _ = events::emit_event(
+                            &self.pm_dir,
+                            "artifact-add",
+                            Some(leaf),
+                            Some(&name),
+                        );
+                        self.refresh_tasks();
+                        self.set_status_message(format!("Added artifact {name} to {leaf}"));
+                    }
+                    Err(e) => self.set_status_message(format!("artifact add failed: {e}")),
+                }
+            }
+        }
     }
 
     /// Handle a keystroke while the help overlay is open. `?`, `Esc`, `h`,
@@ -1347,6 +1465,13 @@ impl App {
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 self.clear_status_message();
+
+                // An active input prompt owns every keystroke until it is
+                // confirmed or cancelled.
+                if self.prompt.is_some() {
+                    self.handle_prompt_input(key.code);
+                    return Ok(false);
+                }
 
                 // Mode-switch keys win from any non-text-capturing surface,
                 // and close the help overlay as they switch.
@@ -2397,6 +2522,20 @@ impl App {
         self.render_activity_footer(f, chunks[1]);
         self.render_status_bar(f, chunks[2]);
 
+        // An active input prompt overlays the current mode.
+        if let Some(prompt) = self.prompt.as_ref() {
+            let label = match prompt.kind {
+                PromptKind::ArtifactPath(_) => {
+                    "Add artifact - path to file (Enter to add, Esc to cancel)"
+                }
+            };
+            let area = centered_rect(70, 20, f.area());
+            f.render_widget(Clear, area);
+            let widget = Paragraph::new(prompt.buffer.as_str())
+                .block(Block::default().borders(Borders::ALL).title(label));
+            f.render_widget(widget, area);
+        }
+
         // The help overlay is modal and mode-independent: drawn last so it
         // sits on top of whatever the current mode rendered.
         if self.help_open {
@@ -2498,12 +2637,58 @@ impl App {
     /// Main event loop for the TUI application.
     /// 
     /// Handles rendering and input processing until the user exits.
-    pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
+    pub fn run<B: Backend + std::io::Write>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
         loop {
             terminal.draw(|f| self.render(f))?;
 
             if self.handle_input()? {
                 break;
+            }
+
+            // Deferred terminal-suspending work runs here, outside the draw
+            // and input phases, so the editor handoff has the terminal to
+            // itself.
+            if let Some(action) = self.pending_action.take() {
+                self.run_pending_action(terminal, action)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Run a deferred action that needs the terminal suspended. Currently the
+    /// only case is the `$EDITOR` handoff for editing a ticket's CLAUDE.md.
+    fn run_pending_action<B: Backend + std::io::Write>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        action: PendingAction,
+    ) -> io::Result<()> {
+        match action {
+            PendingAction::EditTicket(leaf) => {
+                let claude_path = match self.db.state.items.get(&leaf) {
+                    Some(entry) => self.pm_dir.join(&entry.path).join("CLAUDE.md"),
+                    None => {
+                        self.set_status_message(format!("{leaf}: not in state.json"));
+                        return Ok(());
+                    }
+                };
+
+                // Hand the terminal to the editor, then take it back.
+                disable_raw_mode()?;
+                execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+                let status = std::process::Command::new(&editor).arg(&claude_path).status();
+                enable_raw_mode()?;
+                execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+                terminal.clear()?;
+
+                match status {
+                    Ok(_) => {
+                        self.refresh_tasks();
+                        let _ = events::emit_event(&self.pm_dir, "edit", Some(leaf), None);
+                        self.set_status_message(format!("{leaf}: edited in $EDITOR"));
+                    }
+                    Err(e) => self.set_status_message(format!("editor failed: {e}")),
+                }
             }
         }
         Ok(())
