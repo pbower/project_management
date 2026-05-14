@@ -20,9 +20,10 @@ use ratatui::{
 };
 
 use crate::{fields::*, tui::colors::{DARK_GREEN, DARK_PURPLE, DARK_RED, GOLD}};
+use crate::store::{IdInput, LeafId};
 use crate::task::Task;
 use crate::{
-    db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative},
+    db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
     tui::{
         enums::{AppState, InputMode, HierarchyLevel, NavigationContext},
         task_form::{
@@ -41,11 +42,11 @@ use crate::{
 struct NavigationSnapshot {
     state: AppState,
     context: NavigationContext,
-    selected_task: Option<u64>,
+    selected_task: Option<LeafId>,
 }
 
 /// Main application state for the terminal user interface.
-/// 
+///
 /// Manages all TUI state including current screen, database operations,
 /// task filtering, navigation context, and user interactions.
 pub struct App {
@@ -53,8 +54,8 @@ pub struct App {
     db: Database,
     db_path: std::path::PathBuf,
     task_list_state: TableState,
-    filtered_tasks: Vec<u64>,
-    selected_task: Option<u64>,
+    filtered_tasks: Vec<LeafId>,
+    selected_task: Option<LeafId>,
     task_form: TaskForm,
     input_mode: InputMode,
     status_message: String,
@@ -173,7 +174,7 @@ impl App {
     }
     
     /// Open a specific task for editing.
-    pub fn open_task_for_edit(&mut self, task_id: u64) {
+    pub fn open_task_for_edit(&mut self, task_id: LeafId) {
         if let Some(task) = self.db.get(task_id) {
             self.selected_task = Some(task_id);
             self.task_form = TaskForm::from_task_with_pm_dir(task, &self.pm_dir);
@@ -215,6 +216,7 @@ impl App {
                 
                 // Filter by hierarchy level
                 let required_kind = match self.navigation_context.level {
+                    HierarchyLevel::Project => Kind::Project,
                     HierarchyLevel::Product => Kind::Product,
                     HierarchyLevel::Epic => Kind::Epic,
                     HierarchyLevel::Task => Kind::Task,
@@ -235,15 +237,13 @@ impl App {
                 // Filter by search text
                 if !self.filter_text.is_empty() {
                     let filter_lower = self.filter_text.to_lowercase();
+                    let project = project_label(&self.db, t);
                     if !t.title.to_lowercase().contains(&filter_lower)
                         && !t
                             .tags
                             .iter()
                             .any(|tag| tag.to_lowercase().contains(&filter_lower))
-                        && !t
-                            .project
-                            .as_ref()
-                            .map_or(false, |p| p.to_lowercase().contains(&filter_lower))
+                        && !project.to_lowercase().contains(&filter_lower)
                     {
                         return false;
                     }
@@ -297,6 +297,7 @@ impl App {
     /// Get the theme color for the current hierarchy level.
     fn get_hierarchy_color(&self) -> Color {
         match self.navigation_context.level {
+            HierarchyLevel::Project => Color::Cyan,      // Cyan for the top-level Project tickets
             HierarchyLevel::Product => Color::Blue,        // Dark Blue (keeping existing)
             HierarchyLevel::Epic => DARK_GREEN,          // Forest Green
             HierarchyLevel::Task => GOLD,               // Gold
@@ -312,6 +313,7 @@ impl App {
     fn navigate_hierarchy_unfiltered(&mut self, forward: bool) {
         let new_level = if forward {
             match self.navigation_context.level {
+                HierarchyLevel::Project => HierarchyLevel::Product,
                 HierarchyLevel::Product => HierarchyLevel::Epic,
                 HierarchyLevel::Epic => HierarchyLevel::Task,
                 HierarchyLevel::Task => HierarchyLevel::Subtask,
@@ -320,7 +322,8 @@ impl App {
             }
         } else {
             match self.navigation_context.level {
-                HierarchyLevel::Product => return, // Can't go back
+                HierarchyLevel::Project => return, // Can't go back beyond Project
+                HierarchyLevel::Product => HierarchyLevel::Project,
                 HierarchyLevel::Epic => HierarchyLevel::Product,
                 HierarchyLevel::Task => HierarchyLevel::Epic,
                 HierarchyLevel::Subtask => HierarchyLevel::Task,
@@ -790,17 +793,19 @@ impl App {
     }
 
     /// Create a new task from the current form data.
-    /// 
+    ///
     /// Validates input, enforces hierarchy rules, and adds the task to the database.
     fn create_task(&mut self) -> io::Result<()> {
         let now_utc = chrono::Utc::now().timestamp();
-        let id = self.db.next_id();
+        let task_kind = self.task_form.kinds[self.task_form.kind];
+        let id = self.db.allocate_id(kind_to_prefix(task_kind));
 
         let parent = if self.task_form.parent.value.trim().is_empty() {
             None
         } else {
-            match self.task_form.parent.value.trim().parse::<u64>() {
-                Ok(pid) => {
+            match self.task_form.parent.value.trim().parse::<IdInput>() {
+                Ok(parsed) => {
+                    let pid = parsed.leaf();
                     if pid == id {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
@@ -810,22 +815,21 @@ impl App {
                     if self.db.get(pid).is_none() {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
-                            format!("Parent ID {} does not exist", pid),
+                            format!("Parent {} does not exist", pid),
                         ));
                     }
-                    
+
                     // Validate hierarchy rules
-                    let task_kind = self.task_form.kinds[self.task_form.kind];
                     if let Some(parent_task) = self.db.get(pid) {
                         if !validate_hierarchy(parent_task.kind, task_kind) {
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidInput,
-                                format!("Invalid hierarchy: {} cannot be child of {}. Valid hierarchy: Product > Epic > Task > Subtask",
+                                format!("Invalid hierarchy: {} cannot be child of {}. Valid hierarchy: Project > Product > Epic > Task > Subtask",
                                     format_kind(task_kind), format_kind(parent_task.kind)),
                             ));
                         }
                     }
-                    
+
                     Some(pid)
                 }
                 Err(_) => {
@@ -867,10 +871,9 @@ impl App {
                 Some(self.task_form.requirements.value.trim().to_string())
             },
             tags: split_and_normalise_tags(&[self.task_form.tags.value.clone()]),
-            project: self.task_form.get_selected_project(),
             due,
             parent,
-            kind: self.task_form.kinds[self.task_form.kind],
+            kind: task_kind,
             status: self.task_form.statuses[self.task_form.status],
             priority_level: self.task_form.priorities[self.task_form.priority_level],
             urgency: self.task_form.urgencies[self.task_form.urgency],
@@ -915,8 +918,9 @@ impl App {
         let parent = if self.task_form.parent.value.trim().is_empty() {
             None
         } else {
-            match self.task_form.parent.value.trim().parse::<u64>() {
-                Ok(pid) => {
+            match self.task_form.parent.value.trim().parse::<IdInput>() {
+                Ok(parsed) => {
+                    let pid = parsed.leaf();
                     if pid == task_id {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
@@ -926,7 +930,7 @@ impl App {
                     if self.db.get(pid).is_none() {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
-                            format!("Parent ID {} does not exist", pid),
+                            format!("Parent {} does not exist", pid),
                         ));
                     }
                     Some(pid)
@@ -954,7 +958,6 @@ impl App {
                 Some(self.task_form.description.value.trim().to_string())
             };
             task.tags = split_and_normalise_tags(&[self.task_form.tags.value.clone()]);
-            task.project = self.task_form.get_selected_project();
             task.due = due;
             task.parent = parent;
             task.kind = self.task_form.kinds[self.task_form.kind];
@@ -1013,9 +1016,9 @@ impl App {
             let mut to_delete = std::collections::HashSet::new();
 
             fn collect_descendants(
-                id: u64,
-                child_map: &std::collections::BTreeMap<u64, Vec<u64>>,
-                out: &mut std::collections::HashSet<u64>,
+                id: LeafId,
+                child_map: &std::collections::BTreeMap<LeafId, Vec<LeafId>>,
+                out: &mut std::collections::HashSet<LeafId>,
             ) {
                 if let Some(children) = child_map.get(&id) {
                     for &child in children {
@@ -1321,7 +1324,7 @@ impl App {
             .height(1);
     
         // Calculate depth map for tree view
-        let mut depth_map: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+        let mut depth_map: std::collections::HashMap<LeafId, usize> = std::collections::HashMap::new();
         for task in &self.db.tasks {
             let mut depth = 0usize;
             let mut cur = task.parent;
@@ -1334,14 +1337,19 @@ impl App {
             }
             depth_map.insert(task.id, depth);
         }
-    
+
         let rows: Vec<Row> = self
             .filtered_tasks
             .iter()
             .filter_map(|&id| self.db.get(id))
             .map(|task| {
                 let due_str = format_due_relative(task.due, today);
-                let project_str = task.project.as_deref().unwrap_or("-");
+                let project_label_str = project_label(&self.db, task);
+                let project_str = if project_label_str == "-" {
+                    "-".to_string()
+                } else {
+                    project_label_str
+                };
                 let tags_str = if task.tags.is_empty() {
                     String::new()
                 } else {
@@ -1478,7 +1486,7 @@ impl App {
                 ]),
                 Line::from(vec![
                     Span::styled("Project: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(task.project.as_deref().unwrap_or("-")),
+                    Span::raw(project_label(&self.db, task)),
                 ]),
                 Line::from(vec![
                     Span::styled("Due: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -1731,7 +1739,8 @@ impl App {
 
         // Add parent navigation info
         let parent_title = if !self.task_form.parent.value.trim().is_empty() {
-            if let Ok(pid) = self.task_form.parent.value.trim().parse::<u64>() {
+            if let Ok(parsed) = self.task_form.parent.value.trim().parse::<IdInput>() {
+                let pid = parsed.leaf();
                 if let Some(parent_task) = self.db.get(pid) {
                     format!("Parent ID (→ {})", parent_task.title)
                 } else {

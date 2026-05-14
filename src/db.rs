@@ -268,6 +268,20 @@ pub fn format_kind(k: Kind) -> &'static str {
     }
 }
 
+/// Map the data-layer [`Kind`] to its v2 [`TypePrefix`]. Used wherever a Task
+/// needs to be turned into an addressed v2 ticket (id allocation, on-disk
+/// directory naming, the future Task <-> Document bridge).
+pub fn kind_to_prefix(k: Kind) -> TypePrefix {
+    match k {
+        Kind::Project => TypePrefix::Project,
+        Kind::Product => TypePrefix::Product,
+        Kind::Epic => TypePrefix::Epic,
+        Kind::Task => TypePrefix::Task,
+        Kind::Subtask => TypePrefix::Subtask,
+        Kind::Milestone => TypePrefix::Milestone,
+    }
+}
+
 /// Format a priority level for display.
 pub fn format_priority(p: Option<Priority>) -> &'static str {
     match p {

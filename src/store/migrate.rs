@@ -186,6 +186,7 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use crate::fields::{Priority, ProcessStage, Status, Urgency};
+    use crate::store::State;
     use crate::task::Task;
     use std::fs;
     use std::path::PathBuf;
@@ -232,7 +233,7 @@ mod tests {
 
     fn write_db(dir: &Path, name: &str, tasks: Vec<Task>) -> PathBuf {
         let p = dir.join(name);
-        let db = Database { tasks, templates: Vec::new() };
+        let db = Database { tasks, templates: Vec::new(), state: State::fresh() };
         db.save(&p).unwrap();
         p
     }
