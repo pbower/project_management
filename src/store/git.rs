@@ -164,6 +164,15 @@ pub fn commit_workspace(pm_dir: &Path, message: &str) -> GitResult<String> {
     run_git(&root, &["rev-parse", "HEAD"])
 }
 
+/// Resolve the current HEAD commit hash for the repository holding `pm_dir`.
+/// Returns `None` when the repository has no commits yet.
+pub fn head_commit(pm_dir: &Path) -> GitResult<Option<String>> {
+    let root = ensure_repo(pm_dir)?;
+    // `rev-parse HEAD` exits non-zero on a repo with no commits; treat that as
+    // "no HEAD" rather than an error.
+    Ok(run_git(&root, &["rev-parse", "HEAD"]).ok())
+}
+
 /// Collapse every commit made since `base_commit` into a single commit with
 /// `message`. Used by `pm checkin` to squash a checkout span: all the
 /// per-mutation commits between checkout and checkin become one entry in the

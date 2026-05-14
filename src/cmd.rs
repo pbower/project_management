@@ -414,6 +414,10 @@ pub enum Commands {
         /// Summary written to the activity feed.
         #[arg(long)]
         summary: Option<String>,
+        /// Keep the individual checkout-span commits instead of squashing
+        /// them into a single checkin commit.
+        #[arg(long)]
+        granular: bool,
     },
 
     /// (Phase 6) Return the next ready task for an agent.
@@ -3012,10 +3016,127 @@ pub fn cmd_search(pm_dir: &Path, query: &str) {
     }
 }
 
-// ----- Phase-5+ stubs -----
+// ----- Phase 6: lock protocol + activity feed -----
 
-pub fn cmd_checkout(_pm_dir: &Path, _id: &str, _intent: Option<&str>) { cmd_deferred("checkout", "Phase 6"); }
-pub fn cmd_checkin(_pm_dir: &Path, _id: &str, _summary: Option<&str>) { cmd_deferred("checkin", "Phase 6"); }
+/// Record an activity-feed event, warning rather than aborting on failure -
+/// a missed event line should not fail the command whose state is already
+/// saved. Mirrors [`commit_or_warn`].
+fn emit_or_warn(pm_dir: &Path, verb: &str, id: Option<crate::store::LeafId>, detail: Option<&str>) {
+    if let Err(e) = crate::store::events::emit_event(pm_dir, verb, id, detail) {
+        eprintln!("warning: could not write events.log: {e}");
+    }
+}
+
+/// `pm checkout <id> [--intent ...]`: acquire an advisory lock on a ticket and
+/// open a checkout span. The lock records the git HEAD as `base_commit` so
+/// `pm checkin` can squash everything done during the span into one commit.
+/// A live soft lock by another agent warns but does not block; a live hard
+/// lock blocks.
+pub fn cmd_checkout(pm_dir: &Path, id: &str, intent: Option<&str>) {
+    use crate::store::locks::{self, AcquireOutcome, LockFile, LockMode, DEFAULT_TTL_SECONDS};
+
+    let db = Database::load(pm_dir);
+    let leaf = match resolve_v2_id(id, &db) {
+        Some(l) => l,
+        None => {
+            eprintln!("checkout: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+
+    // The squash base is the HEAD before any checkout-span work.
+    let base_commit = crate::store::git::head_commit(pm_dir).ok().flatten();
+
+    let lock = LockFile::new(
+        leaf,
+        intent.map(|s| s.to_string()),
+        DEFAULT_TTL_SECONDS,
+        LockMode::Soft,
+        base_commit,
+    );
+
+    match locks::acquire(pm_dir, &lock, Utc::now()) {
+        Ok(AcquireOutcome::Acquired) => {
+            println!("checkout: {leaf} locked by {}.", lock.agent);
+        }
+        Ok(AcquireOutcome::Overlapped { previous }) => {
+            eprintln!(
+                "checkout: warning - {leaf} was already checked out by {} (soft lock; proceeding).",
+                previous.agent
+            );
+            println!("checkout: {leaf} locked by {}.", lock.agent);
+        }
+        Ok(AcquireOutcome::Blocked { holder }) => {
+            eprintln!("checkout: {leaf} is hard-locked by {}; cannot check out.", holder.agent);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("checkout: could not acquire lock: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    emit_or_warn(pm_dir, "checkout", Some(leaf), intent);
+    commit_or_warn(pm_dir, &commit_subject_for(leaf, "checkout", intent));
+}
+
+/// `pm checkin <id> [--summary ...] [--granular]`: release the lock and close
+/// the checkout span. By default every commit made since the lock's
+/// `base_commit` is squashed into one checkin commit; `--granular` keeps the
+/// individual commits.
+pub fn cmd_checkin(pm_dir: &Path, id: &str, summary: Option<&str>, granular: bool) {
+    use crate::store::locks;
+
+    let db = Database::load(pm_dir);
+    let leaf = match resolve_v2_id(id, &db) {
+        Some(l) => l,
+        None => {
+            eprintln!("checkin: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+
+    // Read the lock first so we have the squash base before releasing it.
+    let base_commit = match locks::read(pm_dir, leaf) {
+        Ok(Some(lock)) => lock.base_commit,
+        Ok(None) => {
+            eprintln!("checkin: no active lock on {leaf} (committing work anyway).");
+            None
+        }
+        Err(e) => {
+            eprintln!("checkin: could not read lock: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = locks::release(pm_dir, leaf) {
+        eprintln!("checkin: could not release lock: {e}");
+        std::process::exit(1);
+    }
+    emit_or_warn(pm_dir, "checkin", Some(leaf), summary);
+
+    let message = commit_subject_for(leaf, "checkin", summary);
+    commit_or_warn(pm_dir, &message);
+
+    // Squash the checkout span unless --granular or there is no recorded base.
+    match (granular, base_commit) {
+        (false, Some(base)) => {
+            if let Err(e) = crate::store::git::squash_since(pm_dir, &base, &message) {
+                eprintln!("checkin: squash failed, leaving individual commits: {e}");
+            } else {
+                println!("checkin: {leaf} released; checkout span squashed.");
+                return;
+            }
+        }
+        (true, _) => {
+            println!("checkin: {leaf} released; checkout-span commits kept (--granular).");
+            return;
+        }
+        (false, None) => {}
+    }
+    println!("checkin: {leaf} released.");
+}
+
 pub fn cmd_next(_pm_dir: &Path, _agent: Option<&str>, _filter: Option<&str>) { cmd_deferred("next", "Phase 6"); }
 pub fn cmd_locks(_pm_dir: &Path) { cmd_deferred("locks", "Phase 6"); }
 pub fn cmd_tv(_pm_dir: &Path) { cmd_deferred("tv", "Phase 9"); }

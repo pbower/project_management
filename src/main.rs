@@ -208,11 +208,13 @@ fn main() {
         Commands::Doctor { migrate } => cmd_doctor(&pm_dir, migrate),
         Commands::Search { query } => cmd_search(&pm_dir, &query),
 
-        // Deferred to later phases
+        // Phase 6: lock protocol + activity feed
         Commands::Checkout { id, intent } => cmd_checkout(&pm_dir, &id, intent.as_deref()),
-        Commands::Checkin { id, summary } => cmd_checkin(&pm_dir, &id, summary.as_deref()),
+        Commands::Checkin { id, summary, granular } => cmd_checkin(&pm_dir, &id, summary.as_deref(), granular),
         Commands::Next { agent, filter } => cmd_next(&pm_dir, agent.as_deref(), filter.as_deref()),
         Commands::Locks => cmd_locks(&pm_dir),
+
+        // Deferred to later phases
         Commands::Tv => cmd_tv(&pm_dir),
         Commands::Log { id } => cmd_log(&pm_dir, &id),
         Commands::Memory { action } => cmd_memory(&mut db, &pm_dir, action),

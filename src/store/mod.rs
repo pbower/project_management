@@ -43,7 +43,7 @@ pub use task_bridge::{
     task_to_document, task_from_document, project_ancestor,
     SECTION_DESCRIPTION, SECTION_REQUIREMENTS, SECTION_SUMMARY, SECTION_USER_STORY,
 };
-pub use git::{commit_workspace, ensure_repo, subject as commit_subject, GitError, GitResult};
+pub use git::{commit_workspace, ensure_repo, head_commit, squash_since, subject as commit_subject, GitError, GitResult};
 pub use events::{Event, EventError, EventResult, actor, emit_event, read_events};
 pub use locks::{
     LockFile, LockMode, AcquireOutcome, LockError, LockResult, DEFAULT_TTL_SECONDS,
