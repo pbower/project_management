@@ -164,6 +164,40 @@ pub fn commit_workspace(pm_dir: &Path, message: &str) -> GitResult<String> {
     run_git(&root, &["rev-parse", "HEAD"])
 }
 
+/// Collapse every commit made since `base_commit` into a single commit with
+/// `message`. Used by `pm checkin` to squash a checkout span: all the
+/// per-mutation commits between checkout and checkin become one entry in the
+/// history.
+///
+/// `git reset --soft` moves the branch pointer back to `base_commit` while
+/// leaving every intervening change staged; the follow-up commit records them
+/// as one. When HEAD already equals `base_commit` there is nothing to squash
+/// and the existing HEAD is returned untouched.
+///
+/// Like [`commit_workspace`], the squash commit passes `--no-verify` and
+/// disables signing - it is the same kind of tool-internal bookkeeping commit.
+pub fn squash_since(pm_dir: &Path, base_commit: &str, message: &str) -> GitResult<String> {
+    let root = ensure_repo(pm_dir)?;
+    let head = run_git(&root, &["rev-parse", "HEAD"])?;
+    if head == base_commit {
+        return Ok(head);
+    }
+    run_git(&root, &["reset", "--soft", base_commit])?;
+    run_git(
+        &root,
+        &[
+            "-c", "user.name=pm",
+            "-c", "user.email=pm@workspace",
+            "-c", "commit.gpgsign=false",
+            "commit",
+            "--no-verify",
+            "--allow-empty",
+            "-m", message,
+        ],
+    )?;
+    run_git(&root, &["rev-parse", "HEAD"])
+}
+
 /// Compute `pm_dir` relative to the repository `root`. Both paths are
 /// canonicalised first so symlinked temp dirs resolve consistently.
 fn workspace_relative_path(root: &Path, pm_dir: &Path) -> GitResult<PathBuf> {
@@ -278,6 +312,58 @@ mod tests {
         std::fs::write(dir.join("a.txt"), b"hello").unwrap();
         let hash = commit_workspace(&dir, "pm: with failing hook present").unwrap();
         assert_eq!(hash.len(), 40);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Count commits reachable from HEAD.
+    fn commit_count(root: &Path) -> usize {
+        let out = Command::new("git")
+            .arg("-C").arg(root)
+            .args(["rev-list", "--count", "HEAD"])
+            .output()
+            .expect("git rev-list");
+        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+    }
+
+    #[test]
+    fn squash_since_collapses_a_span_to_one_commit() {
+        let dir = tmp_dir();
+        // Base commit.
+        std::fs::write(dir.join("a.txt"), b"v1").unwrap();
+        let base = commit_workspace(&dir, "pm: base").unwrap();
+        let count_at_base = commit_count(&dir);
+
+        // Three more commits - the "checkout span".
+        std::fs::write(dir.join("a.txt"), b"v2").unwrap();
+        commit_workspace(&dir, "pm: edit 1").unwrap();
+        std::fs::write(dir.join("b.txt"), b"new").unwrap();
+        commit_workspace(&dir, "pm: edit 2").unwrap();
+        std::fs::write(dir.join("a.txt"), b"v3").unwrap();
+        commit_workspace(&dir, "pm: edit 3").unwrap();
+        assert_eq!(commit_count(&dir), count_at_base + 3);
+
+        let squashed = squash_since(&dir, &base, "pm: TSK7 checkin (squashed 3 edits)").unwrap();
+        // The span collapsed to exactly one commit on top of the base.
+        assert_eq!(commit_count(&dir), count_at_base + 1);
+        assert_ne!(squashed, base);
+        // The working-tree content is the end state of the span.
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "v3");
+        assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "new");
+        // The squash commit carries the checkin message.
+        let subject = run_git(&dir, &["log", "-1", "--pretty=%s"]).unwrap();
+        assert_eq!(subject, "pm: TSK7 checkin (squashed 3 edits)");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn squash_since_with_no_span_is_a_noop() {
+        let dir = tmp_dir();
+        std::fs::write(dir.join("a.txt"), b"v1").unwrap();
+        let base = commit_workspace(&dir, "pm: base").unwrap();
+        // base IS HEAD - nothing was committed during the span.
+        let result = squash_since(&dir, &base, "pm: checkin (nothing)").unwrap();
+        assert_eq!(result, base, "no span means HEAD is returned untouched");
         std::fs::remove_dir_all(&dir).ok();
     }
 
