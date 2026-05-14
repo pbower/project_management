@@ -79,6 +79,11 @@ pub struct App {
     navigation_history: Vec<NavigationSnapshot>,
     max_history: usize,
     pm_dir: std::path::PathBuf,
+    /// Whether the modal help overlay is showing. Independent of `mode` and
+    /// `state` so help works from any surface.
+    help_open: bool,
+    /// Vertical scroll offset for the help overlay.
+    help_scroll: u16,
 }
 
 impl App {
@@ -112,6 +117,8 @@ impl App {
             navigation_history: Vec::new(),
             max_history: 10,
             pm_dir,
+            help_open: false,
+            help_scroll: 0,
         };
         
         app.update_filtered_tasks();
@@ -622,7 +629,8 @@ impl App {
                 );
             }
             KeyCode::Char('h') => {
-                self.push_state(AppState::Help, None);
+                self.help_open = true;
+                self.help_scroll = 0;
             }
             KeyCode::Char('r') => {
                 self.refresh_tasks();
@@ -1244,24 +1252,25 @@ impl App {
     /// Handle keyboard input when viewing the help screen.
     /// 
     /// Returns true if the application should quit.
-    fn handle_help_input(&mut self, key: KeyCode, _modifiers: KeyModifiers) -> io::Result<bool> {
-        match key {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => {
-                self.state = AppState::TaskList;
-            }
-            _ => {}
-        }
-        Ok(false)
-    }
-
-    /// Poll for and handle keyboard events based on current application state.
-    /// 
-    /// Returns true if the application should quit.
     /// True when a keystroke should be treated as literal text rather than a
     /// navigation command - inside a form field or an active filter prompt.
-    /// Mode-switch keys are suppressed in this situation.
+    /// Mode-switch keys and the help shortcut are suppressed in this situation.
     fn is_capturing_text(&self) -> bool {
         matches!(self.input_mode, InputMode::Text) || self.filter_active
+    }
+
+    /// Handle a keystroke while the help overlay is open. `?`, `Esc`, `h`,
+    /// and `F1` close it; `Up`/`Down` scroll. Mode-switch keys are handled
+    /// before this is reached, so they close help and switch in one stroke.
+    fn handle_help_overlay_input(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::F(1) => {
+                self.help_open = false;
+            }
+            KeyCode::Up => self.help_scroll = self.help_scroll.saturating_sub(1),
+            KeyCode::Down => self.help_scroll = self.help_scroll.saturating_add(1),
+            _ => {}
+        }
     }
 
     /// Intercept the mode-switch keys. Returns `true` if the key was consumed
@@ -1285,7 +1294,25 @@ impl App {
             if let Event::Key(key) = event::read()? {
                 self.clear_status_message();
 
+                // Mode-switch keys win from any non-text-capturing surface,
+                // and close the help overlay as they switch.
                 if self.try_mode_switch(key.code) {
+                    self.help_open = false;
+                    return Ok(false);
+                }
+
+                // The help overlay is modal: while it is open it owns input.
+                if self.help_open {
+                    self.handle_help_overlay_input(key.code);
+                    return Ok(false);
+                }
+
+                // `?` / `F1` open the help overlay from any mode.
+                if !self.is_capturing_text()
+                    && matches!(key.code, KeyCode::Char('?') | KeyCode::F(1))
+                {
+                    self.help_open = true;
+                    self.help_scroll = 0;
                     return Ok(false);
                 }
 
@@ -1297,7 +1324,6 @@ impl App {
                         AppState::EditTask => self.handle_form_input(key.code, key.modifiers, true)?,
                         AppState::UserStoryDialog => self.handle_dialog_input(key.code, key.modifiers, true)?,
                         AppState::RequirementsDialog => self.handle_dialog_input(key.code, key.modifiers, false)?,
-                        AppState::Help => self.handle_help_input(key.code, key.modifiers)?,
                         AppState::Confirm => self.handle_confirm_input(key.code, key.modifiers)?,
                     },
                     Mode::Documents | Mode::Activity => self.handle_mode_stub_input(key.code)?,
@@ -2060,70 +2086,76 @@ impl App {
     }
 
     /// Render the help screen with keyboard shortcuts and usage instructions.
+    /// Render the modal help overlay. Mode-independent: drawn over whatever
+    /// the current mode produced. Scrollable with Up/Down; closed with `?`,
+    /// `Esc`, `h`, or `F1`. Layout follows PM_DESIGN.md Section 8.3.5 -
+    /// current-mode keybindings first, then a concepts panel, then workflows.
     fn render_help(&mut self, f: &mut Frame, area: Rect) {
-        let help_text = vec![
+        let heading = |text: &str| {
             Line::from(vec![Span::styled(
-                "Task Manager Help",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Task List Navigation:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]),
-            Line::from("  ↑/k, ↓/j     Navigate tasks"),
-            Line::from("  ←/→          Navigate Item Hierarchy"),
-            Line::from("  Shift + ←/→  Navigate All Items Hierarchy"),
-            Line::from("  Enter/Space  View task details"),
-            Line::from("  a            Add new task"),
-            Line::from("  e            Edit selected task"),
-            Line::from("  d            Delete selected task"),
-            Line::from("  s            Cycle task status (Open → In Progress → Done → Open)"),
-            Line::from("  p            Cycle process stage (Ideation → Design → ... → Ready to Implement → Implementation → ... → Release)"),
-            Line::from("  c            Toggle task completion"),
-            Line::from("  t            Toggle show/hide completed tasks"),
-            Line::from("  r            Refresh task list"),
-            Line::from("  /            Filter tasks by title/tags/project"),
-            Line::from("  m            Return to main menu"),
-            Line::from("  h/F1         Show this help"),
-            Line::from("  q/Ctrl+C/Esc Quit"),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Task Detail View:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]),
-            Line::from("  e            Edit task"),
-            Line::from("  d            Delete task"),
-            Line::from("  Esc/q        Back to task list"),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Form Navigation:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]),
-            Line::from("  Tab/↑↓/jk    Navigate between fields"),
-            Line::from("  ←/→          Change kind/status selectors"),
-            Line::from("  Enter        Save/Create task"),
-            Line::from("  Esc          Cancel and return"),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Due Date Formats:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]),
-            Line::from("  YYYY-MM-DD   Specific date (e.g., 2024-12-25)"),
-            Line::from("  today        Today's date"),
-            Line::from("  tomorrow     Tomorrow's date"),
-            Line::from("  in 3d        3 days from today"),
-        ];
+                text.to_string(),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )])
+        };
 
-        let paragraph = Paragraph::new(help_text)
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(heading(&format!("{} - keybindings", self.mode.label())));
+        match self.mode {
+            Mode::Tickets => {
+                lines.push(Line::from("  <- ->        Traverse hierarchy levels"));
+                lines.push(Line::from("  ^ v          Move within the list"));
+                lines.push(Line::from("  Enter        Drill into the selected ticket"));
+                lines.push(Line::from("  e            Open the ticket's CLAUDE.md in $EDITOR"));
+                lines.push(Line::from("  f            Open the quick-entry form"));
+                lines.push(Line::from("  n            Add a child ticket"));
+                lines.push(Line::from("  c / i        Checkout / checkin the selected ticket"));
+                lines.push(Line::from("  a            Add an artifact"));
+                lines.push(Line::from("  m            Toggle the memory side-panel"));
+                lines.push(Line::from("  d            Delete the selected ticket"));
+                lines.push(Line::from("  s            Cycle status   p   cycle process stage"));
+                lines.push(Line::from("  t            Toggle show/hide completed   r refresh"));
+                lines.push(Line::from("  /            Filter by title / tags / project"));
+            }
+            Mode::Documents => {
+                lines.push(Line::from("  Document Workspace arrives in Phase 8."));
+                lines.push(Line::from("  q            Exit to the launcher"));
+            }
+            Mode::Activity => {
+                lines.push(Line::from("  Activity View arrives in Phase 9."));
+                lines.push(Line::from("  q            Exit to the launcher"));
+            }
+        }
+        lines.push(Line::from("  Tab / S-Tab  Cycle modes      1 / 2 / 3  jump to a mode"));
+        lines.push(Line::from("  ? / F1       Toggle this help   q  back to launcher"));
+        lines.push(Line::from(""));
+
+        lines.push(heading("Concepts"));
+        lines.push(Line::from("  Hierarchy    PRJ Project > PRD Product > EPC Epic > TSK Task > SBT Subtask"));
+        lines.push(Line::from("  MLS          Milestone - a cross-cutting marker, project-scoped by default"));
+        lines.push(Line::from("  Locks        A checkout claims a ticket; the Lock column shows the holder,"));
+        lines.push(Line::from("               or STALE once the heartbeat TTL has passed"));
+        lines.push(Line::from("  Memories     Three tiers - user, project, ticket. M:n counts linked refs"));
+        lines.push(Line::from("  Composition  A ticket's CLAUDE.md carries front-matter plus prose sections"));
+        lines.push(Line::from("  Git          Every state change commits; checkin squashes the checkout span"));
+        lines.push(Line::from(""));
+
+        lines.push(heading("Workflows"));
+        lines.push(Line::from("  File a task            n, fill the quick-entry form, save"));
+        lines.push(Line::from("  Hand off to an agent   c to checkout, share the ticket id, i to checkin"));
+        lines.push(Line::from("  Monitor parallel work  Mode 3 (Phase 9) or `pm tv` on a second screen"));
+        lines.push(Line::from("  Write a project memory `pm memory write --scope project ...` (Phase 10)"));
+
+        let overlay = centered_rect(80, 80, area);
+        f.render_widget(Clear, overlay);
+        let paragraph = Paragraph::new(lines)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Help - Press any key to return"),
+                    .title("Help - ^v scroll, ? or Esc to close"),
             )
-            .wrap(Wrap { trim: true });
-
-        f.render_widget(paragraph, area);
+            .wrap(Wrap { trim: false })
+            .scroll((self.help_scroll, 0));
+        f.render_widget(paragraph, overlay);
     }
 
     /// Render a fullscreen text editing dialog for user stories or requirements.
@@ -2216,10 +2248,12 @@ impl App {
         f.render_widget(paragraph, area);
     }
 
-    /// Render the status bar at the bottom of the screen.
+    /// Render the context-sensitive help row at the bottom of the screen.
     fn render_status_bar(&mut self, f: &mut Frame, area: Rect) {
         let status_text = if !self.status_message.is_empty() {
             self.status_message.clone()
+        } else if self.help_open {
+            "Help: ^v scroll   ? / Esc close   Tab / 1 / 2 / 3 switch mode".to_string()
         } else if self.filter_active {
             format!(
                 "Search: {} (Esc to clear, Enter to confirm)",
@@ -2227,31 +2261,36 @@ impl App {
             )
         } else if !self.filter_text.is_empty() {
             format!(
-                "Tasks: {} (filtered by '{}') | Press 'h' for help",
+                "Tasks: {} (filtered by '{}') | ? for help",
                 self.filtered_tasks.len(),
                 self.filter_text
             )
         } else {
-            match self.state {
-                AppState::TaskList => {
-                    let back_tip = if self.has_navigation_history() {
-                        " | Alt+← Back"
-                    } else {
-                        ""
-                    };
-                    format!("Tasks: {} | Press 'h' for help{}", self.filtered_tasks.len(), back_tip)
+            match self.mode {
+                Mode::Documents | Mode::Activity => {
+                    format!("{}   Tab / 1 / 2 / 3 switch mode   ? help   q exit", self.mode.label())
                 }
-                AppState::TaskDetail => "Task Details".to_string(),
-                AppState::AddTask => "Add New Task".to_string(),
-                AppState::EditTask => "Edit Task".to_string(),
-                AppState::UserStoryDialog => {
-                    "User Story - Fullscreen Editor (Esc to save & return)".to_string()
-                }
-                AppState::RequirementsDialog => {
-                    "Requirements - Fullscreen Editor (Esc to save & return)".to_string()
-                }
-                AppState::Help => "Help".to_string(),
-                AppState::Confirm => "Confirm Action".to_string(),
+                Mode::Tickets => match self.state {
+                    AppState::TaskList => {
+                        let back_tip = if self.has_navigation_history() {
+                            " | Alt+<- Back"
+                        } else {
+                            ""
+                        };
+                        format!("Tasks: {} | ? for help | Tab / 1 / 2 / 3 mode{}",
+                            self.filtered_tasks.len(), back_tip)
+                    }
+                    AppState::TaskDetail => "Task Details".to_string(),
+                    AppState::AddTask => "Add New Task".to_string(),
+                    AppState::EditTask => "Edit Task".to_string(),
+                    AppState::UserStoryDialog => {
+                        "User Story - Fullscreen Editor (Esc to save & return)".to_string()
+                    }
+                    AppState::RequirementsDialog => {
+                        "Requirements - Fullscreen Editor (Esc to save & return)".to_string()
+                    }
+                    AppState::Confirm => "Confirm Action".to_string(),
+                },
             }
         };
 
@@ -2286,7 +2325,6 @@ impl App {
                 AppState::EditTask => self.render_task_form(f, chunks[0], true),
                 AppState::UserStoryDialog => self.render_dialog(f, chunks[0], "User Story"),
                 AppState::RequirementsDialog => self.render_dialog(f, chunks[0], "Requirements"),
-                AppState::Help => self.render_help(f, chunks[0]),
                 AppState::Confirm => {
                     self.render_task_list(f, chunks[0]);
                     self.render_confirm(f, chunks[0]);
@@ -2298,6 +2336,12 @@ impl App {
 
         self.render_activity_footer(f, chunks[1]);
         self.render_status_bar(f, chunks[2]);
+
+        // The help overlay is modal and mode-independent: drawn last so it
+        // sits on top of whatever the current mode rendered.
+        if self.help_open {
+            self.render_help(f, f.area());
+        }
     }
 
     /// Render the activity footer - the last three entries from `events.log`

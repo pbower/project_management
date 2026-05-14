@@ -53,7 +53,6 @@ pub enum AppState {
     EditTask,
     UserStoryDialog,
     RequirementsDialog,
-    Help,
     Confirm,
 }
 
