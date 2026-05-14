@@ -7,8 +7,7 @@
 //! allocation goes through the embedded [`State`] counter map.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::fs;
 use std::path::Path;
 
 use chrono::{Datelike, Duration, Local, NaiveDate};

@@ -1407,16 +1407,89 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
     }
 }
 
-/// Open a per-kind section template in `$EDITOR`. Stub until Phase 4 task 40
-/// wires the `$EDITOR` handoff.
-pub fn cmd_template_edit(_pm_dir: &Path, kind: &str) {
-    eprintln!("template edit {kind}: pending Phase 4 content-handler work.");
+/// Open a per-kind section template in `$EDITOR`. Resolves through the
+/// override chain (`.pm/templates/<kind>.md`, then `~/.pm-templates/<kind>.md`,
+/// then the built-in default). If the chosen file does not exist on disk yet,
+/// the built-in default is copied into `.pm/templates/<kind>.md` so the user
+/// has something to edit.
+pub fn cmd_template_edit(pm_dir: &Path, kind: &str) {
+    use crate::store::id::TypePrefix;
+    use crate::store::templates;
+
+    let prefix = match kind.to_lowercase().as_str() {
+        "project" => TypePrefix::Project,
+        "product" => TypePrefix::Product,
+        "epic" => TypePrefix::Epic,
+        "task" => TypePrefix::Task,
+        "subtask" => TypePrefix::Subtask,
+        "milestone" => TypePrefix::Milestone,
+        other => {
+            eprintln!("template edit: unknown kind {other:?}; expected project|product|epic|task|subtask|milestone");
+            std::process::exit(1);
+        }
+    };
+
+    let target = pm_dir.join("templates").join(format!("{}.md", templates::template_stem(prefix)));
+    if !target.exists() {
+        if let Some(parent) = target.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Err(e) = fs::write(&target, templates::builtin(prefix)) {
+            eprintln!("template edit: could not seed override at {}: {e}", target.display());
+            std::process::exit(1);
+        }
+    }
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+    match std::process::Command::new(&editor).arg(&target).status() {
+        Ok(st) if st.success() => println!("Saved template at {}", target.display()),
+        Ok(st) => {
+            eprintln!("template edit: $EDITOR exited with status {st}");
+            std::process::exit(st.code().unwrap_or(1));
+        }
+        Err(e) => {
+            eprintln!("template edit: could not launch {editor}: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
-/// Re-apply the section template to an existing ticket. Stub until Phase 4
-/// task 40 wires the template-apply path through `store::claude_md::Ticket`.
-pub fn cmd_template_apply(_db: &mut Database, _pm_dir: &Path, id: &str) {
-    eprintln!("template apply {id}: pending Phase 4 content-handler work.");
+/// Re-apply the per-kind section template to an existing ticket. Existing
+/// content under sections that match the template by name is preserved; user-
+/// added sections are kept at the tail of the body.
+pub fn cmd_template_apply(db: &mut Database, pm_dir: &Path, id: &str) {
+    use crate::store::templates;
+
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("template apply: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    let Some(entry) = db.state.items.get(&leaf) else {
+        eprintln!("template apply: state.json has no entry for {id}");
+        std::process::exit(1);
+    };
+    let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
+    let mut ticket = match crate::store::Ticket::read(&claude_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("template apply: could not read {}: {e}", claude_path.display());
+            std::process::exit(1);
+        }
+    };
+
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let resolved = templates::resolve(leaf.prefix(), pm_dir, home.as_deref());
+    ticket.apply_template(&resolved.content);
+
+    let parent = claude_path.parent().expect("ticket dir");
+    if let Err(e) = ticket.write_to(parent) {
+        eprintln!("template apply: write failed: {e}");
+        std::process::exit(1);
+    }
+    println!("Applied {} template to {leaf}", templates::template_stem(leaf.prefix()));
 }
 
 /// Export tasks to CSV format for external analysis and time tracking.
@@ -2206,27 +2279,254 @@ fn old_address_for(db: &Database, leaf: crate::store::LeafId) -> Option<crate::s
     crate::store::AddressId::new(chain).ok()
 }
 
-/// `pm edit <id> [--section <name>]`: deferred to Phase 4 task 40.
-pub fn cmd_edit(_pm_dir: &Path, id: &str, _section: Option<&str>) {
-    eprintln!("edit {id}: pending Phase 4 content-handler work.");
+/// `pm edit <id> [--section <name>]`: open the ticket's CLAUDE.md in `$EDITOR`.
+/// When `section` is supplied, supported editors (nvim, vim, nano, helix,
+/// emacs) position the cursor at the matching `# Section` heading. Unknown
+/// editors get the file opened at the top.
+pub fn cmd_edit(pm_dir: &Path, id: &str, section: Option<&str>) {
+    let layout = crate::store::layout::Layout::at(pm_dir);
+    let state = crate::store::state::State::load(&layout.state_path()).unwrap_or_default();
+    let leaf = match id.parse::<crate::store::IdInput>() {
+        Ok(input) => input.leaf(),
+        Err(e) => {
+            eprintln!("edit: bad id {id}: {e}");
+            std::process::exit(1);
+        }
+    };
+    let Some(entry) = state.items.get(&leaf) else {
+        eprintln!("edit: ticket not found in state.json: {id}");
+        std::process::exit(1);
+    };
+    let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
+    if !claude_path.exists() {
+        eprintln!("edit: missing CLAUDE.md at {}", claude_path.display());
+        std::process::exit(1);
+    }
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+    let mut cmd = std::process::Command::new(&editor);
+    if let Some(name) = section {
+        let bin = std::path::Path::new(&editor)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        match bin {
+            "nvim" | "vim" | "vi" => {
+                cmd.arg(format!("+/^# {name}"));
+            }
+            "nano" | "emacs" | "helix" | "hx" => {
+                if let Some(line) = find_section_line(&claude_path, name) {
+                    cmd.arg(format!("+{line}"));
+                }
+            }
+            _ => {}
+        }
+    }
+    cmd.arg(&claude_path);
+    match cmd.status() {
+        Ok(st) if st.success() => {}
+        Ok(st) => {
+            eprintln!("edit: $EDITOR exited with status {st}");
+            std::process::exit(st.code().unwrap_or(1));
+        }
+        Err(e) => {
+            eprintln!("edit: failed to launch {editor}: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
-/// `pm context <id>`: deferred to Phase 4 task 40.
-pub fn cmd_context(_db: &Database, _pm_dir: &Path, id: &str, _include_memories: bool) {
-    eprintln!("context {id}: pending Phase 4 content-handler work.");
+/// Locate the 1-indexed line number of a `# Section` heading in a markdown
+/// file. Returns `None` if the file cannot be read or the heading is absent.
+fn find_section_line(path: &Path, section: &str) -> Option<usize> {
+    let content = fs::read_to_string(path).ok()?;
+    let needle = format!("# {section}");
+    for (i, line) in content.lines().enumerate() {
+        if line.trim() == needle {
+            return Some(i + 1);
+        }
+    }
+    None
 }
 
-/// `pm materialise <id>`: deferred to Phase 4 task 40.
-pub fn cmd_materialise(_db: &Database, _pm_dir: &Path, id: &str, _output: Option<PathBuf>) {
-    eprintln!("materialise {id}: pending Phase 4 content-handler work.");
+/// `pm context <id>`: print the composed CLAUDE.md chain from the root
+/// ancestor down to the target ticket. Section bodies are printed verbatim;
+/// the trailing `@artifacts/ARTIFACTS.md` line is suppressed because the
+/// composed view is for reading rather than re-import.
+pub fn cmd_context(db: &Database, pm_dir: &Path, id: &str, _include_memories: bool) {
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("context: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+
+    // Walk parent chain, root first.
+    let mut chain: Vec<crate::store::LeafId> = Vec::new();
+    let mut cursor = Some(leaf);
+    let mut guard = 0;
+    while let Some(cid) = cursor {
+        if guard > 16 { break; }
+        guard += 1;
+        let Some(task) = db.get(cid) else { break; };
+        chain.push(task.id);
+        cursor = task.parent;
+    }
+    chain.reverse();
+
+    for id in chain {
+        let Some(entry) = db.state.items.get(&id) else { continue; };
+        let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
+        let Ok(ticket) = crate::store::Ticket::read(&claude_path) else { continue; };
+        let task = db.get(id).expect("resolved above");
+        println!("# {} - {} ({})", format_kind(task.kind).to_uppercase(), task.title, id);
+        for section in &ticket.body.sections {
+            println!();
+            println!("# {}", section.name);
+            print!("{}", section.body);
+        }
+        println!();
+        println!("---");
+        println!();
+    }
 }
 
-/// `pm artifact ...`: deferred to Phase 4 task 40.
-pub fn cmd_artifact(_db: &Database, _pm_dir: &Path, action: ArtifactAction) {
+/// `pm materialise <id> [--output <path>]`: write the composed CLAUDE.md
+/// chain to disk so non-Claude tools can read a single self-contained file.
+pub fn cmd_materialise(db: &Database, pm_dir: &Path, id: &str, output: Option<PathBuf>) {
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("materialise: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    let Some(entry) = db.state.items.get(&leaf) else {
+        eprintln!("materialise: state.json has no entry for {id}");
+        std::process::exit(1);
+    };
+
+    // Capture stdout via a temp buffer by re-using cmd_context's output, then
+    // write to the target file.
+    let mut buf = Vec::new();
+    {
+        use std::io::Write;
+        let mut cursor = Some(leaf);
+        let mut chain: Vec<crate::store::LeafId> = Vec::new();
+        let mut guard = 0;
+        while let Some(cid) = cursor {
+            if guard > 16 { break; }
+            guard += 1;
+            let Some(task) = db.get(cid) else { break; };
+            chain.push(task.id);
+            cursor = task.parent;
+        }
+        chain.reverse();
+
+        for id in chain {
+            let Some(entry) = db.state.items.get(&id) else { continue; };
+            let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
+            let Ok(ticket) = crate::store::Ticket::read(&claude_path) else { continue; };
+            let task = db.get(id).expect("resolved above");
+            writeln!(buf, "# {} - {} ({})", format_kind(task.kind).to_uppercase(), task.title, id).ok();
+            for section in &ticket.body.sections {
+                writeln!(buf).ok();
+                writeln!(buf, "# {}", section.name).ok();
+                buf.extend_from_slice(section.body.as_bytes());
+            }
+            writeln!(buf).ok();
+            writeln!(buf, "---").ok();
+            writeln!(buf).ok();
+        }
+    }
+
+    let target = output.unwrap_or_else(|| pm_dir.join(&entry.path).join("COMPOSED.md"));
+    if let Some(parent) = target.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Err(e) = fs::write(&target, &buf) {
+        eprintln!("materialise: write failed: {e}");
+        std::process::exit(1);
+    }
+    println!("Wrote composed view to {}", target.display());
+}
+
+/// `pm artifact ...`: thin wrapper over `store::artifacts`.
+pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
+    let resolve = |id: &str| -> (crate::store::LeafId, PathBuf) {
+        let leaf = match resolve_v2_id(id, db) {
+            Some(l) => l,
+            None => {
+                eprintln!("artifact: ticket not found: {id}");
+                std::process::exit(1);
+            }
+        };
+        let Some(entry) = db.state.items.get(&leaf) else {
+            eprintln!("artifact: state.json has no entry for {id}");
+            std::process::exit(1);
+        };
+        let dir = pm_dir.join(&entry.path).join("artifacts");
+        let _ = fs::create_dir_all(&dir);
+        (leaf, dir)
+    };
+
     match action {
-        ArtifactAction::Add { id, .. } => eprintln!("artifact add {id}: pending Phase 4 content-handler work."),
-        ArtifactAction::Rename { id, .. } => eprintln!("artifact rename {id}: pending Phase 4 content-handler work."),
-        ArtifactAction::List { id } => eprintln!("artifact list {id}: pending Phase 4 content-handler work."),
+        ArtifactAction::Add { id, path, desc } => {
+            let (leaf, artifacts_dir) = resolve(&id);
+            let file_name = match path.file_name() {
+                Some(n) => n.to_owned(),
+                None => {
+                    eprintln!("artifact add: source has no file name: {}", path.display());
+                    std::process::exit(1);
+                }
+            };
+            let target = artifacts_dir.join(&file_name);
+            if let Err(e) = fs::copy(&path, &target) {
+                eprintln!("artifact add: copy failed: {e}");
+                std::process::exit(1);
+            }
+            // Sweep so the new file is in ARTIFACTS.md.
+            if let Err(e) = crate::store::artifacts::sweep_dir(&artifacts_dir, leaf) {
+                eprintln!("artifact add: sweep failed: {e}");
+                std::process::exit(1);
+            }
+            if let Some(desc_text) = desc {
+                let index_path = artifacts_dir.join(crate::store::artifacts::ARTIFACTS_MD);
+                if let Ok(mut idx) = crate::store::ArtifactsIndex::load(&index_path) {
+                    if let Some(entry) = idx.find_mut(&file_name.to_string_lossy()) {
+                        entry.desc = desc_text;
+                    }
+                    let _ = idx.save(&index_path);
+                }
+            }
+            println!("Added artifact {} to {leaf}", file_name.to_string_lossy());
+        }
+        ArtifactAction::Rename { id, old, new } => {
+            let (leaf, artifacts_dir) = resolve(&id);
+            if let Err(e) = crate::store::artifacts::rename_artifact(&artifacts_dir, &old, &new) {
+                eprintln!("artifact rename: {e}");
+                std::process::exit(1);
+            }
+            println!("Renamed {old} -> {new} on {leaf}");
+        }
+        ArtifactAction::List { id } => {
+            let (_leaf, artifacts_dir) = resolve(&id);
+            let index_path = artifacts_dir.join(crate::store::artifacts::ARTIFACTS_MD);
+            match crate::store::ArtifactsIndex::load(&index_path) {
+                Ok(idx) => {
+                    if idx.entries.is_empty() {
+                        println!("(no artifacts)");
+                    } else {
+                        for entry in idx.entries {
+                            let desc = if entry.desc.is_empty() { "-" } else { entry.desc.as_str() };
+                            println!("  {}  ({})  [{}]", entry.file, desc, entry.tags.join(","));
+                        }
+                    }
+                }
+                Err(_) => println!("(no artifacts)"),
+            }
+        }
     }
 }
 
