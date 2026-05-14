@@ -136,6 +136,8 @@ fn make_task(id: LeafId, title: &str, parent: Option<LeafId>, kind: Kind) -> Tas
         user_story: None,
         requirements: None,
         tags: Vec::new(),
+        deps: Vec::new(),
+        milestone: None,
         due: None,
         parent,
         kind,
