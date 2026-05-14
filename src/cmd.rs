@@ -2069,9 +2069,141 @@ fn resolve_v2_id(input: &str, db: &Database) -> Option<crate::store::LeafId> {
     }
 }
 
-/// `pm move <id> <new_parent>`: deferred to Phase 4 task 39.
-pub fn cmd_move(_db: &mut Database, _pm_dir: &Path, id: &str, _new_parent: Option<&str>, _orphan: bool) {
-    eprintln!("move {id}: pending Phase 4 lifecycle-handler work.");
+/// `pm move <id> [<new_parent>] [--orphan]`: re-parent a ticket. Either a
+/// `<new_parent>` id or `--orphan` must be supplied. The new parent's `Kind`
+/// must accept this ticket's `Kind` per [`validate_hierarchy`]. After the
+/// in-memory update the database is saved, which writes the ticket's
+/// `CLAUDE.md` to its new addressed path and rewrites `state.json`.
+pub fn cmd_move(
+    db: &mut Database,
+    pm_dir: &Path,
+    id: &str,
+    new_parent: Option<&str>,
+    orphan: bool,
+) {
+    use crate::store::id::AddressId;
+    use crate::store::layout::Layout;
+
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("move: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+
+    if orphan && new_parent.is_some() {
+        eprintln!("move: pass either `<new_parent>` or `--orphan`, not both.");
+        std::process::exit(1);
+    }
+    if !orphan && new_parent.is_none() {
+        eprintln!("move: supply a new parent id or `--orphan`.");
+        std::process::exit(1);
+    }
+
+    let target_parent: Option<crate::store::LeafId> = if orphan {
+        None
+    } else {
+        let raw = new_parent.expect("checked above");
+        match resolve_v2_id(raw, db) {
+            Some(p) if p != leaf => Some(p),
+            Some(_) => {
+                eprintln!("move: parent cannot equal the ticket itself.");
+                std::process::exit(1);
+            }
+            None => {
+                eprintln!("move: parent not found: {raw}");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    let task_kind = db.get(leaf).expect("resolved above").kind;
+    if let Some(parent_id) = target_parent {
+        let parent_kind = db.get(parent_id).expect("resolved above").kind;
+        if !validate_hierarchy(parent_kind, task_kind) {
+            eprintln!(
+                "move: invalid hierarchy: {} cannot be child of {}. \
+                 Valid order is Project > Product > Epic > Task > Subtask.",
+                format_kind(task_kind),
+                format_kind(parent_kind),
+            );
+            std::process::exit(1);
+        }
+    }
+
+    // Remember the prior absolute directory so it can be cleaned up after the
+    // save writes the new location.
+    let old_abs_dir = db
+        .state
+        .items
+        .get(&leaf)
+        .map(|entry| pm_dir.join(&entry.path));
+
+    // Capture old address chain for alias bookkeeping.
+    let old_address = old_address_for(db, leaf);
+
+    // Apply the move in memory.
+    if let Some(task) = db.get_mut(leaf) {
+        task.parent = target_parent;
+        task.updated_at_utc = Utc::now().timestamp();
+    }
+
+    if let Err(e) = db.save(pm_dir) {
+        eprintln!("move: save failed: {e}");
+        std::process::exit(1);
+    }
+
+    // Clean up the now-vacated directory if it differs from where the save
+    // landed. Saved state.items has the new path; compare against the old.
+    let new_abs_dir = db.state.items.get(&leaf).map(|e| pm_dir.join(&e.path));
+    if let (Some(old), Some(new)) = (old_abs_dir.as_ref(), new_abs_dir.as_ref()) {
+        if old != new && old.exists() {
+            if let Err(e) = fs::remove_dir_all(old) {
+                eprintln!("move: warning - could not remove old directory {}: {e}", old.display());
+            }
+        }
+    }
+
+    // Record an alias so the old address-form keeps resolving.
+    if let Some(old) = old_address {
+        if let Some(new) = old_address_for(db, leaf) {
+            if old != new {
+                let layout = Layout::at(pm_dir);
+                let aliases_path = layout.aliases_path();
+                let mut aliases = crate::store::Aliases::load(&aliases_path).unwrap_or_default();
+                aliases.add(old.to_string(), new.to_string());
+                if let Err(e) = aliases.save(&aliases_path) {
+                    eprintln!("move: warning - could not write alias: {e}");
+                }
+            }
+        }
+    }
+
+    println!("Moved {leaf} -> {}",
+        target_parent.map(|p| p.to_string()).unwrap_or_else(|| "(orphan)".into()));
+
+    // Suppress unused-import warning on `AddressId` if no other site brings it.
+    let _ = std::marker::PhantomData::<AddressId>;
+}
+
+/// Compute the current address chain (parent->child) for a leaf, if every
+/// ancestor in the chain is present in the database.
+fn old_address_for(db: &Database, leaf: crate::store::LeafId) -> Option<crate::store::AddressId> {
+    let mut chain = Vec::new();
+    let mut cursor = Some(leaf);
+    let mut guard = 0;
+    while let Some(id) = cursor {
+        if guard > 16 {
+            return None;
+        }
+        guard += 1;
+        let task = db.get(id)?;
+        chain.push(task.id);
+        cursor = task.parent;
+    }
+    chain.reverse();
+    crate::store::AddressId::new(chain).ok()
 }
 
 /// `pm edit <id> [--section <name>]`: deferred to Phase 4 task 40.
@@ -2133,12 +2265,216 @@ pub fn cmd_milestone(_db: &mut Database, _pm_dir: &Path, id: &str, _milestone_id
     eprintln!("milestone {id}: pending Phase 4 metadata-handler work.");
 }
 
-/// `pm doctor [--migrate]`: deferred to Phase 4 task 39.
-pub fn cmd_doctor(_pm_dir: &Path, migrate: bool) {
+/// `pm doctor [--migrate]`: rebuild `state.json` from disk and (with the
+/// `--migrate` flag) import any legacy `tasks.json` files into the workspace
+/// via the Phase 3.5 bridge.
+pub fn cmd_doctor(pm_dir: &Path, migrate: bool) {
     if migrate {
-        eprintln!("doctor --migrate: pending Phase 4 lifecycle-handler work.");
-    } else {
-        eprintln!("doctor: pending Phase 4 lifecycle-handler work.");
+        run_doctor_migrate(pm_dir);
+    }
+    run_doctor_rebuild(pm_dir);
+}
+
+fn run_doctor_rebuild(pm_dir: &Path) {
+    use crate::store::claude_md::CLAUDE_MD;
+    use crate::store::layout::Layout;
+    use crate::store::state::{ItemEntry, State};
+    use crate::store::Ticket;
+
+    let layout = Layout::at(pm_dir);
+    if !layout.is_initialised() {
+        eprintln!("doctor: no .pm/ workspace at {}", pm_dir.display());
+        std::process::exit(1);
+    }
+
+    let existing = State::load(&layout.state_path()).unwrap_or_else(|_| State::fresh());
+    let mut rebuilt = State::fresh();
+    // Preserve counters and tombstones; only items are rebuilt from disk.
+    rebuilt.next = existing.next.clone();
+    rebuilt.tombstones = existing.tombstones.clone();
+    rebuilt.templates = existing.templates.clone();
+
+    let mut found = 0usize;
+    let mut added = 0usize;
+    let mut removed_paths: Vec<String> = Vec::new();
+
+    walk_tickets(&layout.root, &mut |abs_path: &Path| {
+        let claude_path = abs_path.join(CLAUDE_MD);
+        if !claude_path.exists() {
+            return;
+        }
+        let Ok(ticket) = Ticket::read(&claude_path) else {
+            return;
+        };
+        let leaf = ticket.front_matter.id;
+        let Ok(rel) = abs_path.strip_prefix(&layout.root) else {
+            return;
+        };
+        found += 1;
+        if !existing.items.contains_key(&leaf) {
+            added += 1;
+        }
+        rebuilt
+            .items
+            .insert(leaf, ItemEntry { path: rel.to_path_buf() });
+        // Bump the counter past this leaf so future allocations skip it.
+        let entry = rebuilt.next.entry(leaf.prefix()).or_insert(1);
+        if leaf.number() >= *entry {
+            *entry = leaf.number() + 1;
+        }
+    });
+
+    for (leaf, entry) in &existing.items {
+        if !rebuilt.items.contains_key(leaf) {
+            removed_paths.push(entry.path.display().to_string());
+        }
+    }
+
+    if let Err(e) = rebuilt.save(&layout.state_path()) {
+        eprintln!("doctor: failed to write state.json: {e}");
+        std::process::exit(1);
+    }
+
+    println!("doctor: scanned {found} tickets at {}", layout.root.display());
+    if added > 0 {
+        println!("  added {added} entries to state.json");
+    }
+    if !removed_paths.is_empty() {
+        println!("  removed {} stale entries", removed_paths.len());
+        for p in &removed_paths {
+            println!("    - {p}");
+        }
+    }
+    if added == 0 && removed_paths.is_empty() {
+        println!("  state.json was already up to date.");
+    }
+}
+
+fn run_doctor_migrate(pm_dir: &Path) {
+    use crate::store::migrate::MigrationPlan;
+    use crate::store::layout::Layout;
+
+    let layout = Layout::at(pm_dir);
+    layout
+        .init()
+        .map(|_| ())
+        .unwrap_or_else(|e| {
+            eprintln!("doctor --migrate: layout init failed: {e}");
+            std::process::exit(1);
+        });
+
+    // Look for legacy tasks.json files inside the workspace directory and in
+    // the user's HOME/.pm/ if that's where the workspace lives.
+    let candidates: Vec<PathBuf> = collect_legacy_files(pm_dir);
+    if candidates.is_empty() {
+        println!("doctor --migrate: no legacy tasks.json files found near {}", pm_dir.display());
+        return;
+    }
+
+    let backup_dir = pm_dir.join(".legacy-backup");
+    if let Err(e) = fs::create_dir_all(&backup_dir) {
+        eprintln!("doctor --migrate: could not create {}: {e}", backup_dir.display());
+        std::process::exit(1);
+    }
+
+    let mut imported = 0usize;
+    for legacy in candidates {
+        match MigrationPlan::plan(&layout, &legacy) {
+            Ok(plan) => {
+                let mut db = Database::load(pm_dir);
+                for step in plan.steps {
+                    // Convert each legacy task into a v2 Task and let
+                    // Database::save place it at the right path.
+                    let task = crate::task::Task {
+                        id: step.leaf,
+                        title: step.title,
+                        summary: None,
+                        description: None,
+                        user_story: None,
+                        requirements: None,
+                        tags: Vec::new(),
+                        due: None,
+                        parent: step.parent,
+                        kind: step.kind,
+                        status: Status::Open,
+                        priority_level: None,
+                        urgency: None,
+                        process_stage: None,
+                        issue_link: None,
+                        pr_link: None,
+                        artifacts: Vec::new(),
+                        created_at_utc: Utc::now().timestamp(),
+                        updated_at_utc: Utc::now().timestamp(),
+                    };
+                    db.tasks.push(task);
+                    imported += 1;
+                }
+                if let Err(e) = db.save(pm_dir) {
+                    eprintln!("doctor --migrate: save after import of {}: {e}", legacy.display());
+                    continue;
+                }
+                // Archive the legacy file.
+                let dest = backup_dir.join(legacy.file_name().expect("legacy has filename"));
+                if let Err(e) = fs::rename(&legacy, &dest) {
+                    eprintln!(
+                        "doctor --migrate: warning - imported {} but could not archive to {}: {e}",
+                        legacy.display(),
+                        dest.display(),
+                    );
+                }
+            }
+            Err(e) => eprintln!("doctor --migrate: plan failed for {}: {e}", legacy.display()),
+        }
+    }
+    println!("doctor --migrate: imported {imported} tickets; legacy files archived to {}", backup_dir.display());
+}
+
+/// Collect candidate legacy `*_tasks.json` files near the workspace. Looks
+/// only at the workspace directory itself; nested directories are not
+/// traversed because v2 stores them as `CLAUDE.md` files under `state.items`.
+fn collect_legacy_files(pm_dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(pm_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = match path.file_name().and_then(|s| s.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            if name == "tasks.json" || name.ends_with("_tasks.json") {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// Recursively walk every ticket directory under `root`. A "ticket directory"
+/// is any directory that contains a `CLAUDE.md` file. The visitor receives the
+/// absolute path of each such directory.
+fn walk_tickets(root: &Path, visitor: &mut dyn FnMut(&Path)) {
+    walk_tickets_inner(root, visitor);
+}
+
+fn walk_tickets_inner(dir: &Path, visitor: &mut dyn FnMut(&Path)) {
+    if dir.join(crate::store::claude_md::CLAUDE_MD).exists() {
+        visitor(dir);
+    }
+    let Ok(entries) = fs::read_dir(dir) else { return; };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        // Skip top-level metadata directories that never contain tickets.
+        if matches!(name, "locks" | "artifacts" | ".legacy-backup" | "templates") {
+            continue;
+        }
+        walk_tickets_inner(&path, visitor);
     }
 }
 
