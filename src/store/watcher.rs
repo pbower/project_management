@@ -172,6 +172,18 @@ mod tests {
         LeafId::new(TypePrefix::Task, 7)
     }
 
+    /// Detection deadline that the watcher tests assert against. inotify on
+    /// Linux and ReadDirectoryChangesW on Windows are push-based and reliably
+    /// fire well under 500ms; FSEvents on macOS adds coalescing latency that
+    /// makes shared CI runners flaky at that budget. macOS gets a wider
+    /// window so the test still verifies the functional path without
+    /// flapping.
+    const DETECT_DEADLINE: Duration = if cfg!(target_os = "macos") {
+        Duration::from_millis(3000)
+    } else {
+        Duration::from_millis(500)
+    };
+
     /// Poll the index file until either the predicate matches or the deadline
     /// passes. Returns the time it took for the predicate to match, or None
     /// if it never did.
@@ -193,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn added_file_appears_in_index_within_500ms() {
+    fn added_file_appears_in_index() {
         let dir = tmp_dir();
         let artifacts = dir.join("artifacts");
         fs::create_dir_all(&artifacts).unwrap();
@@ -209,12 +221,13 @@ mod tests {
         fs::write(artifacts.join("schema.png"), b"PNG").unwrap();
 
         let index_path = artifacts.join(ARTIFACTS_MD);
-        let elapsed = wait_for(&index_path, Duration::from_millis(500), |idx| {
+        let elapsed = wait_for(&index_path, DETECT_DEADLINE, |idx| {
             idx.find("schema.png").is_some()
         });
         assert!(
             elapsed.is_some(),
-            "watcher did not register schema.png within 500ms"
+            "watcher did not register schema.png within {:?}",
+            DETECT_DEADLINE,
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -235,12 +248,13 @@ mod tests {
 
         fs::remove_file(artifacts.join("bench.csv")).unwrap();
         let index_path = artifacts.join(ARTIFACTS_MD);
-        let elapsed = wait_for(&index_path, Duration::from_millis(500), |idx| {
+        let elapsed = wait_for(&index_path, DETECT_DEADLINE, |idx| {
             idx.find("bench.csv").is_none()
         });
         assert!(
             elapsed.is_some(),
-            "watcher did not remove bench.csv within 500ms"
+            "watcher did not remove bench.csv within {:?}",
+            DETECT_DEADLINE,
         );
         fs::remove_dir_all(&dir).ok();
     }
