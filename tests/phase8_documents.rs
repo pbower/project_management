@@ -100,14 +100,15 @@ fn move_writes_alias_and_old_address_still_resolves() {
     assert!(aliases.contains("PRJ1-PRD1-EPC2-TSK1"),
         "alias missing new address: {aliases}");
 
-    // The TSK should now live under EPC2 on disk. The contract is the new
-    // location; whether the old leftover directory is cleaned up is a
-    // separate cmd_move concern (pre-existing: Database::save takes &self
-    // and does not mutate the in-memory state, so cmd_move's post-save
-    // cleanup compares the same path to itself and skips). The alias plus
-    // the resolver via the old address are what callers actually depend on.
+    // The TSK should now live under EPC2 on disk, and the old leftover
+    // directory under EPC1 should be gone - cmd_move's post-save cleanup
+    // sees the new state.items[leaf] path now that Database::save mutates
+    // self.state in place rather than writing a clone.
     let new_path = dir.join("projects/PRJ1/products/PRD1/epics/EPC2/tasks/TSK1");
     assert!(new_path.exists(), "new TSK1 dir missing: {}", new_path.display());
+
+    let old_path = dir.join("projects/PRJ1/products/PRD1/epics/EPC1/tasks/TSK1");
+    assert!(!old_path.exists(), "old TSK1 dir not cleaned up: {}", old_path.display());
 
     // Looking up the old address-form should still resolve to the live ticket
     // via the alias.
