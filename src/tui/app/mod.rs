@@ -34,13 +34,12 @@ use crate::store::{IdInput, LeafId, MemoryRef};
 use crate::store::locks::{self, LockFile, LockMode, AcquireOutcome, DEFAULT_TTL_SECONDS};
 use crate::store::events;
 use crate::store::git;
-use crate::store::artifacts;
 use crate::task::Task;
 use crate::{
     db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
     tui::{
         enums::{
-            AppState, DocumentsState, HierarchyLevel, InputMode, Mode, NavigationContext,
+            AppState, DocumentsState, InputMode, Mode, NavigationContext,
             Overlay, PendingAction, PromptState, PromptType,
         },
         task_form::{
@@ -54,52 +53,69 @@ use crate::{
     },
 };
 
-/// State snapshot for navigation history.
+/// State snapshot for navigation history. `pub(super)` so the navigation
+/// submodule can construct and consume snapshots while keeping the type
+/// invisible to the rest of the crate.
 #[derive(Clone)]
-struct NavigationSnapshot {
-    state: AppState,
-    context: NavigationContext,
-    selected_task: Option<LeafId>,
+pub(super) struct NavigationSnapshot {
+    pub(super) state: AppState,
+    pub(super) context: NavigationContext,
+    pub(super) selected_task: Option<LeafId>,
 }
 
 /// Main application state for the terminal user interface.
 ///
 /// Manages all TUI state including current screen, database operations,
-/// task filtering, navigation context, and user interactions.
+/// task filtering, navigation context, and user interactions. Fields are
+/// `pub(super)` so the per-concern submodules under `app::*` can read and
+/// write them; nothing outside the `app` module hierarchy reaches them
+/// directly - that traffic flows through public methods.
 pub struct App {
-    mode: Mode,
-    state: AppState,
-    db: Database,
-    db_path: std::path::PathBuf,
-    task_list_state: TableState,
-    filtered_tasks: Vec<LeafId>,
-    selected_task: Option<LeafId>,
-    task_form: TaskForm,
-    input_mode: InputMode,
-    status_message: String,
-    show_completed: bool,
-    filter_text: String,
-    filter_active: bool,
-    confirm_action: Option<String>,
-    dialog_text: String,
-    dialog_cursor_x: usize,
-    dialog_cursor_y: usize,
-    dialog_scroll_y: usize,
-    navigation_context: NavigationContext,
-    navigation_stack: Vec<NavigationContext>,
-    navigation_history: Vec<NavigationSnapshot>,
-    max_history: usize,
-    pm_dir: std::path::PathBuf,
+    pub(super) mode: Mode,
+    pub(super) state: AppState,
+    pub(super) db: Database,
+    pub(super) db_path: std::path::PathBuf,
+    pub(super) task_list_state: TableState,
+    pub(super) filtered_tasks: Vec<LeafId>,
+    pub(super) selected_task: Option<LeafId>,
+    pub(super) task_form: TaskForm,
+    pub(super) input_mode: InputMode,
+    pub(super) status_message: String,
+    pub(super) show_completed: bool,
+    pub(super) filter_text: String,
+    pub(super) filter_active: bool,
+    pub(super) confirm_action: Option<String>,
+    pub(super) dialog_text: String,
+    pub(super) dialog_cursor_x: usize,
+    pub(super) dialog_cursor_y: usize,
+    pub(super) dialog_scroll_y: usize,
+    pub(super) navigation_context: NavigationContext,
+    pub(super) navigation_stack: Vec<NavigationContext>,
+    pub(super) navigation_history: Vec<NavigationSnapshot>,
+    pub(super) max_history: usize,
+    pub(super) pm_dir: std::path::PathBuf,
     /// The transient surface layered over the current mode, if any. One field
     /// rather than a scatter of flags so at most one overlay can be active.
-    overlay: Overlay,
+    pub(super) overlay: Overlay,
     /// A deferred terminal-suspending action picked up by the run loop. Kept
     /// separate from `overlay` because it is an action to run, not a surface.
-    pending_action: Option<PendingAction>,
+    pub(super) pending_action: Option<PendingAction>,
     /// State for Mode 2 - the Document Workspace. Maintained across mode
     /// switches so the cursor and crumb persist when the user returns.
-    documents: DocumentsState,
+    pub(super) documents: DocumentsState,
 }
+
+// Per-concern submodules. Each extends `impl App` with the methods that
+// belong to that axis - rendering, input handling, or state mutation for
+// one screen or feature - while the orchestration (run loop, render
+// dispatch, mode switch) stays here in mod.rs.
+mod confirm;
+mod dialog;
+mod filter;
+mod help;
+mod navigation;
+mod prompt;
+mod ticket_detail;
 
 impl App {
     /// Create a new App instance, loading the database from the specified path.
@@ -141,57 +157,6 @@ impl App {
         Ok(app)
     }
     
-    /// Push current state to navigation history and transition to new state.
-    fn push_state(&mut self, new_state: AppState, new_context: Option<NavigationContext>) {
-        // Create snapshot of current state
-        let snapshot = NavigationSnapshot {
-            state: self.state,
-            context: self.navigation_context.clone(),
-            selected_task: self.selected_task,
-        };
-        
-        // Add to history
-        self.navigation_history.push(snapshot);
-        
-        // Limit history size
-        if self.navigation_history.len() > self.max_history {
-            self.navigation_history.remove(0);
-        }
-        
-        // Transition to new state
-        self.state = new_state;
-        if let Some(context) = new_context {
-            self.navigation_context = context;
-        }
-        
-        // Clear status message
-        self.status_message.clear();
-    }
-    
-    /// Go back to the previous state if history exists.
-    fn go_back(&mut self) -> bool {
-        if let Some(snapshot) = self.navigation_history.pop() {
-            self.state = snapshot.state;
-            self.navigation_context = snapshot.context;
-            self.selected_task = snapshot.selected_task;
-            
-            // Update filtered tasks and UI state for the restored context
-            self.update_filtered_tasks();
-            
-            // Clear any status messages
-            self.status_message.clear();
-            
-            true
-        } else {
-            false
-        }
-    }
-    
-    /// Check if navigation history exists.
-    fn has_navigation_history(&self) -> bool {
-        !self.navigation_history.is_empty()
-    }
-    
     /// Get the current project name from the database path.
     fn get_current_project_name(&self) -> String {
         use crate::project::Project;
@@ -216,92 +181,6 @@ impl App {
     }
     
     /// Check if the user wants to return to the main menu.
-
-    /// Reload the database from disk and refresh the filtered task list.
-    fn refresh_tasks(&mut self) {
-        self.db = Database::load(&self.db_path);
-        self.update_filtered_tasks();
-    }
-
-    /// Update the filtered task list based on current filters and navigation context.
-    /// 
-    /// Applies completion status filter, hierarchy level filter, parent context filter,
-    /// and search text filter. Attempts to preserve selection when possible.
-    fn update_filtered_tasks(&mut self) {
-        // Remember the currently selected task ID if any
-        let old_selected_id = self
-            .task_list_state
-            .selected()
-            .and_then(|idx| self.filtered_tasks.get(idx))
-            .copied();
-
-        self.filtered_tasks = self
-            .db
-            .tasks
-            .iter()
-            .filter(|t| {
-                // Filter by completion status
-                if !self.show_completed && t.status == Status::Done {
-                    return false;
-                }
-                
-                // Filter by hierarchy level
-                let required_kind = match self.navigation_context.level {
-                    HierarchyLevel::Project => Kind::Project,
-                    HierarchyLevel::Product => Kind::Product,
-                    HierarchyLevel::Epic => Kind::Epic,
-                    HierarchyLevel::Task => Kind::Task,
-                    HierarchyLevel::Subtask => Kind::Subtask,
-                    HierarchyLevel::Milestone => Kind::Milestone,
-                };
-                if t.kind != required_kind {
-                    return false;
-                }
-                
-                // Filter by parent context (for contextual drill-down)
-                if let Some(parent_id) = self.navigation_context.parent_id {
-                    if t.parent != Some(parent_id) {
-                        return false;
-                    }
-                }
-                
-                // Filter by search text
-                if !self.filter_text.is_empty() {
-                    let filter_lower = self.filter_text.to_lowercase();
-                    let project = project_label(&self.db, t);
-                    if !t.title.to_lowercase().contains(&filter_lower)
-                        && !t
-                            .tags
-                            .iter()
-                            .any(|tag| tag.to_lowercase().contains(&filter_lower))
-                        && !project.to_lowercase().contains(&filter_lower)
-                    {
-                        return false;
-                    }
-                }
-                true
-            })
-            .map(|t| t.id)
-            .collect();
-
-        // Try to restore selection, or reset to first item
-        if let Some(old_id) = old_selected_id {
-            if let Some(new_idx) = self.filtered_tasks.iter().position(|&id| id == old_id) {
-                self.task_list_state.select(Some(new_idx));
-            } else {
-                self.task_list_state
-                    .select(if self.filtered_tasks.is_empty() {
-                        None
-                    } else {
-                        Some(0)
-                    });
-            }
-        } else if !self.filtered_tasks.is_empty() && self.task_list_state.selected().is_none() {
-            self.task_list_state.select(Some(0));
-        } else if self.filtered_tasks.is_empty() {
-            self.task_list_state.select(None);
-        }
-    }
 
     /// Save the database to disk and refresh the task list.
     fn save_db(&mut self) -> io::Result<()> {
@@ -382,102 +261,6 @@ impl App {
         self.status_message.clear();
     }
     
-    /// Get the theme color for the current hierarchy level.
-    fn get_hierarchy_color(&self) -> Color {
-        match self.navigation_context.level {
-            HierarchyLevel::Project => Color::Cyan,      // Cyan for the top-level Project tickets
-            HierarchyLevel::Product => Color::Blue,        // Dark Blue (keeping existing)
-            HierarchyLevel::Epic => DARK_GREEN,          // Forest Green
-            HierarchyLevel::Task => GOLD,               // Gold
-            HierarchyLevel::Subtask => DARK_RED,         // Crimson Red
-            HierarchyLevel::Milestone => DARK_PURPLE,   // Magenta for milestones
-        }
-    }
-
-    /// Navigate between hierarchy levels without parent filtering.
-    /// 
-    /// Shows all items of the target hierarchy level (Product, Epic, Task, etc.)
-    /// rather than drilling down into a specific parent's children.
-    fn navigate_hierarchy_unfiltered(&mut self, forward: bool) {
-        let new_level = if forward {
-            match self.navigation_context.level {
-                HierarchyLevel::Project => HierarchyLevel::Product,
-                HierarchyLevel::Product => HierarchyLevel::Epic,
-                HierarchyLevel::Epic => HierarchyLevel::Task,
-                HierarchyLevel::Task => HierarchyLevel::Subtask,
-                HierarchyLevel::Subtask => HierarchyLevel::Milestone,
-                HierarchyLevel::Milestone => return, // Can't go further
-            }
-        } else {
-            match self.navigation_context.level {
-                HierarchyLevel::Project => return, // Can't go back beyond Project
-                HierarchyLevel::Product => HierarchyLevel::Project,
-                HierarchyLevel::Epic => HierarchyLevel::Product,
-                HierarchyLevel::Task => HierarchyLevel::Epic,
-                HierarchyLevel::Subtask => HierarchyLevel::Task,
-                HierarchyLevel::Milestone => HierarchyLevel::Subtask,
-            }
-        };
-        
-        self.navigation_context = NavigationContext::new_all_level(new_level);
-        self.update_filtered_tasks();
-        self.set_status_message(format!("Navigated to {}", self.navigation_context.get_display_name()));
-    }
-    
-    /// Navigate contextually through the hierarchy by drilling down or going back.
-    /// 
-    /// Forward navigation drills down into the selected item's children.
-    /// Backward navigation returns to the previous context using the navigation stack.
-    fn navigate_hierarchy_contextual(&mut self, forward: bool) {
-        if forward {
-            // Drill down into selected item
-            if let Some(selected) = self.task_list_state.selected() {
-                if let Some(&task_id) = self.filtered_tasks.get(selected) {
-                    if let Some(task) = self.db.get(task_id) {
-                        let child_level = match task.kind {
-                            Kind::Project => HierarchyLevel::Product,
-                            Kind::Product => HierarchyLevel::Epic,
-                            Kind::Epic => HierarchyLevel::Task,
-                            Kind::Task => HierarchyLevel::Subtask,
-                            Kind::Subtask => {
-                                self.set_status_message("No child level for Subtask".to_string());
-                                return;
-                            }
-                            Kind::Milestone => {
-                                self.set_status_message("No child level for Milestone".to_string());
-                                return;
-                            }
-                        };
-                        
-                        // Push current context to stack
-                        self.navigation_stack.push(self.navigation_context.clone());
-                        
-                        // Create new filtered context
-                        self.navigation_context = NavigationContext::new_filtered(
-                            child_level,
-                            task_id,
-                            task.title.clone()
-                        );
-                        
-                        self.update_filtered_tasks();
-                        self.set_status_message(format!("Navigated to {}", self.navigation_context.get_display_name()));
-                    }
-                }
-            } else {
-                self.set_status_message("No item selected".to_string());
-            }
-        } else {
-            // Go back to previous level
-            if let Some(previous_context) = self.navigation_stack.pop() {
-                self.navigation_context = previous_context;
-                self.update_filtered_tasks();
-                self.set_status_message(format!("Navigated back to {}", self.navigation_context.get_display_name()));
-            } else {
-                self.set_status_message("Already at top level".to_string());
-            }
-        }
-    }
-
     /// Handle keyboard input when in the task list view.
     /// 
     /// Returns true if the application should quit.
@@ -722,70 +505,6 @@ impl App {
             KeyCode::Char('r') => {
                 self.refresh_tasks();
                 self.set_status_message("Tasks refreshed".to_string());
-            }
-            _ => {}
-        }
-        Ok(false)
-    }
-
-    /// Handle keyboard input when viewing task details.
-    /// 
-    /// Returns true if the application should quit.
-    fn handle_detail_input(&mut self, key: KeyCode, _modifiers: KeyModifiers) -> io::Result<bool> {
-        match key {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.state = AppState::TaskList;
-            }
-            KeyCode::Char('e') => {
-                if let Some(task_id) = self.selected_task {
-                    if let Some(task) = self.db.get(task_id) {
-                        self.task_form = TaskForm::from_task_with_pm_dir(task, &self.pm_dir);
-                        self.task_form.update_active_field();
-                        self.push_state(AppState::EditTask, None);
-                        self.input_mode = InputMode::Text;
-                    }
-                }
-            }
-            KeyCode::Char('d') => {
-                if let Some(task_id) = self.selected_task {
-                    self.confirm_action = Some(format!("Delete task #{}", task_id));
-                    self.push_state(AppState::Confirm, None);
-                }
-            }
-            KeyCode::Char('p') => {
-                // Go to parent
-                if let Some(task_id) = self.selected_task {
-                    if let Some(task) = self.db.get(task_id) {
-                        if let Some(parent_id) = task.parent {
-                            self.selected_task = Some(parent_id);
-                            self.set_status_message(format!(
-                                "Navigated to parent task #{}",
-                                parent_id
-                            ));
-                        } else {
-                            self.set_status_message("No parent task".to_string());
-                        }
-                    }
-                }
-            }
-            KeyCode::Char('c') => {
-                // Go to first child
-                if let Some(task_id) = self.selected_task {
-                    let child_map = build_children_map(&self.db.tasks);
-                    if let Some(children) = child_map.get(&task_id) {
-                        if let Some(&first_child) = children.first() {
-                            self.selected_task = Some(first_child);
-                            self.set_status_message(format!(
-                                "Navigated to child task #{}",
-                                first_child
-                            ));
-                        } else {
-                            self.set_status_message("No child tasks".to_string());
-                        }
-                    } else {
-                        self.set_status_message("No child tasks".to_string());
-                    }
-                }
             }
             _ => {}
         }
@@ -1113,229 +832,6 @@ impl App {
         self.save_db()
     }
 
-    /// Delete the selected task and all its descendants.
-    /// 
-    /// Cascades deletion to all child tasks in the hierarchy.
-    fn delete_selected_task(&mut self) -> io::Result<()> {
-        if let Some(task_id) = self.selected_task {
-            let child_map = build_children_map(&self.db.tasks);
-            let mut to_delete = std::collections::HashSet::new();
-
-            fn collect_descendants(
-                id: LeafId,
-                child_map: &std::collections::BTreeMap<LeafId, Vec<LeafId>>,
-                out: &mut std::collections::HashSet<LeafId>,
-            ) {
-                if let Some(children) = child_map.get(&id) {
-                    for &child in children {
-                        if out.insert(child) {
-                            collect_descendants(child, child_map, out);
-                        }
-                    }
-                }
-            }
-
-            to_delete.insert(task_id);
-            collect_descendants(task_id, &child_map, &mut to_delete);
-
-            self.db.remove_ids(&to_delete);
-            self.save_db()?;
-            self.set_status_message(format!("Deleted {} task(s)", to_delete.len()));
-        }
-        Ok(())
-    }
-
-    /// Handle keyboard input in the confirmation dialog.
-    /// 
-    /// Returns true if the application should quit.
-    fn handle_confirm_input(&mut self, key: KeyCode, _modifiers: KeyModifiers) -> io::Result<bool> {
-        match key {
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                if self.confirm_action.is_some() {
-                    if let Err(e) = self.delete_selected_task() {
-                        self.set_status_message(format!("Error deleting task: {}", e));
-                    }
-                }
-                self.state = AppState::TaskList;
-                self.confirm_action = None;
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                self.state = AppState::TaskList;
-                self.confirm_action = None;
-            }
-            _ => {}
-        }
-        Ok(false)
-    }
-
-    /// Handle keyboard input in fullscreen text editing dialogs.
-    /// 
-    /// Used for editing user stories and requirements in dedicated fullscreen mode.
-    /// Returns true if the application should quit.
-    fn handle_dialog_input(&mut self, key: KeyCode, modifiers: KeyModifiers, is_user_story: bool) -> io::Result<bool> {
-        match key {
-            KeyCode::Esc => {
-                // Save the dialog text back to the form and return to form
-                if is_user_story {
-                    self.task_form.user_story.value = self.dialog_text.clone();
-                } else {
-                    self.task_form.requirements.value = self.dialog_text.clone();
-                }
-                self.state = if self.selected_task.is_some() {
-                    AppState::EditTask
-                } else {
-                    AppState::AddTask
-                };
-                self.input_mode = InputMode::Text;
-            }
-            KeyCode::Char(c) => {
-                // Insert character at cursor position
-                let cursor_pos = self.get_dialog_cursor_position();
-                self.dialog_text.insert(cursor_pos, c);
-                self.move_dialog_cursor_right();
-            }
-            KeyCode::Backspace => {
-                if modifiers.contains(KeyModifiers::CONTROL) {
-                    // Ctrl+Backspace: Clear entire field
-                    self.dialog_text.clear();
-                    self.dialog_cursor_x = 0;
-                    self.dialog_cursor_y = 0;
-                    self.dialog_scroll_y = 0;
-                } else {
-                    // Regular Backspace: Remove character before cursor
-                    let cursor_pos = self.get_dialog_cursor_position();
-                    if cursor_pos > 0 {
-                        self.dialog_text.remove(cursor_pos - 1);
-                        self.move_dialog_cursor_left();
-                    }
-                }
-            }
-            KeyCode::Delete => {
-                if modifiers.contains(KeyModifiers::CONTROL) {
-                    // Ctrl+Delete: Clear entire field
-                    self.dialog_text.clear();
-                    self.dialog_cursor_x = 0;
-                    self.dialog_cursor_y = 0;
-                    self.dialog_scroll_y = 0;
-                } else {
-                    // Regular Delete: Remove character at cursor
-                    let cursor_pos = self.get_dialog_cursor_position();
-                    if cursor_pos < self.dialog_text.len() {
-                        self.dialog_text.remove(cursor_pos);
-                    }
-                }
-            }
-            KeyCode::Enter => {
-                let cursor_pos = self.get_dialog_cursor_position();
-                self.dialog_text.insert(cursor_pos, '\n');
-                self.dialog_cursor_x = 0;
-                self.dialog_cursor_y += 1;
-            }
-            KeyCode::Left => {
-                self.move_dialog_cursor_left();
-            }
-            KeyCode::Right => {
-                self.move_dialog_cursor_right();
-            }
-            KeyCode::Up => {
-                self.move_dialog_cursor_up();
-            }
-            KeyCode::Down => {
-                self.move_dialog_cursor_down();
-            }
-            KeyCode::Home => {
-                self.dialog_cursor_x = 0;
-            }
-            KeyCode::End => {
-                let lines: Vec<&str> = self.dialog_text.lines().collect();
-                if let Some(current_line) = lines.get(self.dialog_cursor_y) {
-                    self.dialog_cursor_x = current_line.len();
-                }
-            }
-            _ => {}
-        }
-        Ok(false)
-    }
-
-    /// Get the current cursor position in the dialog text as a character index.
-    fn get_dialog_cursor_position(&self) -> usize {
-        let lines: Vec<&str> = self.dialog_text.lines().collect();
-        let mut pos = 0;
-        
-        for (i, line) in lines.iter().enumerate() {
-            if i == self.dialog_cursor_y {
-                return pos + self.dialog_cursor_x.min(line.len());
-            }
-            pos += line.len() + 1; // +1 for the newline character
-        }
-        
-        // If cursor_y is beyond the last line, position at end
-        self.dialog_text.len()
-    }
-
-    /// Move the dialog cursor left by one character.
-    fn move_dialog_cursor_left(&mut self) {
-        if self.dialog_cursor_x > 0 {
-            self.dialog_cursor_x -= 1;
-        } else if self.dialog_cursor_y > 0 {
-            // Move to end of previous line
-            self.dialog_cursor_y -= 1;
-            let lines: Vec<&str> = self.dialog_text.lines().collect();
-            if let Some(prev_line) = lines.get(self.dialog_cursor_y) {
-                self.dialog_cursor_x = prev_line.len();
-            }
-        }
-    }
-
-    /// Move the dialog cursor right by one character.
-    fn move_dialog_cursor_right(&mut self) {
-        let lines: Vec<&str> = self.dialog_text.lines().collect();
-        if let Some(current_line) = lines.get(self.dialog_cursor_y) {
-            if self.dialog_cursor_x < current_line.len() {
-                self.dialog_cursor_x += 1;
-            } else if self.dialog_cursor_y + 1 < lines.len() {
-                // Move to beginning of next line
-                self.dialog_cursor_y += 1;
-                self.dialog_cursor_x = 0;
-            }
-        }
-    }
-
-    /// Move the dialog cursor up by one line.
-    fn move_dialog_cursor_up(&mut self) {
-        if self.dialog_cursor_y > 0 {
-            self.dialog_cursor_y -= 1;
-            let lines: Vec<&str> = self.dialog_text.lines().collect();
-            if let Some(new_line) = lines.get(self.dialog_cursor_y) {
-                self.dialog_cursor_x = self.dialog_cursor_x.min(new_line.len());
-            }
-        }
-    }
-
-    /// Move the dialog cursor down by one line.
-    fn move_dialog_cursor_down(&mut self) {
-        let lines: Vec<&str> = self.dialog_text.lines().collect();
-        if self.dialog_cursor_y + 1 < lines.len() {
-            self.dialog_cursor_y += 1;
-            if let Some(new_line) = lines.get(self.dialog_cursor_y) {
-                self.dialog_cursor_x = self.dialog_cursor_x.min(new_line.len());
-            }
-        }
-    }
-
-    /// Initialize dialog cursor position when opening a dialog.
-    fn init_dialog_cursor(&mut self) {
-        let lines: Vec<&str> = self.dialog_text.lines().collect();
-        if lines.is_empty() {
-            self.dialog_cursor_x = 0;
-            self.dialog_cursor_y = 0;
-        } else {
-            self.dialog_cursor_y = lines.len() - 1;
-            self.dialog_cursor_x = lines.last().unwrap_or(&"").len();
-        }
-        self.dialog_scroll_y = 0;
-    }
-
     /// Handle keyboard input when viewing the help screen.
     /// 
     /// Returns true if the application should quit.
@@ -1347,97 +843,6 @@ impl App {
         matches!(self.input_mode, InputMode::Text)
             || self.filter_active
             || matches!(self.overlay, Overlay::Prompt(_))
-    }
-
-    /// Handle a keystroke while an input prompt is collecting text.
-    fn handle_prompt_input(&mut self, key: KeyCode) {
-        match key {
-            KeyCode::Esc => {
-                self.overlay = Overlay::None;
-            }
-            KeyCode::Enter => {
-                // Replace the overlay with None and consume the prompt.
-                let prev = std::mem::replace(&mut self.overlay, Overlay::None);
-                if let Overlay::Prompt(prompt) = prev {
-                    self.complete_prompt(prompt);
-                }
-            }
-            KeyCode::Backspace => {
-                if let Overlay::Prompt(prompt) = &mut self.overlay {
-                    prompt.buffer.pop();
-                }
-            }
-            KeyCode::Char(c) => {
-                if let Overlay::Prompt(prompt) = &mut self.overlay {
-                    prompt.buffer.push(c);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Act on a confirmed prompt.
-    fn complete_prompt(&mut self, prompt: PromptState) {
-        match prompt.prompt_type {
-            PromptType::ArtifactPath(leaf) => {
-                let raw = prompt.buffer.trim();
-                if raw.is_empty() {
-                    return;
-                }
-                let src = std::path::PathBuf::from(raw);
-                let Some(entry) = self.db.state.items.get(&leaf) else {
-                    self.set_status_message(format!("{leaf}: not in state.json"));
-                    return;
-                };
-                let artifacts_dir = self.pm_dir.join(&entry.path).join("artifacts");
-                if let Err(e) = std::fs::create_dir_all(&artifacts_dir) {
-                    self.set_status_message(format!("artifact add: {e}"));
-                    return;
-                }
-                let Some(file_name) = src.file_name() else {
-                    self.set_status_message("artifact add: source has no file name".to_string());
-                    return;
-                };
-                let target = artifacts_dir.join(file_name);
-                match std::fs::copy(&src, &target) {
-                    Ok(_) => {
-                        let _ = artifacts::sweep_dir(&artifacts_dir, leaf);
-                        let name = file_name.to_string_lossy().into_owned();
-                        let _ = events::emit_event(
-                            &self.pm_dir,
-                            "artifact-add",
-                            Some(leaf),
-                            Some(&name),
-                        );
-                        self.refresh_tasks();
-                        self.set_status_message(format!("Added artifact {name} to {leaf}"));
-                    }
-                    Err(e) => self.set_status_message(format!("artifact add failed: {e}")),
-                }
-            }
-        }
-    }
-
-    /// Handle a keystroke while the help overlay is open. `?`, `Esc`, `h`,
-    /// and `F1` close it; `Up`/`Down` scroll. Mode-switch keys are handled
-    /// before this is reached, so they close help and switch in one stroke.
-    fn handle_help_overlay_input(&mut self, key: KeyCode) {
-        match key {
-            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::F(1) => {
-                self.overlay = Overlay::None;
-            }
-            KeyCode::Up => {
-                if let Overlay::Help { scroll } = &mut self.overlay {
-                    *scroll = scroll.saturating_sub(1);
-                }
-            }
-            KeyCode::Down => {
-                if let Overlay::Help { scroll } = &mut self.overlay {
-                    *scroll = scroll.saturating_add(1);
-                }
-            }
-            _ => {}
-        }
     }
 
     /// Intercept the mode-switch keys. Returns `true` if the key was consumed
@@ -1472,22 +877,6 @@ impl App {
         } else {
             false
         }
-    }
-
-    /// Walk the parent chain from `leaf` up to the root, returning the chain
-    /// root-first. Used to seed the Mode 2 breadcrumb from a selected ticket.
-    fn build_doc_crumb(&self, leaf: LeafId) -> Vec<LeafId> {
-        let mut chain = vec![leaf];
-        let mut cursor = leaf;
-        while let Some(t) = self.db.get(cursor) {
-            if let Some(parent) = t.parent {
-                chain.insert(0, parent);
-                cursor = parent;
-            } else {
-                break;
-            }
-        }
-        chain
     }
 
     fn handle_input(&mut self) -> io::Result<bool> {
@@ -1739,182 +1128,6 @@ impl App {
         f.render_stateful_widget(table, chunks[1], &mut self.task_list_state);
     }
 
-    /// Render the detailed view of a single task.
-    fn render_task_detail(&mut self, f: &mut Frame, area: Rect) {
-        if let Some(task) = self.get_selected_task() {
-            let today = Local::now().date_naive();
-
-            // Get parent and children info for navigation
-            let parent_name = task
-                .parent
-                .and_then(|pid| self.db.get(pid).map(|p| format!("#{} - {}", p.id, p.title)));
-
-            let child_map = build_children_map(&self.db.tasks);
-            let children_names: Vec<String> = child_map
-                .get(&task.id)
-                .map(|children| {
-                    children
-                        .iter()
-                        .filter_map(|&cid| self.db.get(cid))
-                        .map(|c| format!("#{} - {}", c.id, c.title))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            let mut text = vec![
-                Line::from(vec![
-                    Span::styled("ID: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(task.id.to_string()),
-                ]),
-                Line::from(vec![
-                    Span::styled("Title: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(&task.title),
-                ]),
-            ];
-
-            if let Some(summary) = &task.summary {
-                text.push(Line::from(vec![
-                    Span::styled("Summary: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(summary),
-                ]));
-            }
-
-            text.extend(vec![
-                Line::from(vec![
-                    Span::styled("Kind: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(format_kind(task.kind)),
-                ]),
-                Line::from(vec![
-                    Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(format_status(task.status)),
-                ]),
-                Line::from(vec![
-                    Span::styled("Priority: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(format_priority(task.priority_level)),
-                ]),
-                Line::from(vec![
-                    Span::styled("Urgency: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(format_urgency(task.urgency)),
-                ]),
-                Line::from(vec![
-                    Span::styled(
-                        "Process Stage: ",
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(format_process_stage(task.process_stage)),
-                ]),
-                Line::from(vec![
-                    Span::styled("Project: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(project_label(&self.db, task)),
-                ]),
-                Line::from(vec![
-                    Span::styled("Due: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(match task.due {
-                        Some(d) => format!("{} ({})", d, format_due_relative(Some(d), today)),
-                        None => "-".to_string(),
-                    }),
-                ]),
-            ]);
-
-            // Parent navigation
-            if let Some(ref parent_name) = parent_name {
-                text.push(Line::from(vec![
-                    Span::styled("Parent: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::styled(parent_name, Style::default().fg(Color::Blue)),
-                    Span::raw(" (Press 'p' to go to parent)"),
-                ]));
-            } else {
-                text.push(Line::from(vec![
-                    Span::styled("Parent: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw("-"),
-                ]));
-            }
-
-            // Children navigation
-            if !children_names.is_empty() {
-                text.push(Line::from(vec![
-                    Span::styled("Children: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw("(Press 'c' to cycle through children)"),
-                ]));
-                for child_name in children_names.iter().take(3) {
-                    // Show first 3
-                    text.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(child_name, Style::default().fg(Color::Blue)),
-                    ]));
-                }
-                if children_names.len() > 3 {
-                    text.push(Line::from(vec![Span::raw(format!(
-                        "  ... and {} more",
-                        children_names.len() - 3
-                    ))]));
-                }
-            } else {
-                text.push(Line::from(vec![
-                    Span::styled("Children: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw("-"),
-                ]));
-            }
-
-            text.extend(vec![Line::from(vec![
-                Span::styled("Tags: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(if task.tags.is_empty() {
-                    "-".to_string()
-                } else {
-                    task.tags.join(", ")
-                }),
-            ])]);
-
-            // Links section
-            if task.issue_link.is_some() || task.pr_link.is_some() {
-                text.push(Line::from(""));
-                text.push(Line::from(vec![Span::styled(
-                    "Links:",
-                    Style::default().add_modifier(Modifier::BOLD),
-                )]));
-
-                if let Some(issue_link) = &task.issue_link {
-                    text.push(Line::from(vec![
-                        Span::raw("Issue: "),
-                        Span::styled(issue_link, Style::default().fg(Color::Blue)),
-                    ]));
-                }
-
-                if let Some(pr_link) = &task.pr_link {
-                    text.push(Line::from(vec![
-                        Span::raw("PR: "),
-                        Span::styled(pr_link, Style::default().fg(Color::Blue)),
-                    ]));
-                }
-            }
-
-            text.push(Line::from(""));
-            text.push(Line::from(vec![Span::styled(
-                "Description:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]));
-            text.push(Line::from(task.description.as_deref().unwrap_or("-")));
-
-            if let Some(user_story) = &task.user_story {
-                text.push(Line::from(""));
-                text.push(Line::from(vec![Span::styled(
-                    "User Story:",
-                    Style::default().add_modifier(Modifier::BOLD),
-                )]));
-                text.push(Line::from(user_story.as_str()));
-            }
-
-            let paragraph = Paragraph::new(text)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Task Details - [e]dit, [d]elete, [p]arent, [c]hild, [Esc] back"),
-                )
-                .wrap(Wrap { trim: true });
-
-            f.render_widget(paragraph, area);
-        }
-    }
 
     /// Render the task creation or editing form.
     fn render_task_form(&mut self, f: &mut Frame, area: Rect, is_edit: bool) {
@@ -2291,178 +1504,6 @@ impl App {
         if let Some((chunk, field)) = cursor_field {
             f.set_cursor_position((chunk.x + field.cursor as u16 + 1, chunk.y + 1));
         }
-    }
-
-    /// Render the help screen with keyboard shortcuts and usage instructions.
-    /// Render the modal help overlay. Mode-independent: drawn over whatever
-    /// the current mode produced. Scrollable with Up/Down; closed with `?`,
-    /// `Esc`, `h`, or `F1`. Layout follows PM_DESIGN.md Section 8.3.5 -
-    /// current-mode keybindings first, then a concepts panel, then workflows.
-    fn render_help(&mut self, f: &mut Frame, area: Rect) {
-        let heading = |text: &str| {
-            Line::from(vec![Span::styled(
-                text.to_string(),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            )])
-        };
-
-        let mut lines: Vec<Line> = Vec::new();
-        lines.push(heading(&format!("{} - keybindings", self.mode.label())));
-        match self.mode {
-            Mode::Tickets => {
-                lines.push(Line::from("  <- ->        Traverse hierarchy levels"));
-                lines.push(Line::from("  ^ v          Move within the list"));
-                lines.push(Line::from("  Enter        Drill into the selected ticket"));
-                lines.push(Line::from("  e            Open the ticket's CLAUDE.md in $EDITOR"));
-                lines.push(Line::from("  f            Open the quick-entry form"));
-                lines.push(Line::from("  n            Add a child ticket"));
-                lines.push(Line::from("  c / i        Checkout / checkin the selected ticket"));
-                lines.push(Line::from("  a            Add an artifact"));
-                lines.push(Line::from("  m            Toggle the memory side-panel"));
-                lines.push(Line::from("  d            Delete the selected ticket"));
-                lines.push(Line::from("  s            Cycle status   p   cycle process stage"));
-                lines.push(Line::from("  t            Toggle show/hide completed   r refresh"));
-                lines.push(Line::from("  /            Filter by title / tags / project"));
-            }
-            Mode::Documents => {
-                lines.push(Line::from("  Document Workspace arrives in Phase 8."));
-                lines.push(Line::from("  q            Exit to the launcher"));
-            }
-            Mode::Activity => {
-                lines.push(Line::from("  Activity View arrives in Phase 9."));
-                lines.push(Line::from("  q            Exit to the launcher"));
-            }
-        }
-        lines.push(Line::from("  Tab / S-Tab  Cycle modes      1 / 2 / 3  jump to a mode"));
-        lines.push(Line::from("  ? / F1       Toggle this help   q  back to launcher"));
-        lines.push(Line::from(""));
-
-        lines.push(heading("Concepts"));
-        lines.push(Line::from("  Hierarchy    PRJ Project > PRD Product > EPC Epic > TSK Task > SBT Subtask"));
-        lines.push(Line::from("  MLS          Milestone - a cross-cutting marker, project-scoped by default"));
-        lines.push(Line::from("  Locks        A checkout claims a ticket; the Lock column shows the holder,"));
-        lines.push(Line::from("               or STALE once the heartbeat TTL has passed"));
-        lines.push(Line::from("  Memories     Three tiers - user, project, ticket. M:n counts linked refs"));
-        lines.push(Line::from("  Composition  A ticket's CLAUDE.md carries front-matter plus prose sections"));
-        lines.push(Line::from("  Git          Every state change commits; checkin squashes the checkout span"));
-        lines.push(Line::from(""));
-
-        lines.push(heading("Workflows"));
-        lines.push(Line::from("  File a task            n, fill the quick-entry form, save"));
-        lines.push(Line::from("  Hand off to an agent   c to checkout, share the ticket id, i to checkin"));
-        lines.push(Line::from("  Monitor parallel work  Mode 3 (Phase 9) or `pm tv` on a second screen"));
-        lines.push(Line::from("  Write a project memory `pm memory write --scope project ...` (Phase 10)"));
-
-        let overlay = centered_rect(80, 80, area);
-        f.render_widget(Clear, overlay);
-        let paragraph = Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Help - ^v scroll, ? or Esc to close"),
-            )
-            .wrap(Wrap { trim: false })
-            .scroll((self.help_scroll(), 0));
-        f.render_widget(paragraph, overlay);
-    }
-
-    /// Current help-overlay scroll offset. Returns 0 when the overlay is not
-    /// the help variant; callers should only invoke `render_help` while it is.
-    fn help_scroll(&self) -> u16 {
-        match self.overlay {
-            Overlay::Help { scroll } => scroll,
-            _ => 0,
-        }
-    }
-
-    /// Render a fullscreen text editing dialog for user stories or requirements.
-    fn render_dialog(&mut self, f: &mut Frame, area: Rect, title: &str) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(3)].as_ref())
-            .split(area);
-
-        // Main text area
-        let block = Block::default()
-            .title(format!("{} - Fullscreen Editor", title))
-            .borders(Borders::ALL)
-            .style(Style::default().fg(Color::White).bg(Color::Blue));
-
-        let inner = block.inner(chunks[0]);
-        f.render_widget(block, chunks[0]);
-
-        // Split text into lines and handle scrolling
-        let lines: Vec<&str> = self.dialog_text.lines().collect();
-        let visible_height = inner.height as usize;
-        
-        // Adjust scroll to keep cursor visible
-        if self.dialog_cursor_y >= self.dialog_scroll_y + visible_height {
-            self.dialog_scroll_y = self.dialog_cursor_y.saturating_sub(visible_height - 1);
-        } else if self.dialog_cursor_y < self.dialog_scroll_y {
-            self.dialog_scroll_y = self.dialog_cursor_y;
-        }
-
-        // Get visible lines based on scroll position
-        let visible_lines: Vec<Line> = lines
-            .iter()
-            .skip(self.dialog_scroll_y)
-            .take(visible_height)
-            .map(|&line| Line::from(line))
-            .collect();
-
-        let paragraph = Paragraph::new(visible_lines);
-        f.render_widget(paragraph, inner);
-
-        // Instructions with improved text
-        let instructions = Paragraph::new(
-            "Arrow keys to navigate • Type to edit • Enter for new line • Backspace/Delete • Ctrl+Backspace/Delete to clear all • Home/End • Esc to save and return",
-        )
-        .block(Block::default().borders(Borders::ALL).title("Instructions"))
-        .alignment(Alignment::Center);
-        f.render_widget(instructions, chunks[1]);
-
-        // Calculate cursor position relative to visible area
-        let cursor_y_visible = self.dialog_cursor_y.saturating_sub(self.dialog_scroll_y);
-        let cursor_x_clamped = self.dialog_cursor_x.min(inner.width as usize);
-        
-        // Only show cursor if it's in the visible area
-        if cursor_y_visible < visible_height {
-            f.set_cursor_position((
-                inner.x + cursor_x_clamped as u16,
-                inner.y + cursor_y_visible as u16
-            ));
-        }
-    }
-
-    /// Render a confirmation dialog for destructive actions.
-    fn render_confirm(&mut self, f: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .title("Confirm Action")
-            .borders(Borders::ALL)
-            .style(Style::default().bg(DARK_RED));
-
-        let area = centered_rect(50, 20, area);
-        f.render_widget(Clear, area);
-
-        let text = vec![
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Are you sure you want to:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(self.confirm_action.as_deref().unwrap_or("")),
-            Line::from(""),
-            Line::from("This action cannot be undone."),
-            Line::from(""),
-            Line::from("Press 'y' to confirm, 'n' to cancel"),
-        ];
-
-        let paragraph = Paragraph::new(text)
-            .block(block)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true });
-
-        f.render_widget(paragraph, area);
     }
 
     /// Render the context-sensitive help row at the bottom of the screen.
