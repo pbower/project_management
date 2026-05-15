@@ -2650,8 +2650,8 @@ impl App {
 
     /// Input dispatch for Mode 2 - the Document Workspace. Mode-switch keys
     /// and `?` / `F1` for help are already consumed before this is reached.
-    /// Later commits in Phase 8 layer on $EDITOR shell-out, the artifact /
-    /// memory / rename modals, and Left / Right breadcrumb navigation.
+    /// Later commits in Phase 8 layer on $EDITOR shell-out and the artifact
+    /// / memory / rename modals.
     fn handle_documents_input(
         &mut self,
         key: KeyCode,
@@ -2661,9 +2661,27 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
             KeyCode::Up => self.documents_cursor_move(-1),
             KeyCode::Down => self.documents_cursor_move(1),
+            KeyCode::Left => self.documents_level_move(-1),
+            KeyCode::Right => self.documents_level_move(1),
             _ => {}
         }
         Ok(false)
+    }
+
+    /// Move the breadcrumb focus by `delta` levels (Left = -1, Right = +1).
+    /// The doc list is rebuilt around the new focus on the next render, so
+    /// the cursor is reset to the first selectable row.
+    fn documents_level_move(&mut self, delta: isize) {
+        if self.documents.crumb.is_empty() {
+            return;
+        }
+        let max = self.documents.crumb.len() as isize - 1;
+        let target = (self.documents.active_level as isize + delta).clamp(0, max);
+        if target as usize == self.documents.active_level {
+            return;
+        }
+        self.documents.active_level = target as usize;
+        self.documents.doc_cursor = 0;
     }
 
     /// Move the LHS cursor by `delta` rows, snapping past header rows.
@@ -2776,13 +2794,21 @@ impl App {
 
     /// Compose the flat LHS list for the focused ticket. The list is built
     /// fresh each render from the on-disk state, so artifact additions or
-    /// section renames surface without an explicit refresh.
+    /// section renames surface without an explicit refresh. The focused
+    /// ticket is `crumb[active_level]`, which Left / Right adjust.
     fn documents_pane_items(&self) -> Vec<DocsPaneItem> {
         let mut out: Vec<DocsPaneItem> = Vec::new();
-        let Some(&focus) = self.documents.crumb.last() else {
+        let level = self.documents.active_level;
+        if level >= self.documents.crumb.len() {
             return out;
-        };
-        let address = match crate::store::AddressId::new(self.documents.crumb.clone()) {
+        }
+        // The address for the focused level is the crumb truncated to that
+        // depth; the deeper segments are visible in the breadcrumb but not
+        // part of the focused ticket's path.
+        let focus_chain: Vec<LeafId> =
+            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let focus = focus_chain[level];
+        let address = match crate::store::AddressId::new(focus_chain) {
             Ok(a) => a,
             Err(_) => return out,
         };
@@ -2858,12 +2884,16 @@ impl App {
     }
 
     /// Pull the body of the named section from the focused ticket's
-    /// CLAUDE.md. Returns an empty string if the ticket can't be loaded.
+    /// CLAUDE.md. The focused ticket is `crumb[active_level]`. Returns an
+    /// empty string if the ticket can't be loaded.
     fn documents_preview_section(&self, name: &str) -> String {
-        let Some(_) = self.documents.crumb.last() else {
+        let level = self.documents.active_level;
+        if level >= self.documents.crumb.len() {
             return String::new();
-        };
-        let Ok(address) = crate::store::AddressId::new(self.documents.crumb.clone()) else {
+        }
+        let focus_chain: Vec<LeafId> =
+            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let Ok(address) = crate::store::AddressId::new(focus_chain) else {
             return String::new();
         };
         let layout = crate::store::Layout::at(&self.pm_dir);
