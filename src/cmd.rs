@@ -13,6 +13,9 @@ use std::fs;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
 use crate::db::*;
 use crate::fields::*;
+use crate::memory::{lookup_by_name, promote_memory, write_memory, MemoryHit, MemoryType, Scope};
+use crate::memory::store::MemoryContext;
+use crate::store::front_matter::MemoryRef;
 use crate::store::id::{IdInput, LeafId};
 use crate::store::migrate::kind_to_prefix;
 use crate::task::{Task, TaskTemplate};
@@ -513,16 +516,29 @@ pub enum MemoryAction {
     },
     /// Write a memory at the given scope.
     Write {
-        /// Scope: `user`, `project`, or `ticket`.
+        /// Scope: `user`, `project`, or `ticket`. The `user` scope is
+        /// reserved for Claude Code's auto-memory store; PM rejects direct
+        /// writes there. Use `pm memory promote --to user` to demote a
+        /// project memory into the user tier.
         #[arg(long)]
         scope: String,
         /// Memory type: `feedback`, `project`, `reference`, or `user`.
         #[arg(long)]
         ty: String,
-        /// Memory name (file slug).
+        /// Memory name (file basename, no extension).
         #[arg(long)]
         name: String,
-        /// Memory content.
+        /// Optional description recorded in the file's front-matter.
+        #[arg(long)]
+        desc: Option<String>,
+        /// Ticket id (required when `--scope ticket`).
+        #[arg(long)]
+        ticket: Option<String>,
+        /// Project leaf, e.g. `PRJ1` (required when `--scope project` and
+        /// the workspace has more than one project).
+        #[arg(long)]
+        project: Option<String>,
+        /// Memory body content.
         content: String,
     },
     /// Promote a memory between scopes.
@@ -2140,13 +2156,6 @@ pub fn cmd_wf(db_path: &Path) {
 // v2 verb handlers - skeletons populated by Phase 4 tasks 39-42
 // =============================================================================
 
-/// Print a "deferred to Phase N" message and exit successfully. Used as the
-/// handler for verbs whose implementation belongs to a later phase.
-fn cmd_deferred(verb: &str, phase: &str) {
-    eprintln!("`{verb}` is part of {phase} and is not yet wired up. The CLI surface is shape-complete; the handler will land in that phase.");
-    std::process::exit(0);
-}
-
 /// `pm init`: scaffold a `.pm/` workspace in the current directory and ensure
 /// a git repository encloses it. If `pm_dir` is already inside an existing
 /// repo, that repo is reused; otherwise a fresh repo is initialised at
@@ -3404,14 +3413,381 @@ pub fn cmd_log(pm_dir: &Path, id: &str) {
 /// Borrow helper so the deferred id resolution can fall back when Database::load
 /// returns an empty set.
 fn db_ref(db: &Database) -> &Database { db }
-pub fn cmd_memory(_db: &mut Database, _pm_dir: &Path, action: MemoryAction) {
-    let verb = match action {
-        MemoryAction::Link { .. } => "memory link",
-        MemoryAction::Unlink { .. } => "memory unlink",
-        MemoryAction::List { .. } => "memory list",
-        MemoryAction::Write { .. } => "memory write",
-        MemoryAction::Promote { .. } => "memory promote",
-        MemoryAction::Show { .. } => "memory show",
+
+/// `pm memory <action>` (Phase 10): three-tier memory store. Dispatches each
+/// `MemoryAction` to the matching helper. Errors print a friendly message
+/// and exit with code 1.
+pub fn cmd_memory(db: &mut Database, pm_dir: &Path, action: MemoryAction) {
+    match action {
+        MemoryAction::Link { id, name } => memory_link(db, pm_dir, &id, &name),
+        MemoryAction::Unlink { id, name } => memory_unlink(db, pm_dir, &id, &name),
+        MemoryAction::List { id } => memory_list(db, pm_dir, &id),
+        MemoryAction::Write { scope, ty, name, desc, ticket, project, content } => {
+            memory_write(db, pm_dir, &scope, &ty, &name, desc.as_deref(),
+                ticket.as_deref(), project.as_deref(), &content)
+        }
+        MemoryAction::Promote { name, to } => memory_promote(db, pm_dir, &name, &to),
+        MemoryAction::Show { name } => memory_show(db, pm_dir, &name),
+    }
+}
+
+/// Resolve a ticket id to (leaf, absolute path to the ticket directory).
+fn resolve_ticket_dir(db: &Database, pm_dir: &Path, id: &str) -> Option<(LeafId, PathBuf)> {
+    let leaf = resolve_v2_id(id, db)?;
+    let entry = db.state.items.get(&leaf)?;
+    Some((leaf, pm_dir.join(&entry.path)))
+}
+
+/// Walk a ticket's parent chain to find the enclosing `PRJ` ancestor. Returns
+/// `None` when the ticket is orphaned (no Project on the chain).
+fn project_ancestor(db: &Database, leaf: LeafId) -> Option<LeafId> {
+    let mut cursor = Some(leaf);
+    let mut guard = 0;
+    while let Some(id) = cursor {
+        if guard > 16 { break; }
+        guard += 1;
+        let task = db.get(id)?;
+        if matches!(task.kind, Kind::Project) {
+            return Some(task.id);
+        }
+        cursor = task.parent;
+    }
+    None
+}
+
+/// Look up the only `Kind::Project` ticket in the workspace, if there is
+/// exactly one. Used to default `--project` for write/promote when omitted.
+fn solo_project(db: &Database) -> Option<LeafId> {
+    let mut found: Option<LeafId> = None;
+    for task in db.tasks.iter() {
+        if matches!(task.kind, Kind::Project) {
+            if found.is_some() {
+                return None; // more than one project, caller must specify
+            }
+            found = Some(task.id);
+        }
+    }
+    found
+}
+
+/// Build a [`MemoryContext`] for a CLI verb. `ticket_arg` resolves to a
+/// ticket-tier path; `project_override` lets the user pin a project leaf
+/// when the workspace has more than one.
+fn build_memory_context(
+    db: &Database,
+    pm_dir: &Path,
+    ticket_arg: Option<&str>,
+    project_override: Option<&str>,
+) -> Result<MemoryContext, String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME environment variable is not set".to_string())?;
+    let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+
+    let active_ticket_dir = if let Some(id) = ticket_arg {
+        match resolve_ticket_dir(db, pm_dir, id) {
+            Some((_, path)) => Some(path),
+            None => return Err(format!("ticket not found: {id}")),
+        }
+    } else {
+        None
     };
-    cmd_deferred(verb, "Phase 10");
+
+    let active_project = if let Some(arg) = project_override {
+        let leaf = resolve_v2_id(arg, db)
+            .ok_or_else(|| format!("project not found: {arg}"))?;
+        if !matches!(db.get(leaf).map(|t| t.kind), Some(Kind::Project)) {
+            return Err(format!("--project must be a PRJ leaf; got {arg}"));
+        }
+        Some(leaf)
+    } else if let Some(ticket_id) = ticket_arg {
+        let leaf = resolve_v2_id(ticket_id, db)
+            .ok_or_else(|| format!("ticket not found: {ticket_id}"))?;
+        project_ancestor(db, leaf)
+    } else {
+        solo_project(db)
+    };
+
+    Ok(MemoryContext {
+        home,
+        cwd,
+        pm_root: pm_dir.to_path_buf(),
+        active_project,
+        active_ticket_dir,
+    })
+}
+
+/// `pm memory link <id> <name>`: link an existing memory to a ticket. Resolves
+/// the tier from disk (project before ticket before user), records the
+/// matching [`MemoryRef`] variant in the ticket's `memories:` front-matter,
+/// and saves. Idempotent on a re-link.
+fn memory_link(db: &mut Database, pm_dir: &Path, id: &str, name: &str) {
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("memory link: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+
+    let ticket_dir = match db.state.items.get(&leaf).map(|e| pm_dir.join(&e.path)) {
+        Some(p) => p,
+        None => {
+            eprintln!("memory link: state.json has no entry for {id}");
+            std::process::exit(1);
+        }
+    };
+    let ctx = MemoryContext {
+        home: std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(".")),
+        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        pm_root: pm_dir.to_path_buf(),
+        active_project: project_ancestor(db, leaf),
+        active_ticket_dir: Some(ticket_dir.clone()),
+    };
+
+    let hit = match lookup_by_name(&ctx, name) {
+        Ok(Some(h)) => h,
+        Ok(None) => {
+            eprintln!("memory link: no memory named {name:?} at any tier");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("memory link: {e}");
+            std::process::exit(1);
+        }
+    };
+    let memref = memref_for(&hit, name);
+    let claude_path = ticket_dir.join("CLAUDE.md");
+    let mut ticket = match crate::store::Ticket::read(&claude_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("memory link: cannot read {}: {e}", claude_path.display());
+            std::process::exit(1);
+        }
+    };
+    if !ticket.front_matter.memories.iter().any(|m| memref_eq(m, &memref)) {
+        ticket.front_matter.memories.push(memref.clone());
+        if let Err(e) = ticket.write_to(&ticket_dir) {
+            eprintln!("memory link: cannot write {}: {e}", claude_path.display());
+            std::process::exit(1);
+        }
+    }
+    println!("linked {name} [{}] to {leaf}", hit.location.scope.as_str());
+}
+
+/// `pm memory unlink <id> <name>`: remove every front-matter reference to
+/// `name` regardless of tier. Idempotent.
+fn memory_unlink(db: &mut Database, pm_dir: &Path, id: &str, name: &str) {
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("memory unlink: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    let ticket_dir = match db.state.items.get(&leaf).map(|e| pm_dir.join(&e.path)) {
+        Some(p) => p,
+        None => {
+            eprintln!("memory unlink: state.json has no entry for {id}");
+            std::process::exit(1);
+        }
+    };
+    let claude_path = ticket_dir.join("CLAUDE.md");
+    let mut ticket = match crate::store::Ticket::read(&claude_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("memory unlink: cannot read {}: {e}", claude_path.display());
+            std::process::exit(1);
+        }
+    };
+    let before = ticket.front_matter.memories.len();
+    ticket.front_matter.memories.retain(|m| memref_name(m) != name);
+    let after = ticket.front_matter.memories.len();
+    if after == before {
+        println!("unlink {name} from {leaf}: nothing to remove");
+        return;
+    }
+    if let Err(e) = ticket.write_to(&ticket_dir) {
+        eprintln!("memory unlink: cannot write {}: {e}", claude_path.display());
+        std::process::exit(1);
+    }
+    println!("unlinked {name} from {leaf} ({} entries removed)", before - after);
+}
+
+/// `pm memory list <id>`: print every memory linked to a ticket, tier-tagged.
+fn memory_list(db: &Database, pm_dir: &Path, id: &str) {
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("memory list: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    let ticket_dir = match db.state.items.get(&leaf).map(|e| pm_dir.join(&e.path)) {
+        Some(p) => p,
+        None => {
+            eprintln!("memory list: state.json has no entry for {id}");
+            std::process::exit(1);
+        }
+    };
+    let claude_path = ticket_dir.join("CLAUDE.md");
+    let ticket = match crate::store::Ticket::read(&claude_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("memory list: cannot read {}: {e}", claude_path.display());
+            std::process::exit(1);
+        }
+    };
+
+    if ticket.front_matter.memories.is_empty() {
+        println!("{leaf}: no linked memories.");
+        return;
+    }
+    println!("{leaf} linked memories:");
+    for memref in &ticket.front_matter.memories {
+        let tier = match memref {
+            MemoryRef::User(_) => "user",
+            MemoryRef::Project(_) => "project",
+            MemoryRef::Ticket(_) => "ticket",
+        };
+        println!("  - {:<32}  [{tier}]", memref_name(memref));
+    }
+}
+
+/// `pm memory write`: see the verb's clap doc for argument shape.
+#[allow(clippy::too_many_arguments)]
+fn memory_write(
+    db: &Database,
+    pm_dir: &Path,
+    scope_arg: &str,
+    type_arg: &str,
+    name: &str,
+    desc: Option<&str>,
+    ticket_arg: Option<&str>,
+    project_arg: Option<&str>,
+    content: &str,
+) {
+    let scope = match Scope::parse(scope_arg) {
+        Some(s) => s,
+        None => {
+            eprintln!("memory write: unknown --scope: {scope_arg} (use user|project|ticket)");
+            std::process::exit(1);
+        }
+    };
+    let kind = match MemoryType::parse(type_arg) {
+        Some(t) => t,
+        None => {
+            eprintln!("memory write: unknown --type: {type_arg} (use user|feedback|project|reference)");
+            std::process::exit(1);
+        }
+    };
+    let ctx = match build_memory_context(db, pm_dir, ticket_arg, project_arg) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("memory write: {e}");
+            std::process::exit(1);
+        }
+    };
+    match write_memory(&ctx, scope, name, kind, desc.map(|s| s.to_string()), content) {
+        Ok(loc) => println!("wrote {} ({})", loc.file.display(), scope.as_str()),
+        Err(e) => {
+            eprintln!("memory write: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `pm memory promote <name> --to <scope>`: move a memory between user and
+/// project tiers. user->project leaves a back-reference; project->user
+/// removes the project copy.
+fn memory_promote(db: &Database, pm_dir: &Path, name: &str, to_arg: &str) {
+    let target = match Scope::parse(to_arg) {
+        Some(s) => s,
+        None => {
+            eprintln!("memory promote: unknown --to: {to_arg} (use user|project)");
+            std::process::exit(1);
+        }
+    };
+    let ctx = match build_memory_context(db, pm_dir, None, None) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("memory promote: {e}");
+            std::process::exit(1);
+        }
+    };
+    match promote_memory(&ctx, name, target) {
+        Ok(outcome) => {
+            println!(
+                "promoted {name}: {} -> {}",
+                outcome.source.file.display(),
+                outcome.target.file.display()
+            );
+            if let Some(backref) = outcome.backref {
+                println!("back-reference written at {}", backref.file.display());
+            }
+        }
+        Err(e) => {
+            eprintln!("memory promote: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `pm memory show <name>`: print the contents of the resolved memory file
+/// using the project-first collision rule.
+fn memory_show(db: &Database, pm_dir: &Path, name: &str) {
+    let ctx = match build_memory_context(db, pm_dir, None, None) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("memory show: {e}");
+            std::process::exit(1);
+        }
+    };
+    match lookup_by_name(&ctx, name) {
+        Ok(Some(hit)) => {
+            println!("# {} [{}]", hit.file.front_matter.name, hit.location.scope.as_str());
+            if let Some(desc) = &hit.file.front_matter.description {
+                println!("# {desc}");
+            }
+            println!();
+            print!("{}", hit.file.body);
+            if !hit.file.body.ends_with('\n') { println!(); }
+        }
+        Ok(None) => {
+            eprintln!("memory show: not found: {name}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("memory show: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Build a [`MemoryRef`] variant matching the tier the hit was resolved from.
+fn memref_for(hit: &MemoryHit, name: &str) -> MemoryRef {
+    match hit.location.scope {
+        Scope::User => MemoryRef::User(name.to_string()),
+        Scope::Project => MemoryRef::Project(name.to_string()),
+        Scope::Ticket => MemoryRef::Ticket(name.to_string()),
+    }
+}
+
+/// Compare two memory references by tier and name.
+fn memref_eq(a: &MemoryRef, b: &MemoryRef) -> bool {
+    match (a, b) {
+        (MemoryRef::User(x), MemoryRef::User(y))
+        | (MemoryRef::Project(x), MemoryRef::Project(y))
+        | (MemoryRef::Ticket(x), MemoryRef::Ticket(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Extract the memory's name from a [`MemoryRef`] regardless of tier.
+fn memref_name(m: &MemoryRef) -> &str {
+    match m {
+        MemoryRef::User(s) | MemoryRef::Project(s) | MemoryRef::Ticket(s) => s.as_str(),
+    }
 }
