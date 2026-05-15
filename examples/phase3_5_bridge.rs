@@ -138,6 +138,7 @@ fn make_task(id: LeafId, title: &str, parent: Option<LeafId>, kind: Kind) -> Tas
         tags: Vec::new(),
         deps: Vec::new(),
         milestone: None,
+        memories: Vec::new(),
         due: None,
         parent,
         kind,

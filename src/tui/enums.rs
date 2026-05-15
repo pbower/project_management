@@ -2,6 +2,48 @@
 
 use crate::store::LeafId;
 
+/// Top-level TUI mode. Mode 1 (Tickets) hosts the existing per-screen
+/// [`AppState`] flow; Modes 2 and 3 are their own surfaces, stubbed until
+/// Phases 8 and 9 land.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Mode {
+    /// Mode 1 - the hierarchical Ticket View.
+    Tickets,
+    /// Mode 2 - the Document Workspace (Phase 8).
+    Documents,
+    /// Mode 3 - the Activity View (Phase 9).
+    Activity,
+}
+
+impl Mode {
+    /// The next mode in the `Tab` cycle.
+    pub fn next(self) -> Mode {
+        match self {
+            Mode::Tickets => Mode::Documents,
+            Mode::Documents => Mode::Activity,
+            Mode::Activity => Mode::Tickets,
+        }
+    }
+
+    /// The previous mode in the `Shift+Tab` cycle.
+    pub fn prev(self) -> Mode {
+        match self {
+            Mode::Tickets => Mode::Activity,
+            Mode::Documents => Mode::Tickets,
+            Mode::Activity => Mode::Documents,
+        }
+    }
+
+    /// Short label shown in the header.
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Tickets => "Mode 1 Tickets",
+            Mode::Documents => "Mode 2 Documents",
+            Mode::Activity => "Mode 3 Activity",
+        }
+    }
+}
+
 /// Application state for the terminal user interface.
 #[derive(Clone, Copy, PartialEq)]
 pub enum AppState {
@@ -11,7 +53,6 @@ pub enum AppState {
     EditTask,
     UserStoryDialog,
     RequirementsDialog,
-    Help,
     Confirm,
 }
 
@@ -20,6 +61,41 @@ pub enum AppState {
 pub enum InputMode {
     None,
     Text,
+}
+
+/// What an active single-line input prompt is collecting.
+pub enum PromptType {
+    /// A path to a file to copy into the given ticket's `artifacts/` dir.
+    ArtifactPath(LeafId),
+}
+
+/// An active single-line input prompt overlaid on the current mode.
+pub struct PromptState {
+    pub prompt_type: PromptType,
+    pub buffer: String,
+}
+
+/// A transient surface layered over the current mode. At most one is active
+/// at a time, so a single enum is the source of truth - deliberately not a
+/// scatter of boolean flags that could fall out of sync.
+pub enum Overlay {
+    /// Nothing layered; the mode owns the screen.
+    None,
+    /// The modal help overlay, carrying its vertical scroll offset.
+    Help { scroll: u16 },
+    /// The memory side-panel for the selected ticket.
+    MemoryPanel,
+    /// A single-line input prompt.
+    Prompt(PromptState),
+}
+
+/// A deferred operation picked up by the run loop after the input phase,
+/// because it suspends the terminal and so cannot run mid-render. Distinct
+/// from [`Overlay`]: an overlay is a visible surface that input is routed to,
+/// this is a one-shot action consumed on the next loop tick.
+pub enum PendingAction {
+    /// Open the given ticket's `CLAUDE.md` in `$EDITOR`.
+    EditTicket(LeafId),
 }
 
 /// Hierarchy levels for navigation context.
@@ -42,10 +118,11 @@ pub struct NavigationContext {
 }
 
 impl NavigationContext {
-    /// Create a context for viewing all products.
-    pub fn new_all_products() -> Self {
+    /// Create a context for viewing all projects - the top of the v2
+    /// hierarchy and the default landing view for a workspace.
+    pub fn new_all_projects() -> Self {
         NavigationContext {
-            level: HierarchyLevel::Product,
+            level: HierarchyLevel::Project,
             parent_id: None,
             parent_title: None,
         }

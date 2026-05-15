@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::fields::*;
 use crate::store::id::LeafId;
+use crate::store::MemoryRef;
 
 /// A work item with metadata for project management.
 ///
@@ -30,6 +31,11 @@ pub struct Task {
     pub deps: Vec<LeafId>,
     #[serde(default)]
     pub milestone: Option<LeafId>,
+    /// Linked memory references (scope + name). Carried through the bridge so
+    /// round-trips are lossless; the TUI counts these for the `M:n` badge.
+    /// Full memory file content is a Phase 10 / Mode 2 concern.
+    #[serde(default)]
+    pub memories: Vec<MemoryRef>,
     pub due: Option<NaiveDate>,
     pub parent: Option<LeafId>,
     pub kind: Kind,

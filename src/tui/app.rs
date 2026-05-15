@@ -9,7 +9,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use chrono::Local;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
+};
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::{
     backend::Backend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -19,13 +25,24 @@ use ratatui::{
     Frame, Terminal,
 };
 
+use std::collections::HashMap;
+
+use chrono::Utc;
+
 use crate::{fields::*, tui::colors::{DARK_GREEN, DARK_PURPLE, DARK_RED, GOLD}};
-use crate::store::{IdInput, LeafId};
+use crate::store::{IdInput, LeafId, MemoryRef};
+use crate::store::locks::{self, LockFile, LockMode, AcquireOutcome, DEFAULT_TTL_SECONDS};
+use crate::store::events;
+use crate::store::git;
+use crate::store::artifacts;
 use crate::task::Task;
 use crate::{
     db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
     tui::{
-        enums::{AppState, InputMode, HierarchyLevel, NavigationContext},
+        enums::{
+            AppState, HierarchyLevel, InputMode, Mode, NavigationContext, Overlay,
+            PendingAction, PromptState, PromptType,
+        },
         task_form::{
             TaskForm, ARTIFACTS_GLOBAL_ORDER, DESCRIPTION_GLOBAL_ORDER, DUE_GLOBAL_ORDER,
             ISSUE_LINK_GLOBAL_ORDER, KIND_GLOBAL_ORDER, PARENT_GLOBAL_ORDER, PRIORITY_GLOBAL_ORDER,
@@ -50,6 +67,7 @@ struct NavigationSnapshot {
 /// Manages all TUI state including current screen, database operations,
 /// task filtering, navigation context, and user interactions.
 pub struct App {
+    mode: Mode,
     state: AppState,
     db: Database,
     db_path: std::path::PathBuf,
@@ -72,16 +90,23 @@ pub struct App {
     navigation_history: Vec<NavigationSnapshot>,
     max_history: usize,
     pm_dir: std::path::PathBuf,
+    /// The transient surface layered over the current mode, if any. One field
+    /// rather than a scatter of flags so at most one overlay can be active.
+    overlay: Overlay,
+    /// A deferred terminal-suspending action picked up by the run loop. Kept
+    /// separate from `overlay` because it is an action to run, not a surface.
+    pending_action: Option<PendingAction>,
 }
 
 impl App {
     /// Create a new App instance, loading the database from the specified path.
     pub fn new(db_path: &Path) -> io::Result<Self> {
         let db = Database::load(db_path);
-        let navigation_context = NavigationContext::new_all_products();
+        let navigation_context = NavigationContext::new_all_projects();
         let pm_dir = db_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
         
         let mut app = App {
+            mode: Mode::Tickets,
             state: AppState::TaskList,
             db,
             db_path: db_path.to_path_buf(),
@@ -104,6 +129,8 @@ impl App {
             navigation_history: Vec::new(),
             max_history: 10,
             pm_dir,
+            overlay: Overlay::None,
+            pending_action: None,
         };
         
         app.update_filtered_tasks();
@@ -282,6 +309,63 @@ impl App {
     /// Get a reference to the currently selected task.
     fn get_selected_task(&self) -> Option<&Task> {
         self.selected_task.and_then(|id| self.db.get(id))
+    }
+
+    /// The `LeafId` highlighted in the task table, if any.
+    fn selected_task_id(&self) -> Option<LeafId> {
+        self.task_list_state
+            .selected()
+            .and_then(|idx| self.filtered_tasks.get(idx))
+            .copied()
+    }
+
+    /// Checkout the highlighted ticket - acquire a soft lock and emit a
+    /// `checkout` event. Soft locks warn on overlap but still proceed.
+    fn do_checkout(&mut self) {
+        let Some(task_id) = self.selected_task_id() else {
+            self.set_status_message("No ticket selected".to_string());
+            return;
+        };
+        let base_commit = git::head_commit(&self.pm_dir).ok().flatten();
+        let lock = LockFile::new(task_id, None, DEFAULT_TTL_SECONDS, LockMode::Soft, base_commit);
+        match locks::acquire(&self.pm_dir, &lock, Utc::now()) {
+            Ok(AcquireOutcome::Acquired) => {
+                let _ = events::emit_event(&self.pm_dir, "checkout", Some(task_id), None);
+                self.set_status_message(format!("{task_id} checked out by {}", lock.agent));
+            }
+            Ok(AcquireOutcome::Overlapped { previous }) => {
+                let _ = events::emit_event(&self.pm_dir, "checkout", Some(task_id), None);
+                self.set_status_message(format!(
+                    "{task_id} checked out (soft lock; was held by {})",
+                    previous.agent
+                ));
+            }
+            Ok(AcquireOutcome::Blocked { holder }) => {
+                self.set_status_message(format!(
+                    "{task_id} is hard-locked by {}; cannot check out",
+                    holder.agent
+                ));
+            }
+            Err(e) => self.set_status_message(format!("checkout failed: {e}")),
+        }
+    }
+
+    /// Checkin the highlighted ticket - release its lock and emit a `checkin`
+    /// event. The git squash that `pm checkin` performs is left to the CLI
+    /// verb; the in-TUI path releases the lock and records the event.
+    fn do_checkin(&mut self) {
+        let Some(task_id) = self.selected_task_id() else {
+            self.set_status_message("No ticket selected".to_string());
+            return;
+        };
+        match locks::release(&self.pm_dir, task_id) {
+            Ok(true) => {
+                let _ = events::emit_event(&self.pm_dir, "checkin", Some(task_id), None);
+                self.set_status_message(format!("{task_id} checked in"));
+            }
+            Ok(false) => self.set_status_message(format!("{task_id} was not checked out")),
+            Err(e) => self.set_status_message(format!("checkin failed: {e}")),
+        }
     }
 
     /// Set a status message to display in the status bar.
@@ -501,13 +585,15 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('a') => {
+            // `n` opens the quick-entry form for a new child ticket.
+            KeyCode::Char('n') => {
                 self.task_form = TaskForm::new_with_context_and_pm_dir(&self.navigation_context, &self.pm_dir);
                 self.task_form.update_active_field();
                 self.push_state(AppState::AddTask, None);
                 self.input_mode = InputMode::Text;
             }
-            KeyCode::Char('e') => {
+            // `f` opens the quick-entry form on the selected ticket.
+            KeyCode::Char('f') => {
                 if let Some(selected) = self.task_list_state.selected() {
                     if let Some(&task_id) = self.filtered_tasks.get(selected) {
                         if let Some(task) = self.db.get(task_id) {
@@ -519,6 +605,34 @@ impl App {
                         }
                     }
                 }
+            }
+            // `e` opens the selected ticket's CLAUDE.md in `$EDITOR`. The run
+            // loop performs the terminal suspend/resume around the handoff.
+            KeyCode::Char('e') => {
+                if let Some(task_id) = self.selected_task_id() {
+                    self.pending_action = Some(PendingAction::EditTicket(task_id));
+                } else {
+                    self.set_status_message("No ticket selected".to_string());
+                }
+            }
+            // `a` adds an artifact to the selected ticket via a path prompt.
+            KeyCode::Char('a') => {
+                if let Some(task_id) = self.selected_task_id() {
+                    self.overlay = Overlay::Prompt(PromptState {
+                        prompt_type: PromptType::ArtifactPath(task_id),
+                        buffer: String::new(),
+                    });
+                } else {
+                    self.set_status_message("No ticket selected".to_string());
+                }
+            }
+            KeyCode::Char('i') => self.do_checkin(),
+            KeyCode::Char('m') => {
+                self.overlay = if matches!(self.overlay, Overlay::MemoryPanel) {
+                    Overlay::None
+                } else {
+                    Overlay::MemoryPanel
+                };
             }
             KeyCode::Char('d') => {
                 if let Some(selected) = self.task_list_state.selected() {
@@ -549,24 +663,9 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('c') => {
-                if let Some(selected) = self.task_list_state.selected() {
-                    if let Some(&task_id) = self.filtered_tasks.get(selected) {
-                        if let Some(task) = self.db.get_mut(task_id) {
-                            task.status = if task.status == Status::Done {
-                                Status::Open
-                            } else {
-                                Status::Done
-                            };
-                            if let Err(e) = self.save_db() {
-                                self.set_status_message(format!("Error saving: {}", e));
-                            } else {
-                                self.set_status_message("Task status updated".to_string());
-                            }
-                        }
-                    }
-                }
-            }
+            // `c` checks out the selected ticket (acquires a soft lock).
+            // Status toggling lives on `s`, which cycles through Done.
+            KeyCode::Char('c') => self.do_checkout(),
             KeyCode::Char('p') => {
                 if let Some(selected) = self.task_list_state.selected() {
                     if let Some(&task_id) = self.filtered_tasks.get(selected) {
@@ -614,7 +713,7 @@ impl App {
                 );
             }
             KeyCode::Char('h') => {
-                self.push_state(AppState::Help, None);
+                self.overlay = Overlay::Help { scroll: 0 };
             }
             KeyCode::Char('r') => {
                 self.refresh_tasks();
@@ -873,6 +972,7 @@ impl App {
             tags: split_and_normalise_tags(&[self.task_form.tags.value.clone()]),
             deps: Vec::new(),
             milestone: None,
+            memories: Vec::new(),
             due,
             parent,
             kind: task_kind,
@@ -1235,33 +1335,167 @@ impl App {
     /// Handle keyboard input when viewing the help screen.
     /// 
     /// Returns true if the application should quit.
-    fn handle_help_input(&mut self, key: KeyCode, _modifiers: KeyModifiers) -> io::Result<bool> {
+    /// True when a keystroke should be treated as literal text rather than a
+    /// navigation command - inside a form field, an active filter, or an
+    /// input prompt. Mode-switch keys and the help shortcut are suppressed
+    /// in this situation.
+    fn is_capturing_text(&self) -> bool {
+        matches!(self.input_mode, InputMode::Text)
+            || self.filter_active
+            || matches!(self.overlay, Overlay::Prompt(_))
+    }
+
+    /// Handle a keystroke while an input prompt is collecting text.
+    fn handle_prompt_input(&mut self, key: KeyCode) {
         match key {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => {
-                self.state = AppState::TaskList;
+            KeyCode::Esc => {
+                self.overlay = Overlay::None;
+            }
+            KeyCode::Enter => {
+                // Replace the overlay with None and consume the prompt.
+                let prev = std::mem::replace(&mut self.overlay, Overlay::None);
+                if let Overlay::Prompt(prompt) = prev {
+                    self.complete_prompt(prompt);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Overlay::Prompt(prompt) = &mut self.overlay {
+                    prompt.buffer.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Overlay::Prompt(prompt) = &mut self.overlay {
+                    prompt.buffer.push(c);
+                }
             }
             _ => {}
         }
-        Ok(false)
     }
 
-    /// Poll for and handle keyboard events based on current application state.
-    /// 
-    /// Returns true if the application should quit.
+    /// Act on a confirmed prompt.
+    fn complete_prompt(&mut self, prompt: PromptState) {
+        match prompt.prompt_type {
+            PromptType::ArtifactPath(leaf) => {
+                let raw = prompt.buffer.trim();
+                if raw.is_empty() {
+                    return;
+                }
+                let src = std::path::PathBuf::from(raw);
+                let Some(entry) = self.db.state.items.get(&leaf) else {
+                    self.set_status_message(format!("{leaf}: not in state.json"));
+                    return;
+                };
+                let artifacts_dir = self.pm_dir.join(&entry.path).join("artifacts");
+                if let Err(e) = std::fs::create_dir_all(&artifacts_dir) {
+                    self.set_status_message(format!("artifact add: {e}"));
+                    return;
+                }
+                let Some(file_name) = src.file_name() else {
+                    self.set_status_message("artifact add: source has no file name".to_string());
+                    return;
+                };
+                let target = artifacts_dir.join(file_name);
+                match std::fs::copy(&src, &target) {
+                    Ok(_) => {
+                        let _ = artifacts::sweep_dir(&artifacts_dir, leaf);
+                        let name = file_name.to_string_lossy().into_owned();
+                        let _ = events::emit_event(
+                            &self.pm_dir,
+                            "artifact-add",
+                            Some(leaf),
+                            Some(&name),
+                        );
+                        self.refresh_tasks();
+                        self.set_status_message(format!("Added artifact {name} to {leaf}"));
+                    }
+                    Err(e) => self.set_status_message(format!("artifact add failed: {e}")),
+                }
+            }
+        }
+    }
+
+    /// Handle a keystroke while the help overlay is open. `?`, `Esc`, `h`,
+    /// and `F1` close it; `Up`/`Down` scroll. Mode-switch keys are handled
+    /// before this is reached, so they close help and switch in one stroke.
+    fn handle_help_overlay_input(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::F(1) => {
+                self.overlay = Overlay::None;
+            }
+            KeyCode::Up => {
+                if let Overlay::Help { scroll } = &mut self.overlay {
+                    *scroll = scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::Down => {
+                if let Overlay::Help { scroll } = &mut self.overlay {
+                    *scroll = scroll.saturating_add(1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Intercept the mode-switch keys. Returns `true` if the key was consumed
+    /// as a mode switch.
+    fn try_mode_switch(&mut self, key: KeyCode) -> bool {
+        if self.is_capturing_text() {
+            return false;
+        }
+        match key {
+            KeyCode::Tab => { self.mode = self.mode.next(); true }
+            KeyCode::BackTab => { self.mode = self.mode.prev(); true }
+            KeyCode::Char('1') => { self.mode = Mode::Tickets; true }
+            KeyCode::Char('2') => { self.mode = Mode::Documents; true }
+            KeyCode::Char('3') => { self.mode = Mode::Activity; true }
+            _ => false,
+        }
+    }
+
     fn handle_input(&mut self) -> io::Result<bool> {
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 self.clear_status_message();
 
-                let should_quit = match self.state {
-                    AppState::TaskList => self.handle_task_list_input(key.code, key.modifiers)?,
-                    AppState::TaskDetail => self.handle_detail_input(key.code, key.modifiers)?,
-                    AppState::AddTask => self.handle_form_input(key.code, key.modifiers, false)?,
-                    AppState::EditTask => self.handle_form_input(key.code, key.modifiers, true)?,
-                    AppState::UserStoryDialog => self.handle_dialog_input(key.code, key.modifiers, true)?,
-                    AppState::RequirementsDialog => self.handle_dialog_input(key.code, key.modifiers, false)?,
-                    AppState::Help => self.handle_help_input(key.code, key.modifiers)?,
-                    AppState::Confirm => self.handle_confirm_input(key.code, key.modifiers)?,
+                // An active input prompt owns every keystroke until it is
+                // confirmed or cancelled.
+                if matches!(self.overlay, Overlay::Prompt(_)) {
+                    self.handle_prompt_input(key.code);
+                    return Ok(false);
+                }
+
+                // Mode-switch keys win from any non-text-capturing surface,
+                // and close any active overlay as they switch.
+                if self.try_mode_switch(key.code) {
+                    self.overlay = Overlay::None;
+                    return Ok(false);
+                }
+
+                // The help overlay is modal: while it is open it owns input.
+                if matches!(self.overlay, Overlay::Help { .. }) {
+                    self.handle_help_overlay_input(key.code);
+                    return Ok(false);
+                }
+
+                // `?` / `F1` open the help overlay from any mode.
+                if !self.is_capturing_text()
+                    && matches!(key.code, KeyCode::Char('?') | KeyCode::F(1))
+                {
+                    self.overlay = Overlay::Help { scroll: 0 };
+                    return Ok(false);
+                }
+
+                let should_quit = match self.mode {
+                    Mode::Tickets => match self.state {
+                        AppState::TaskList => self.handle_task_list_input(key.code, key.modifiers)?,
+                        AppState::TaskDetail => self.handle_detail_input(key.code, key.modifiers)?,
+                        AppState::AddTask => self.handle_form_input(key.code, key.modifiers, false)?,
+                        AppState::EditTask => self.handle_form_input(key.code, key.modifiers, true)?,
+                        AppState::UserStoryDialog => self.handle_dialog_input(key.code, key.modifiers, true)?,
+                        AppState::RequirementsDialog => self.handle_dialog_input(key.code, key.modifiers, false)?,
+                        AppState::Confirm => self.handle_confirm_input(key.code, key.modifiers)?,
+                    },
+                    Mode::Documents | Mode::Activity => self.handle_mode_stub_input(key.code)?,
                 };
                 if should_quit {
                     return Ok(true);
@@ -1269,6 +1503,16 @@ impl App {
             }
         }
         Ok(false)
+    }
+
+    /// Input handler for the not-yet-built Modes 2 and 3. Only `q` is live -
+    /// it exits the TUI back to the launcher. Mode-switch keys are already
+    /// consumed before dispatch reaches here.
+    fn handle_mode_stub_input(&mut self, key: KeyCode) -> io::Result<bool> {
+        match key {
+            KeyCode::Char('q') | KeyCode::Esc => Ok(true),
+            _ => Ok(false),
+        }
     }
 
     /// Render the main task list view with table and hierarchy context.
@@ -1287,10 +1531,15 @@ impl App {
         
         // Render ASCII header with consistent app styling and context
         let project_name = self.get_current_project_name();
-        let context_display = format!("Current Project: {}  Current View: {}", 
+        let context_display = format!("Current Project: {}  Current View: {}",
             project_name, self.navigation_context.get_display_name());
         let header_text = vec![
             Line::from(vec![
+                Span::styled(
+                    format!("[ {} ]", self.mode.label()),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                ),
+                Span::raw("  "),
                 Span::styled(
                     "PROJECT MANAGEMENT",
                     Style::default().add_modifier(Modifier::BOLD)
@@ -1309,7 +1558,7 @@ impl App {
         f.render_widget(header_block, chunks[0]);
     
         let header_cells = [
-            "ID", "Kind", "Status", "Priority", "Urgency", "Stage", "Due", "Project", "Title",
+            "ID", "Kind", "Status", "Priority", "Urgency", "Stage", "Due", "Project", "Lock", "Title",
         ]
         .iter()
         .map(|h| {
@@ -1326,7 +1575,7 @@ impl App {
             .height(1);
     
         // Calculate depth map for tree view
-        let mut depth_map: std::collections::HashMap<LeafId, usize> = std::collections::HashMap::new();
+        let mut depth_map: HashMap<LeafId, usize> = HashMap::new();
         for task in &self.db.tasks {
             let mut depth = 0usize;
             let mut cur = task.parent;
@@ -1339,6 +1588,15 @@ impl App {
             }
             depth_map.insert(task.id, depth);
         }
+
+        // Load active locks once per render, keyed by ticket id, so each row
+        // can show its lock state without a per-row directory read.
+        let lock_map: HashMap<LeafId, LockFile> = locks::list(&self.pm_dir)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|lock| (lock.id, lock))
+            .collect();
+        let now = Utc::now();
 
         let rows: Vec<Row> = self
             .filtered_tasks
@@ -1376,8 +1634,26 @@ impl App {
     
                 let depth = depth_map.get(&task.id).copied().unwrap_or(0);
                 let indent_str = " ".repeat(depth);
-                let title_with_tags = format!("{}{}", task.title, tags_str);
-    
+                // M:n badge for tickets with linked memories. The count comes
+                // straight from front-matter; memory file content is a Mode 2
+                // concern, not loaded here.
+                let memory_badge = if task.memories.is_empty() {
+                    String::new()
+                } else {
+                    format!("  M:{}", task.memories.len())
+                };
+                let title_with_tags = format!("{}{}{}", task.title, tags_str, memory_badge);
+
+                // Lock state: empty when free, STALE past the TTL window,
+                // otherwise the holding agent (truncated to the column).
+                let lock_cell = match lock_map.get(&task.id) {
+                    None => ratatui::widgets::Cell::from(""),
+                    Some(lock) if lock.is_stale(now) => ratatui::widgets::Cell::from("STALE")
+                        .style(Style::default().fg(DARK_RED).add_modifier(Modifier::BOLD)),
+                    Some(lock) => ratatui::widgets::Cell::from(truncate(&lock.agent, 16))
+                        .style(Style::default().fg(GOLD)),
+                };
+
                 Row::new(vec![
                     ratatui::widgets::Cell::from(task.id.to_string()),
                     ratatui::widgets::Cell::from(format_kind(task.kind)),
@@ -1387,6 +1663,7 @@ impl App {
                     ratatui::widgets::Cell::from(format_process_stage(task.process_stage)),
                     ratatui::widgets::Cell::from(due_str),
                     ratatui::widgets::Cell::from(project_str),
+                    lock_cell,
                     ratatui::widgets::Cell::from(if depth == 0 {
                         title_with_tags
                     } else {
@@ -1406,6 +1683,7 @@ impl App {
             Constraint::Length(13), // Stage
             Constraint::Length(12), // Due
             Constraint::Length(12), // Project
+            Constraint::Length(16), // Lock
             Constraint::Min(25),    // Title
         ];
     
@@ -1977,70 +2255,85 @@ impl App {
     }
 
     /// Render the help screen with keyboard shortcuts and usage instructions.
+    /// Render the modal help overlay. Mode-independent: drawn over whatever
+    /// the current mode produced. Scrollable with Up/Down; closed with `?`,
+    /// `Esc`, `h`, or `F1`. Layout follows PM_DESIGN.md Section 8.3.5 -
+    /// current-mode keybindings first, then a concepts panel, then workflows.
     fn render_help(&mut self, f: &mut Frame, area: Rect) {
-        let help_text = vec![
+        let heading = |text: &str| {
             Line::from(vec![Span::styled(
-                "Task Manager Help",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Task List Navigation:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]),
-            Line::from("  ↑/k, ↓/j     Navigate tasks"),
-            Line::from("  ←/→          Navigate Item Hierarchy"),
-            Line::from("  Shift + ←/→  Navigate All Items Hierarchy"),
-            Line::from("  Enter/Space  View task details"),
-            Line::from("  a            Add new task"),
-            Line::from("  e            Edit selected task"),
-            Line::from("  d            Delete selected task"),
-            Line::from("  s            Cycle task status (Open → In Progress → Done → Open)"),
-            Line::from("  p            Cycle process stage (Ideation → Design → ... → Ready to Implement → Implementation → ... → Release)"),
-            Line::from("  c            Toggle task completion"),
-            Line::from("  t            Toggle show/hide completed tasks"),
-            Line::from("  r            Refresh task list"),
-            Line::from("  /            Filter tasks by title/tags/project"),
-            Line::from("  m            Return to main menu"),
-            Line::from("  h/F1         Show this help"),
-            Line::from("  q/Ctrl+C/Esc Quit"),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Task Detail View:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]),
-            Line::from("  e            Edit task"),
-            Line::from("  d            Delete task"),
-            Line::from("  Esc/q        Back to task list"),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Form Navigation:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]),
-            Line::from("  Tab/↑↓/jk    Navigate between fields"),
-            Line::from("  ←/→          Change kind/status selectors"),
-            Line::from("  Enter        Save/Create task"),
-            Line::from("  Esc          Cancel and return"),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Due Date Formats:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]),
-            Line::from("  YYYY-MM-DD   Specific date (e.g., 2024-12-25)"),
-            Line::from("  today        Today's date"),
-            Line::from("  tomorrow     Tomorrow's date"),
-            Line::from("  in 3d        3 days from today"),
-        ];
+                text.to_string(),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )])
+        };
 
-        let paragraph = Paragraph::new(help_text)
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(heading(&format!("{} - keybindings", self.mode.label())));
+        match self.mode {
+            Mode::Tickets => {
+                lines.push(Line::from("  <- ->        Traverse hierarchy levels"));
+                lines.push(Line::from("  ^ v          Move within the list"));
+                lines.push(Line::from("  Enter        Drill into the selected ticket"));
+                lines.push(Line::from("  e            Open the ticket's CLAUDE.md in $EDITOR"));
+                lines.push(Line::from("  f            Open the quick-entry form"));
+                lines.push(Line::from("  n            Add a child ticket"));
+                lines.push(Line::from("  c / i        Checkout / checkin the selected ticket"));
+                lines.push(Line::from("  a            Add an artifact"));
+                lines.push(Line::from("  m            Toggle the memory side-panel"));
+                lines.push(Line::from("  d            Delete the selected ticket"));
+                lines.push(Line::from("  s            Cycle status   p   cycle process stage"));
+                lines.push(Line::from("  t            Toggle show/hide completed   r refresh"));
+                lines.push(Line::from("  /            Filter by title / tags / project"));
+            }
+            Mode::Documents => {
+                lines.push(Line::from("  Document Workspace arrives in Phase 8."));
+                lines.push(Line::from("  q            Exit to the launcher"));
+            }
+            Mode::Activity => {
+                lines.push(Line::from("  Activity View arrives in Phase 9."));
+                lines.push(Line::from("  q            Exit to the launcher"));
+            }
+        }
+        lines.push(Line::from("  Tab / S-Tab  Cycle modes      1 / 2 / 3  jump to a mode"));
+        lines.push(Line::from("  ? / F1       Toggle this help   q  back to launcher"));
+        lines.push(Line::from(""));
+
+        lines.push(heading("Concepts"));
+        lines.push(Line::from("  Hierarchy    PRJ Project > PRD Product > EPC Epic > TSK Task > SBT Subtask"));
+        lines.push(Line::from("  MLS          Milestone - a cross-cutting marker, project-scoped by default"));
+        lines.push(Line::from("  Locks        A checkout claims a ticket; the Lock column shows the holder,"));
+        lines.push(Line::from("               or STALE once the heartbeat TTL has passed"));
+        lines.push(Line::from("  Memories     Three tiers - user, project, ticket. M:n counts linked refs"));
+        lines.push(Line::from("  Composition  A ticket's CLAUDE.md carries front-matter plus prose sections"));
+        lines.push(Line::from("  Git          Every state change commits; checkin squashes the checkout span"));
+        lines.push(Line::from(""));
+
+        lines.push(heading("Workflows"));
+        lines.push(Line::from("  File a task            n, fill the quick-entry form, save"));
+        lines.push(Line::from("  Hand off to an agent   c to checkout, share the ticket id, i to checkin"));
+        lines.push(Line::from("  Monitor parallel work  Mode 3 (Phase 9) or `pm tv` on a second screen"));
+        lines.push(Line::from("  Write a project memory `pm memory write --scope project ...` (Phase 10)"));
+
+        let overlay = centered_rect(80, 80, area);
+        f.render_widget(Clear, overlay);
+        let paragraph = Paragraph::new(lines)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Help - Press any key to return"),
+                    .title("Help - ^v scroll, ? or Esc to close"),
             )
-            .wrap(Wrap { trim: true });
+            .wrap(Wrap { trim: false })
+            .scroll((self.help_scroll(), 0));
+        f.render_widget(paragraph, overlay);
+    }
 
-        f.render_widget(paragraph, area);
+    /// Current help-overlay scroll offset. Returns 0 when the overlay is not
+    /// the help variant; callers should only invoke `render_help` while it is.
+    fn help_scroll(&self) -> u16 {
+        match self.overlay {
+            Overlay::Help { scroll } => scroll,
+            _ => 0,
+        }
     }
 
     /// Render a fullscreen text editing dialog for user stories or requirements.
@@ -2133,10 +2426,12 @@ impl App {
         f.render_widget(paragraph, area);
     }
 
-    /// Render the status bar at the bottom of the screen.
+    /// Render the context-sensitive help row at the bottom of the screen.
     fn render_status_bar(&mut self, f: &mut Frame, area: Rect) {
         let status_text = if !self.status_message.is_empty() {
             self.status_message.clone()
+        } else if matches!(self.overlay, Overlay::Help { .. }) {
+            "Help: ^v scroll   ? / Esc close   Tab / 1 / 2 / 3 switch mode".to_string()
         } else if self.filter_active {
             format!(
                 "Search: {} (Esc to clear, Enter to confirm)",
@@ -2144,31 +2439,36 @@ impl App {
             )
         } else if !self.filter_text.is_empty() {
             format!(
-                "Tasks: {} (filtered by '{}') | Press 'h' for help",
+                "Tasks: {} (filtered by '{}') | ? for help",
                 self.filtered_tasks.len(),
                 self.filter_text
             )
         } else {
-            match self.state {
-                AppState::TaskList => {
-                    let back_tip = if self.has_navigation_history() {
-                        " | Alt+← Back"
-                    } else {
-                        ""
-                    };
-                    format!("Tasks: {} | Press 'h' for help{}", self.filtered_tasks.len(), back_tip)
+            match self.mode {
+                Mode::Documents | Mode::Activity => {
+                    format!("{}   Tab / 1 / 2 / 3 switch mode   ? help   q exit", self.mode.label())
                 }
-                AppState::TaskDetail => "Task Details".to_string(),
-                AppState::AddTask => "Add New Task".to_string(),
-                AppState::EditTask => "Edit Task".to_string(),
-                AppState::UserStoryDialog => {
-                    "User Story - Fullscreen Editor (Esc to save & return)".to_string()
-                }
-                AppState::RequirementsDialog => {
-                    "Requirements - Fullscreen Editor (Esc to save & return)".to_string()
-                }
-                AppState::Help => "Help".to_string(),
-                AppState::Confirm => "Confirm Action".to_string(),
+                Mode::Tickets => match self.state {
+                    AppState::TaskList => {
+                        let back_tip = if self.has_navigation_history() {
+                            " | Alt+<- Back"
+                        } else {
+                            ""
+                        };
+                        format!("Tasks: {} | ? for help | Tab / 1 / 2 / 3 mode{}",
+                            self.filtered_tasks.len(), back_tip)
+                    }
+                    AppState::TaskDetail => "Task Details".to_string(),
+                    AppState::AddTask => "Add New Task".to_string(),
+                    AppState::EditTask => "Edit Task".to_string(),
+                    AppState::UserStoryDialog => {
+                        "User Story - Fullscreen Editor (Esc to save & return)".to_string()
+                    }
+                    AppState::RequirementsDialog => {
+                        "Requirements - Fullscreen Editor (Esc to save & return)".to_string()
+                    }
+                    AppState::Confirm => "Confirm Action".to_string(),
+                },
             }
         };
 
@@ -2188,35 +2488,206 @@ impl App {
     fn render(&mut self, f: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)].as_ref())
+            .constraints([
+                Constraint::Min(0),    // mode content
+                Constraint::Length(5), // activity footer (bordered, 3 events)
+                Constraint::Length(1), // context-sensitive help row
+            ].as_ref())
             .split(f.area());
 
-        match self.state {
-            AppState::TaskList => self.render_task_list(f, chunks[0]),
-            AppState::TaskDetail => self.render_task_detail(f, chunks[0]),
-            AppState::AddTask => self.render_task_form(f, chunks[0], false),
-            AppState::EditTask => self.render_task_form(f, chunks[0], true),
-            AppState::UserStoryDialog => self.render_dialog(f, chunks[0], "User Story"),
-            AppState::RequirementsDialog => self.render_dialog(f, chunks[0], "Requirements"),
-            AppState::Help => self.render_help(f, chunks[0]),
-            AppState::Confirm => {
-                self.render_task_list(f, chunks[0]);
-                self.render_confirm(f, chunks[0]);
+        match self.mode {
+            Mode::Tickets => {
+                match self.state {
+                    AppState::TaskList => self.render_task_list(f, chunks[0]),
+                    AppState::TaskDetail => self.render_task_detail(f, chunks[0]),
+                    AppState::AddTask => self.render_task_form(f, chunks[0], false),
+                    AppState::EditTask => self.render_task_form(f, chunks[0], true),
+                    AppState::UserStoryDialog => self.render_dialog(f, chunks[0], "User Story"),
+                    AppState::RequirementsDialog => self.render_dialog(f, chunks[0], "Requirements"),
+                    AppState::Confirm => {
+                        self.render_task_list(f, chunks[0]);
+                        self.render_confirm(f, chunks[0]);
+                    }
+                }
+                // The memory side-panel overlays the right edge of the list.
+                if matches!(self.overlay, Overlay::MemoryPanel) && self.state == AppState::TaskList {
+                    self.render_memory_panel(f, chunks[0]);
+                }
             }
+            Mode::Documents => self.render_mode_stub(f, chunks[0], "Document Workspace", "Phase 8"),
+            Mode::Activity => self.render_mode_stub(f, chunks[0], "Activity View", "Phase 9"),
         }
 
-        self.render_status_bar(f, chunks[1]);
+        self.render_activity_footer(f, chunks[1]);
+        self.render_status_bar(f, chunks[2]);
+
+        // An active input prompt overlays the current mode.
+        if let Overlay::Prompt(prompt) = &self.overlay {
+            let label = match prompt.prompt_type {
+                PromptType::ArtifactPath(_) => {
+                    "Add artifact - path to file (Enter to add, Esc to cancel)"
+                }
+            };
+            let area = centered_rect(70, 20, f.area());
+            f.render_widget(Clear, area);
+            let widget = Paragraph::new(prompt.buffer.as_str())
+                .block(Block::default().borders(Borders::ALL).title(label));
+            f.render_widget(widget, area);
+        }
+
+        // The help overlay is modal and mode-independent: drawn last so it
+        // sits on top of whatever the current mode rendered.
+        if matches!(self.overlay, Overlay::Help { .. }) {
+            self.render_help(f, f.area());
+        }
+    }
+
+    /// Render the activity footer - the last three entries from `events.log`
+    /// in a bordered block. Shown beneath every mode (PM_DESIGN.md 8.3.1).
+    fn render_activity_footer(&mut self, f: &mut Frame, area: Rect) {
+        let all = events::read_events(&self.pm_dir).unwrap_or_default();
+        // Take the last three, then re-order oldest-first for display.
+        let mut tail: Vec<&events::Event> = all.iter().rev().take(3).collect();
+        tail.reverse();
+
+        let mut lines: Vec<Line> = Vec::new();
+        for ev in tail {
+            let time = ev.ts.format("%H:%M:%S");
+            let id = ev.id.map(|i| i.to_string()).unwrap_or_else(|| "-".to_string());
+            let detail = ev
+                .detail
+                .as_deref()
+                .map(|d| format!("  \"{d}\""))
+                .unwrap_or_default();
+            lines.push(Line::from(format!(
+                "  {time}  {:<18}  {:<10}  {id}{detail}",
+                truncate(&ev.actor, 18),
+                ev.verb
+            )));
+        }
+        if lines.is_empty() {
+            lines.push(Line::from("  (no activity yet)"));
+        }
+
+        let widget = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title("Activity"));
+        f.render_widget(widget, area);
+    }
+
+    /// Render the memory side-panel over the right edge of the task list.
+    /// Lists the selected ticket's linked memories with their tier; full
+    /// memory content is a Mode 2 concern (Phase 8 / 10).
+    fn render_memory_panel(&mut self, f: &mut Frame, area: Rect) {
+        let width = (area.width / 3).max(20).min(area.width);
+        let panel = Rect {
+            x: area.x + area.width.saturating_sub(width),
+            y: area.y,
+            width,
+            height: area.height,
+        };
+        f.render_widget(Clear, panel);
+
+        let mut lines: Vec<Line> = Vec::new();
+        match self.get_selected_task() {
+            Some(task) if !task.memories.is_empty() => {
+                for memory in &task.memories {
+                    let (tier, name) = match memory {
+                        MemoryRef::User(name) => ("user", name),
+                        MemoryRef::Project(name) => ("project", name),
+                        MemoryRef::Ticket(name) => ("ticket", name),
+                    };
+                    lines.push(Line::from(format!("  @{name}  [{tier}]")));
+                }
+            }
+            Some(_) => lines.push(Line::from("  (no linked memories)")),
+            None => lines.push(Line::from("  (no ticket selected)")),
+        }
+
+        let widget = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title("Memories  (m to close)"))
+            .wrap(Wrap { trim: false });
+        f.render_widget(widget, panel);
+    }
+
+    /// Placeholder screen for Modes 2 and 3 until Phases 8 and 9 build them
+    /// out. Shows which mode is selected and how to switch away.
+    fn render_mode_stub(&mut self, f: &mut Frame, area: Rect, title: &str, arrives_in: &str) {
+        let body = vec![
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                self.mode.label(),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(""),
+            Line::from(format!("{title} arrives in {arrives_in}.")),
+            Line::from(""),
+            Line::from("Tab / Shift+Tab / 1 / 2 / 3 to switch modes      q to exit"),
+        ];
+        let widget = Paragraph::new(body)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!("[ {} ]", self.mode.label())),
+            )
+            .alignment(Alignment::Center);
+        f.render_widget(widget, area);
     }
 
     /// Main event loop for the TUI application.
     /// 
     /// Handles rendering and input processing until the user exits.
-    pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
+    pub fn run<B: Backend + std::io::Write>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
         loop {
             terminal.draw(|f| self.render(f))?;
 
             if self.handle_input()? {
                 break;
+            }
+
+            // Deferred terminal-suspending work runs here, outside the draw
+            // and input phases, so the editor handoff has the terminal to
+            // itself.
+            if let Some(action) = self.pending_action.take() {
+                self.run_pending_action(terminal, action)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Run a deferred action that needs the terminal suspended. Currently the
+    /// only case is the `$EDITOR` handoff for editing a ticket's CLAUDE.md.
+    fn run_pending_action<B: Backend + std::io::Write>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        action: PendingAction,
+    ) -> io::Result<()> {
+        match action {
+            PendingAction::EditTicket(leaf) => {
+                let claude_path = match self.db.state.items.get(&leaf) {
+                    Some(entry) => self.pm_dir.join(&entry.path).join("CLAUDE.md"),
+                    None => {
+                        self.set_status_message(format!("{leaf}: not in state.json"));
+                        return Ok(());
+                    }
+                };
+
+                // Hand the terminal to the editor, then take it back.
+                disable_raw_mode()?;
+                execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+                let status = std::process::Command::new(&editor).arg(&claude_path).status();
+                enable_raw_mode()?;
+                execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+                terminal.clear()?;
+
+                match status {
+                    Ok(_) => {
+                        self.refresh_tasks();
+                        let _ = events::emit_event(&self.pm_dir, "edit", Some(leaf), None);
+                        self.set_status_message(format!("{leaf}: edited in $EDITOR"));
+                    }
+                    Err(e) => self.set_status_message(format!("editor failed: {e}")),
+                }
             }
         }
         Ok(())

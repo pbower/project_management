@@ -57,6 +57,7 @@ pub fn task_to_document(task: &Task) -> (FrontMatter, ParsedBody) {
     fm.tags = task.tags.clone();
     fm.deps = task.deps.clone();
     fm.milestone = task.milestone;
+    fm.memories = task.memories.clone();
     if let Some(link) = task.issue_link.as_ref() {
         fm.links.insert("issue".to_string(), link.clone());
     }
@@ -104,6 +105,7 @@ pub fn task_from_document(
         tags: fm.tags.clone(),
         deps: fm.deps.clone(),
         milestone: fm.milestone,
+        memories: fm.memories.clone(),
         due: fm.due,
         parent: fm.parent,
         kind: prefix_to_kind(fm.id.prefix()),
@@ -182,6 +184,7 @@ mod tests {
     use super::*;
     use crate::fields::{Priority, ProcessStage, Status, Urgency};
     use crate::store::id::TypePrefix;
+    use crate::store::MemoryRef;
     use chrono::NaiveDate;
 
     fn sample_full_task() -> Task {
@@ -196,6 +199,10 @@ mod tests {
             tags: vec!["infra".to_string(), "locking".to_string()],
             deps: vec![LeafId::new(TypePrefix::Task, 6), LeafId::new(TypePrefix::Task, 11)],
             milestone: Some(LeafId::new(TypePrefix::Milestone, 1)),
+            memories: vec![
+                MemoryRef::User("feedback-testing".to_string()),
+                MemoryRef::Project("auth-stack-conventions".to_string()),
+            ],
             due: NaiveDate::from_ymd_opt(2026, 5, 25),
             parent: Some(LeafId::new(TypePrefix::Epic, 3)),
             kind: Kind::Task,
@@ -224,6 +231,9 @@ mod tests {
         assert_eq!(back.user_story, original.user_story);
         assert_eq!(back.requirements, original.requirements);
         assert_eq!(back.tags, original.tags);
+        assert_eq!(back.deps, original.deps);
+        assert_eq!(back.milestone, original.milestone);
+        assert_eq!(back.memories, original.memories);
         assert_eq!(back.due, original.due);
         assert_eq!(back.parent, original.parent);
         assert_eq!(back.kind, original.kind);
@@ -251,6 +261,7 @@ mod tests {
             tags: Vec::new(),
             deps: Vec::new(),
             milestone: None,
+            memories: Vec::new(),
             due: None,
             parent: None,
             kind: Kind::Task,
@@ -306,6 +317,7 @@ mod tests {
             tags: Vec::new(),
             deps: Vec::new(),
             milestone: None,
+            memories: Vec::new(),
             due: None,
             parent: None,
             kind: Kind::Project,
@@ -363,6 +375,7 @@ mod tests {
             tags: Vec::new(),
             deps: Vec::new(),
             milestone: None,
+            memories: Vec::new(),
             due: None,
             parent,
             kind,
