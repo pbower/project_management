@@ -398,8 +398,7 @@ pub enum Commands {
         query: String,
     },
 
-    // ----- v2 verbs deferred to later phases -----
-    /// (Phase 6) Acquire a soft lock on a ticket.
+    /// Acquire a soft lock on a ticket.
     Checkout {
         /// Ticket id.
         id: String,
@@ -408,7 +407,7 @@ pub enum Commands {
         intent: Option<String>,
     },
 
-    /// (Phase 6) Release a lock and commit work in progress.
+    /// Release a lock and commit work in progress.
     Checkin {
         /// Ticket id.
         id: String,
@@ -421,13 +420,13 @@ pub enum Commands {
         granular: bool,
     },
 
-    /// (Phase 6) Refresh the heartbeat on a held lock so it does not go stale.
+    /// Refresh the heartbeat on a held lock so it does not go stale.
     Heartbeat {
         /// Ticket id.
         id: String,
     },
 
-    /// (Phase 6) Return the next ready task for an agent.
+    /// Return the next ready task for an agent.
     Next {
         /// Acting agent name (defaults to `PM_AGENT_ID`).
         #[arg(long)]
@@ -437,7 +436,7 @@ pub enum Commands {
         filter: Option<String>,
     },
 
-    /// (Phase 6) List active locks.
+    /// List active locks across the workspace.
     Locks,
 
     /// Open the full-screen activity feed (Mode 3 renderer in a standalone
@@ -450,21 +449,20 @@ pub enum Commands {
         path: Option<std::path::PathBuf>,
     },
 
-    /// (Phase 5) Filter git log to the ticket's slice of the tree.
+    /// Filter git log to the ticket's slice of the tree.
     Log {
         /// Ticket id.
         id: String,
     },
 
-    /// (Phase 10) Memory tier management.
+    /// Memory tier management (user / project / ticket scopes).
     Memory {
         #[command(subcommand)]
         action: MemoryAction,
     },
 
-    /// Run the stdio MCP server. Exposes the 14-tool surface defined in
-    /// PM_DESIGN.md Section 8.2 over JSON-RPC 2.0. The loop runs until
-    /// stdin closes.
+    /// Run the stdio MCP server. Exposes the 14-tool surface over JSON-RPC
+    /// 2.0; see docs/mcp.md for the catalogue. Runs until stdin closes.
     Mcp,
 }
 
