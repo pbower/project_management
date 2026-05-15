@@ -13,7 +13,9 @@ use std::fs;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
 use crate::db::*;
 use crate::fields::*;
-use crate::memory::{lookup_by_name, promote_memory, write_memory, MemoryHit, MemoryType, Scope};
+use crate::memory::{
+    lookup_by_name, promote_memory, write_memory, MemoryFile, MemoryHit, MemoryType, Scope,
+};
 use crate::memory::store::MemoryContext;
 use crate::store::front_matter::MemoryRef;
 use crate::store::id::{IdInput, LeafId};
@@ -2457,7 +2459,13 @@ fn find_section_line(path: &Path, section: &str) -> Option<usize> {
 /// ancestor down to the target ticket. Section bodies are printed verbatim;
 /// the trailing `@artifacts/ARTIFACTS.md` line is suppressed because the
 /// composed view is for reading rather than re-import.
-pub fn cmd_context(db: &Database, pm_dir: &Path, id: &str, _include_memories: bool) {
+///
+/// When `include_memories` is true (the default; `--no-memories` opts out)
+/// the output appends a `## Linked memories (<LEAF>)` section listing every
+/// `MemoryRef` from the target ticket's front-matter. Each memory is shown
+/// with its tier tag, description, body, and an `@`-import line pointing at
+/// the file's absolute path so Claude Code's loader can pull it in.
+pub fn cmd_context(db: &Database, pm_dir: &Path, id: &str, include_memories: bool) {
     let leaf = match resolve_v2_id(id, db) {
         Some(l) => l,
         None => {
@@ -2479,6 +2487,10 @@ pub fn cmd_context(db: &Database, pm_dir: &Path, id: &str, _include_memories: bo
     }
     chain.reverse();
 
+    // Keep the leaf ticket's front-matter around so we can render its
+    // `memories:` list after the chain has finished printing.
+    let mut leaf_ticket: Option<crate::store::Ticket> = None;
+
     for id in chain {
         let Some(entry) = db.state.items.get(&id) else { continue; };
         let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
@@ -2490,6 +2502,103 @@ pub fn cmd_context(db: &Database, pm_dir: &Path, id: &str, _include_memories: bo
             println!("# {}", section.name);
             print!("{}", section.body);
         }
+        println!();
+        println!("---");
+        println!();
+        if id == leaf {
+            leaf_ticket = Some(ticket);
+        }
+    }
+
+    if include_memories {
+        if let Some(ticket) = leaf_ticket.as_ref() {
+            if !ticket.front_matter.memories.is_empty() {
+                render_linked_memories_section(db, pm_dir, leaf, ticket);
+            }
+        }
+    }
+}
+
+/// Append the "Linked memories" composed-view section. Each entry resolves
+/// to a file path through the [`MemoryContext`] for the ticket; the path is
+/// emitted as an absolute `@`-import line so Claude Code's loader can pull
+/// in the content even when the consumer is not cwd-rooted under the
+/// workspace.
+fn render_linked_memories_section(
+    db: &Database,
+    pm_dir: &Path,
+    leaf: LeafId,
+    ticket: &crate::store::Ticket,
+) {
+    let entry = match db.state.items.get(&leaf) {
+        Some(e) => e,
+        None => return,
+    };
+    let ticket_dir = pm_dir.join(&entry.path);
+
+    let ctx = MemoryContext {
+        home: std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(".")),
+        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        pm_root: pm_dir.to_path_buf(),
+        active_project: project_ancestor(db, leaf),
+        active_ticket_dir: Some(ticket_dir),
+    };
+
+    println!("## Linked memories ({leaf})");
+    println!();
+
+    for memref in &ticket.front_matter.memories {
+        let name = memref_name(memref);
+        let (scope, location) = match memref {
+            MemoryRef::User(_) => (Scope::User, ctx.user_path(name)),
+            MemoryRef::Project(_) => match ctx.project_path(name) {
+                Ok(loc) => (Scope::Project, loc),
+                Err(e) => {
+                    println!("### {name} [project]");
+                    println!();
+                    println!("(unresolved: {e})");
+                    println!();
+                    println!("---");
+                    println!();
+                    continue;
+                }
+            },
+            MemoryRef::Ticket(_) => match ctx.ticket_path(name) {
+                Ok(loc) => (Scope::Ticket, loc),
+                Err(e) => {
+                    println!("### {name} [ticket]");
+                    println!();
+                    println!("(unresolved: {e})");
+                    println!();
+                    println!("---");
+                    println!();
+                    continue;
+                }
+            },
+        };
+
+        println!("### {name} [{}]", scope.as_str());
+
+        match MemoryFile::read(&location.file) {
+            Ok(mf) => {
+                if let Some(desc) = &mf.front_matter.description {
+                    println!();
+                    println!("> {desc}");
+                }
+                println!();
+                print!("{}", mf.body);
+                if !mf.body.ends_with('\n') { println!(); }
+            }
+            Err(e) => {
+                println!();
+                println!("(missing on disk: {e})");
+            }
+        }
+
+        println!();
+        println!("@{}", location.file.display());
         println!();
         println!("---");
         println!();
