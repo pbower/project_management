@@ -9,6 +9,7 @@ pub mod cli;
 pub mod cmd;
 pub mod db;
 pub mod fields;
+pub mod memory;
 pub mod project;
 pub mod store;
 pub mod task;
