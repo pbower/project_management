@@ -1446,14 +1446,48 @@ impl App {
         if self.is_capturing_text() {
             return false;
         }
-        match key {
-            KeyCode::Tab => { self.mode = self.mode.next(); true }
-            KeyCode::BackTab => { self.mode = self.mode.prev(); true }
-            KeyCode::Char('1') => { self.mode = Mode::Tickets; true }
-            KeyCode::Char('2') => { self.mode = Mode::Documents; true }
-            KeyCode::Char('3') => { self.mode = Mode::Activity; true }
-            _ => false,
+        let target = match key {
+            KeyCode::Tab => Some(self.mode.next()),
+            KeyCode::BackTab => Some(self.mode.prev()),
+            KeyCode::Char('1') => Some(Mode::Tickets),
+            KeyCode::Char('2') => Some(Mode::Documents),
+            KeyCode::Char('3') => Some(Mode::Activity),
+            _ => None,
+        };
+        if let Some(new_mode) = target {
+            if new_mode == Mode::Documents && self.documents.crumb.is_empty() {
+                // First-time entry into Mode 2 seeds the breadcrumb from the
+                // currently-selected ticket so the doc list and preview have
+                // something to anchor to. If nothing is selected the renderer
+                // shows the "pick a ticket via Mode 1" hint.
+                if let Some(leaf) = self.selected_task {
+                    self.documents.crumb = self.build_doc_crumb(leaf);
+                    self.documents.active_level =
+                        self.documents.crumb.len().saturating_sub(1);
+                    self.documents.doc_cursor = 0;
+                }
+            }
+            self.mode = new_mode;
+            true
+        } else {
+            false
         }
+    }
+
+    /// Walk the parent chain from `leaf` up to the root, returning the chain
+    /// root-first. Used to seed the Mode 2 breadcrumb from a selected ticket.
+    fn build_doc_crumb(&self, leaf: LeafId) -> Vec<LeafId> {
+        let mut chain = vec![leaf];
+        let mut cursor = leaf;
+        while let Some(t) = self.db.get(cursor) {
+            if let Some(parent) = t.parent {
+                chain.insert(0, parent);
+                cursor = parent;
+            } else {
+                break;
+            }
+        }
+        chain
     }
 
     fn handle_input(&mut self) -> io::Result<bool> {
@@ -2616,24 +2650,54 @@ impl App {
 
     /// Input dispatch for Mode 2 - the Document Workspace. Mode-switch keys
     /// and `?` / `F1` for help are already consumed before this is reached.
-    /// Later commits in Phase 8 layer on navigation, $EDITOR shell-out, and
-    /// the artifact / memory / rename modals.
+    /// Later commits in Phase 8 layer on $EDITOR shell-out, the artifact /
+    /// memory / rename modals, and Left / Right breadcrumb navigation.
     fn handle_documents_input(
         &mut self,
         key: KeyCode,
         _modifiers: KeyModifiers,
     ) -> io::Result<bool> {
         match key {
-            KeyCode::Char('q') | KeyCode::Esc => Ok(true),
-            _ => Ok(false),
+            KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
+            KeyCode::Up => self.documents_cursor_move(-1),
+            KeyCode::Down => self.documents_cursor_move(1),
+            _ => {}
         }
+        Ok(false)
+    }
+
+    /// Move the LHS cursor by `delta` rows, snapping past header rows.
+    fn documents_cursor_move(&mut self, delta: isize) {
+        let items = self.documents_pane_items();
+        if items.is_empty() {
+            return;
+        }
+        let len = items.len();
+        let mut idx = self.documents.doc_cursor as isize + delta;
+        // Clamp first so the snap-past-headers loop has a real anchor.
+        idx = idx.clamp(0, (len - 1) as isize);
+        let step: isize = if delta >= 0 { 1 } else { -1 };
+        while idx >= 0 && (idx as usize) < len && items[idx as usize].is_header() {
+            idx += step;
+        }
+        if idx < 0 || idx as usize >= len {
+            // Fell off the end while skipping headers; reverse the snap.
+            let mut back = self.documents.doc_cursor as isize;
+            while back >= 0 && (back as usize) < len && items[back as usize].is_header() {
+                back += if step > 0 { -1 } else { 1 };
+            }
+            if back >= 0 && (back as usize) < len {
+                self.documents.doc_cursor = back as usize;
+            }
+            return;
+        }
+        self.documents.doc_cursor = idx as usize;
     }
 
     /// Render Mode 2 - the Document Workspace. The breadcrumb at the top
     /// shows the address chain for the focused ticket; the body below is a
     /// two-pane split with the doc list on the left and the preview on the
-    /// right. This commit lays the skeleton; the panes are populated by
-    /// later commits in Phase 8.
+    /// right.
     fn render_documents(&mut self, f: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -2675,14 +2739,148 @@ impl App {
             return;
         }
 
-        // Skeleton until commit 2 wires the real list + preview content.
-        let lhs = Paragraph::new("")
-            .block(Block::default().borders(Borders::ALL).title("Documents"));
+        let items = self.documents_pane_items();
+        // Clamp the cursor in case the focused ticket changed and the list
+        // shrank since the last render.
+        if self.documents.doc_cursor >= items.len() {
+            self.documents.doc_cursor = items.len().saturating_sub(1);
+        }
+        // If the cursor landed on a header after a clamp, push it past.
+        if !items.is_empty() && items[self.documents.doc_cursor].is_header() {
+            let mut idx = self.documents.doc_cursor;
+            while idx + 1 < items.len() && items[idx].is_header() {
+                idx += 1;
+            }
+            self.documents.doc_cursor = idx;
+        }
+
+        let lhs_lines: Vec<Line> = items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| item.to_line(i == self.documents.doc_cursor))
+            .collect();
+        let lhs = Paragraph::new(lhs_lines)
+            .block(Block::default().borders(Borders::ALL).title("Documents"))
+            .wrap(Wrap { trim: false });
         f.render_widget(lhs, panes[0]);
 
-        let rhs = Paragraph::new("")
-            .block(Block::default().borders(Borders::ALL).title("Preview"));
+        let preview = items
+            .get(self.documents.doc_cursor)
+            .map(|item| self.documents_preview(item))
+            .unwrap_or_default();
+        let rhs = Paragraph::new(preview)
+            .block(Block::default().borders(Borders::ALL).title("Preview"))
+            .wrap(Wrap { trim: false });
         f.render_widget(rhs, panes[1]);
+    }
+
+    /// Compose the flat LHS list for the focused ticket. The list is built
+    /// fresh each render from the on-disk state, so artifact additions or
+    /// section renames surface without an explicit refresh.
+    fn documents_pane_items(&self) -> Vec<DocsPaneItem> {
+        let mut out: Vec<DocsPaneItem> = Vec::new();
+        let Some(&focus) = self.documents.crumb.last() else {
+            return out;
+        };
+        let address = match crate::store::AddressId::new(self.documents.crumb.clone()) {
+            Ok(a) => a,
+            Err(_) => return out,
+        };
+        let layout = crate::store::Layout::at(&self.pm_dir);
+        let rel = layout.directory_for(&address);
+        let abs = layout.root.join(&rel);
+
+        let claude_md = abs.join("CLAUDE.md");
+        let ticket = if claude_md.exists() {
+            crate::store::Ticket::read(&claude_md).ok()
+        } else {
+            None
+        };
+
+        out.push(DocsPaneItem::header("Documents"));
+        if claude_md.exists() {
+            out.push(DocsPaneItem::doc("CLAUDE.md", claude_md));
+        }
+        let artifacts_dir = abs.join("artifacts");
+        if let Ok(read_dir) = std::fs::read_dir(&artifacts_dir) {
+            let mut artifact_files: Vec<std::path::PathBuf> = read_dir
+                .filter_map(|d| d.ok())
+                .filter(|d| d.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .map(|d| d.path())
+                .collect();
+            artifact_files.sort();
+            for path in artifact_files {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| format!("artifacts/{n}"))
+                    .unwrap_or_else(|| path.display().to_string());
+                out.push(DocsPaneItem::doc(name, path));
+            }
+        }
+
+        out.push(DocsPaneItem::header("Memories (linked)"));
+        if let Some(t) = &ticket {
+            if t.front_matter.memories.is_empty() {
+                out.push(DocsPaneItem::note("  (none)"));
+            } else {
+                for memref in &t.front_matter.memories {
+                    out.push(DocsPaneItem::memory(memref.clone()));
+                }
+            }
+        } else {
+            out.push(DocsPaneItem::note("  (CLAUDE.md missing)"));
+        }
+
+        out.push(DocsPaneItem::header("Section quick-edit"));
+        if let Some(t) = &ticket {
+            if t.body.sections.is_empty() {
+                out.push(DocsPaneItem::note("  (no sections)"));
+            } else {
+                for section in &t.body.sections {
+                    out.push(DocsPaneItem::section(section.name.clone()));
+                }
+            }
+        }
+
+        let _ = focus; // reserved for later commits that scope to the focus level.
+        out
+    }
+
+    /// Build the right-hand preview text for the highlighted LHS item.
+    fn documents_preview(&self, item: &DocsPaneItem) -> String {
+        match item {
+            DocsPaneItem::Header(_) | DocsPaneItem::Note(_) => String::new(),
+            DocsPaneItem::Doc { path, .. } => documents_preview_file(path),
+            DocsPaneItem::Memory(reference) => documents_preview_memory(reference),
+            DocsPaneItem::Section { name } => self.documents_preview_section(name),
+        }
+    }
+
+    /// Pull the body of the named section from the focused ticket's
+    /// CLAUDE.md. Returns an empty string if the ticket can't be loaded.
+    fn documents_preview_section(&self, name: &str) -> String {
+        let Some(_) = self.documents.crumb.last() else {
+            return String::new();
+        };
+        let Ok(address) = crate::store::AddressId::new(self.documents.crumb.clone()) else {
+            return String::new();
+        };
+        let layout = crate::store::Layout::at(&self.pm_dir);
+        let abs = layout.root.join(layout.directory_for(&address));
+        let claude_md = abs.join("CLAUDE.md");
+        match crate::store::Ticket::read(&claude_md) {
+            Ok(t) => t
+                .body
+                .find(name)
+                .map(|s| {
+                    let mut out = format!("# {}\n\n", s.name);
+                    out.push_str(&s.body);
+                    out
+                })
+                .unwrap_or_else(|| format!("# {name}\n\n(section missing)")),
+            Err(_) => String::new(),
+        }
     }
 
     /// Compose the single-line breadcrumb shown in the Mode 2 header. Each
@@ -2802,5 +3000,89 @@ impl App {
             }
         }
         Ok(())
+    }
+}
+
+/// One row in the LHS list of Mode 2. Renderer-private; the variants drive
+/// both the displayed line and the preview content.
+enum DocsPaneItem {
+    /// A category label (Documents / Memories / Sections). Not selectable.
+    Header(String),
+    /// A free-form note in place of a list (e.g. "(none)"). Selectable but
+    /// has no preview content.
+    Note(String),
+    /// A file inside the focused ticket's directory.
+    Doc { label: String, path: std::path::PathBuf },
+    /// A linked memory reference from the ticket's front-matter.
+    Memory(MemoryRef),
+    /// A section heading found in the ticket's CLAUDE.md body.
+    Section { name: String },
+}
+
+impl DocsPaneItem {
+    fn header(s: impl Into<String>) -> Self { DocsPaneItem::Header(s.into()) }
+    fn note(s: impl Into<String>) -> Self { DocsPaneItem::Note(s.into()) }
+    fn doc(label: impl Into<String>, path: std::path::PathBuf) -> Self {
+        DocsPaneItem::Doc { label: label.into(), path }
+    }
+    fn memory(reference: MemoryRef) -> Self { DocsPaneItem::Memory(reference) }
+    fn section(name: String) -> Self { DocsPaneItem::Section { name } }
+
+    fn is_header(&self) -> bool {
+        matches!(self, DocsPaneItem::Header(_))
+    }
+
+    fn to_line(&self, selected: bool) -> Line<'static> {
+        let (text, style) = match self {
+            DocsPaneItem::Header(s) => (
+                s.clone(),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            DocsPaneItem::Note(s) => (s.clone(), Style::default().fg(Color::DarkGray)),
+            DocsPaneItem::Doc { label, .. } => (format!("  {label}"), Style::default()),
+            DocsPaneItem::Memory(reference) => {
+                let label = match reference {
+                    MemoryRef::User(name) => format!("  @{name}  [user]"),
+                    MemoryRef::Project(name) => format!("  @{name}  [project]"),
+                    MemoryRef::Ticket(name) => format!("  @{name}  [ticket]"),
+                };
+                (label, Style::default())
+            }
+            DocsPaneItem::Section { name } => (format!("  {name}"), Style::default()),
+        };
+        let mut span_style = style;
+        if selected && !self.is_header() {
+            span_style = span_style.add_modifier(Modifier::REVERSED);
+        }
+        Line::from(Span::styled(text, span_style))
+    }
+}
+
+/// Read the first ~4 KiB of a file as a preview. Binary content shows a
+/// short note rather than a wall of unprintable bytes.
+fn documents_preview_file(path: &std::path::Path) -> String {
+    use std::io::Read;
+    let mut buf = Vec::with_capacity(4096);
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => return format!("(read failed: {e})"),
+    };
+    let _ = std::io::Read::take(&mut file, 4096).read_to_end(&mut buf);
+    match std::str::from_utf8(&buf) {
+        Ok(s) => s.to_string(),
+        Err(_) => format!(
+            "(binary file, {} bytes preview suppressed)",
+            buf.len(),
+        ),
+    }
+}
+
+/// A short description of a memory reference. The actual content read is a
+/// later commit's concern; Mode 2 here only needs to show what the entry is.
+fn documents_preview_memory(reference: &MemoryRef) -> String {
+    match reference {
+        MemoryRef::User(name) => format!("user-scope memory: {name}\n\n@{name}"),
+        MemoryRef::Project(name) => format!("project-scope memory: {name}\n\n@{name}"),
+        MemoryRef::Ticket(name) => format!("ticket-scope memory: {name}\n\n@{name}"),
     }
 }
