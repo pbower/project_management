@@ -98,6 +98,25 @@ pub enum PendingAction {
     EditTicket(LeafId),
 }
 
+/// State for Mode 2 - the Document Workspace.
+///
+/// Owns the breadcrumb chain of leaf ids that anchors the doc list and the
+/// preview pane. `active_level` is the cursor position inside the breadcrumb
+/// (Left / Right moves it); `doc_cursor` is the cursor position inside the
+/// flat LHS list at the focused level.
+#[derive(Clone, Debug, Default)]
+pub struct DocumentsState {
+    /// Address chain from root to focused leaf. Empty when no ticket has
+    /// been selected via Mode 1 yet.
+    pub crumb: Vec<LeafId>,
+    /// Index into `crumb` of the active level. The renderer treats
+    /// `crumb[active_level]` as the focused ticket.
+    pub active_level: usize,
+    /// Selection index within the flattened LHS list of docs, memories, and
+    /// sections at the focused ticket.
+    pub doc_cursor: usize,
+}
+
 /// Hierarchy levels for navigation context.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum HierarchyLevel {
