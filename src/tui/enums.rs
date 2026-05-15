@@ -63,6 +63,41 @@ pub enum InputMode {
     Text,
 }
 
+/// What an active single-line input prompt is collecting.
+pub enum PromptType {
+    /// A path to a file to copy into the given ticket's `artifacts/` dir.
+    ArtifactPath(LeafId),
+}
+
+/// An active single-line input prompt overlaid on the current mode.
+pub struct PromptState {
+    pub prompt_type: PromptType,
+    pub buffer: String,
+}
+
+/// A transient surface layered over the current mode. At most one is active
+/// at a time, so a single enum is the source of truth - deliberately not a
+/// scatter of boolean flags that could fall out of sync.
+pub enum Overlay {
+    /// Nothing layered; the mode owns the screen.
+    None,
+    /// The modal help overlay, carrying its vertical scroll offset.
+    Help { scroll: u16 },
+    /// The memory side-panel for the selected ticket.
+    MemoryPanel,
+    /// A single-line input prompt.
+    Prompt(PromptState),
+}
+
+/// A deferred operation picked up by the run loop after the input phase,
+/// because it suspends the terminal and so cannot run mid-render. Distinct
+/// from [`Overlay`]: an overlay is a visible surface that input is routed to,
+/// this is a one-shot action consumed on the next loop tick.
+pub enum PendingAction {
+    /// Open the given ticket's `CLAUDE.md` in `$EDITOR`.
+    EditTicket(LeafId),
+}
+
 /// Hierarchy levels for navigation context.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum HierarchyLevel {

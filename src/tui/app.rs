@@ -39,7 +39,10 @@ use crate::task::Task;
 use crate::{
     db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
     tui::{
-        enums::{AppState, InputMode, HierarchyLevel, Mode, NavigationContext},
+        enums::{
+            AppState, HierarchyLevel, InputMode, Mode, NavigationContext, Overlay,
+            PendingAction, PromptState, PromptType,
+        },
         task_form::{
             TaskForm, ARTIFACTS_GLOBAL_ORDER, DESCRIPTION_GLOBAL_ORDER, DUE_GLOBAL_ORDER,
             ISSUE_LINK_GLOBAL_ORDER, KIND_GLOBAL_ORDER, PARENT_GLOBAL_ORDER, PRIORITY_GLOBAL_ORDER,
@@ -57,25 +60,6 @@ struct NavigationSnapshot {
     state: AppState,
     context: NavigationContext,
     selected_task: Option<LeafId>,
-}
-
-/// A deferred operation that cannot run inside the render loop because it
-/// suspends the terminal - the `$EDITOR` handoff being the case here.
-enum PendingAction {
-    /// Open the given ticket's `CLAUDE.md` in `$EDITOR`.
-    EditTicket(LeafId),
-}
-
-/// What an active single-line input prompt is collecting.
-enum PromptKind {
-    /// A path to a file to copy into the given ticket's `artifacts/` dir.
-    ArtifactPath(LeafId),
-}
-
-/// An active single-line input prompt overlaid on the current mode.
-struct PromptState {
-    kind: PromptKind,
-    buffer: String,
 }
 
 /// Main application state for the terminal user interface.
@@ -106,17 +90,12 @@ pub struct App {
     navigation_history: Vec<NavigationSnapshot>,
     max_history: usize,
     pm_dir: std::path::PathBuf,
-    /// Whether the modal help overlay is showing. Independent of `mode` and
-    /// `state` so help works from any surface.
-    help_open: bool,
-    /// Vertical scroll offset for the help overlay.
-    help_scroll: u16,
-    /// Whether the memory side-panel is showing for the selected ticket.
-    memory_panel_open: bool,
-    /// A deferred terminal-suspending action picked up by the run loop.
+    /// The transient surface layered over the current mode, if any. One field
+    /// rather than a scatter of flags so at most one overlay can be active.
+    overlay: Overlay,
+    /// A deferred terminal-suspending action picked up by the run loop. Kept
+    /// separate from `overlay` because it is an action to run, not a surface.
     pending_action: Option<PendingAction>,
-    /// An active single-line input prompt, when one is collecting input.
-    prompt: Option<PromptState>,
 }
 
 impl App {
@@ -150,11 +129,8 @@ impl App {
             navigation_history: Vec::new(),
             max_history: 10,
             pm_dir,
-            help_open: false,
-            help_scroll: 0,
-            memory_panel_open: false,
+            overlay: Overlay::None,
             pending_action: None,
-            prompt: None,
         };
         
         app.update_filtered_tasks();
@@ -642,8 +618,8 @@ impl App {
             // `a` adds an artifact to the selected ticket via a path prompt.
             KeyCode::Char('a') => {
                 if let Some(task_id) = self.selected_task_id() {
-                    self.prompt = Some(PromptState {
-                        kind: PromptKind::ArtifactPath(task_id),
+                    self.overlay = Overlay::Prompt(PromptState {
+                        prompt_type: PromptType::ArtifactPath(task_id),
                         buffer: String::new(),
                     });
                 } else {
@@ -652,7 +628,11 @@ impl App {
             }
             KeyCode::Char('i') => self.do_checkin(),
             KeyCode::Char('m') => {
-                self.memory_panel_open = !self.memory_panel_open;
+                self.overlay = if matches!(self.overlay, Overlay::MemoryPanel) {
+                    Overlay::None
+                } else {
+                    Overlay::MemoryPanel
+                };
             }
             KeyCode::Char('d') => {
                 if let Some(selected) = self.task_list_state.selected() {
@@ -733,8 +713,7 @@ impl App {
                 );
             }
             KeyCode::Char('h') => {
-                self.help_open = true;
-                self.help_scroll = 0;
+                self.overlay = Overlay::Help { scroll: 0 };
             }
             KeyCode::Char('r') => {
                 self.refresh_tasks();
@@ -1361,27 +1340,31 @@ impl App {
     /// input prompt. Mode-switch keys and the help shortcut are suppressed
     /// in this situation.
     fn is_capturing_text(&self) -> bool {
-        matches!(self.input_mode, InputMode::Text) || self.filter_active || self.prompt.is_some()
+        matches!(self.input_mode, InputMode::Text)
+            || self.filter_active
+            || matches!(self.overlay, Overlay::Prompt(_))
     }
 
     /// Handle a keystroke while an input prompt is collecting text.
     fn handle_prompt_input(&mut self, key: KeyCode) {
         match key {
             KeyCode::Esc => {
-                self.prompt = None;
+                self.overlay = Overlay::None;
             }
             KeyCode::Enter => {
-                if let Some(prompt) = self.prompt.take() {
+                // Replace the overlay with None and consume the prompt.
+                let prev = std::mem::replace(&mut self.overlay, Overlay::None);
+                if let Overlay::Prompt(prompt) = prev {
                     self.complete_prompt(prompt);
                 }
             }
             KeyCode::Backspace => {
-                if let Some(prompt) = self.prompt.as_mut() {
+                if let Overlay::Prompt(prompt) = &mut self.overlay {
                     prompt.buffer.pop();
                 }
             }
             KeyCode::Char(c) => {
-                if let Some(prompt) = self.prompt.as_mut() {
+                if let Overlay::Prompt(prompt) = &mut self.overlay {
                     prompt.buffer.push(c);
                 }
             }
@@ -1391,8 +1374,8 @@ impl App {
 
     /// Act on a confirmed prompt.
     fn complete_prompt(&mut self, prompt: PromptState) {
-        match prompt.kind {
-            PromptKind::ArtifactPath(leaf) => {
+        match prompt.prompt_type {
+            PromptType::ArtifactPath(leaf) => {
                 let raw = prompt.buffer.trim();
                 if raw.is_empty() {
                     return;
@@ -1437,10 +1420,18 @@ impl App {
     fn handle_help_overlay_input(&mut self, key: KeyCode) {
         match key {
             KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::F(1) => {
-                self.help_open = false;
+                self.overlay = Overlay::None;
             }
-            KeyCode::Up => self.help_scroll = self.help_scroll.saturating_sub(1),
-            KeyCode::Down => self.help_scroll = self.help_scroll.saturating_add(1),
+            KeyCode::Up => {
+                if let Overlay::Help { scroll } = &mut self.overlay {
+                    *scroll = scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::Down => {
+                if let Overlay::Help { scroll } = &mut self.overlay {
+                    *scroll = scroll.saturating_add(1);
+                }
+            }
             _ => {}
         }
     }
@@ -1468,20 +1459,20 @@ impl App {
 
                 // An active input prompt owns every keystroke until it is
                 // confirmed or cancelled.
-                if self.prompt.is_some() {
+                if matches!(self.overlay, Overlay::Prompt(_)) {
                     self.handle_prompt_input(key.code);
                     return Ok(false);
                 }
 
                 // Mode-switch keys win from any non-text-capturing surface,
-                // and close the help overlay as they switch.
+                // and close any active overlay as they switch.
                 if self.try_mode_switch(key.code) {
-                    self.help_open = false;
+                    self.overlay = Overlay::None;
                     return Ok(false);
                 }
 
                 // The help overlay is modal: while it is open it owns input.
-                if self.help_open {
+                if matches!(self.overlay, Overlay::Help { .. }) {
                     self.handle_help_overlay_input(key.code);
                     return Ok(false);
                 }
@@ -1490,8 +1481,7 @@ impl App {
                 if !self.is_capturing_text()
                     && matches!(key.code, KeyCode::Char('?') | KeyCode::F(1))
                 {
-                    self.help_open = true;
-                    self.help_scroll = 0;
+                    self.overlay = Overlay::Help { scroll: 0 };
                     return Ok(false);
                 }
 
@@ -2333,8 +2323,17 @@ impl App {
                     .title("Help - ^v scroll, ? or Esc to close"),
             )
             .wrap(Wrap { trim: false })
-            .scroll((self.help_scroll, 0));
+            .scroll((self.help_scroll(), 0));
         f.render_widget(paragraph, overlay);
+    }
+
+    /// Current help-overlay scroll offset. Returns 0 when the overlay is not
+    /// the help variant; callers should only invoke `render_help` while it is.
+    fn help_scroll(&self) -> u16 {
+        match self.overlay {
+            Overlay::Help { scroll } => scroll,
+            _ => 0,
+        }
     }
 
     /// Render a fullscreen text editing dialog for user stories or requirements.
@@ -2431,7 +2430,7 @@ impl App {
     fn render_status_bar(&mut self, f: &mut Frame, area: Rect) {
         let status_text = if !self.status_message.is_empty() {
             self.status_message.clone()
-        } else if self.help_open {
+        } else if matches!(self.overlay, Overlay::Help { .. }) {
             "Help: ^v scroll   ? / Esc close   Tab / 1 / 2 / 3 switch mode".to_string()
         } else if self.filter_active {
             format!(
@@ -2511,7 +2510,7 @@ impl App {
                     }
                 }
                 // The memory side-panel overlays the right edge of the list.
-                if self.memory_panel_open && self.state == AppState::TaskList {
+                if matches!(self.overlay, Overlay::MemoryPanel) && self.state == AppState::TaskList {
                     self.render_memory_panel(f, chunks[0]);
                 }
             }
@@ -2523,9 +2522,9 @@ impl App {
         self.render_status_bar(f, chunks[2]);
 
         // An active input prompt overlays the current mode.
-        if let Some(prompt) = self.prompt.as_ref() {
-            let label = match prompt.kind {
-                PromptKind::ArtifactPath(_) => {
+        if let Overlay::Prompt(prompt) = &self.overlay {
+            let label = match prompt.prompt_type {
+                PromptType::ArtifactPath(_) => {
                     "Add artifact - path to file (Enter to add, Esc to cancel)"
                 }
             };
@@ -2538,7 +2537,7 @@ impl App {
 
         // The help overlay is modal and mode-independent: drawn last so it
         // sits on top of whatever the current mode rendered.
-        if self.help_open {
+        if matches!(self.overlay, Overlay::Help { .. }) {
             self.render_help(f, f.area());
         }
     }
