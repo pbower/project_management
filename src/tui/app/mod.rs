@@ -1614,6 +1614,9 @@ impl App {
                 PromptType::ArtifactPath(_) => {
                     "Add artifact - path to file (Enter to add, Esc to cancel)"
                 }
+                PromptType::RenameTicket(_) => {
+                    "Rename or move - new title, or `move <ADDRESS>` (Enter / Esc)"
+                }
             };
             let area = centered_rect(70, 20, f.area());
             f.render_widget(Clear, area);
@@ -1777,6 +1780,20 @@ impl App {
             // ticket memory directories; the front-matter `memories:` list
             // drives which rows start linked.
             KeyCode::Char('m') => self.documents_open_memory_modal(),
+            // `r` opens a prompt that rewrites the focused ticket's title or
+            // moves it under a different parent (`move <ADDRESS>`).
+            KeyCode::Char('r') => {
+                let level = self.documents.active_level;
+                if level < self.documents.crumb.len() {
+                    let focus = self.documents.crumb[level];
+                    self.overlay = Overlay::Prompt(PromptState {
+                        prompt_type: PromptType::RenameTicket(focus),
+                        buffer: String::new(),
+                    });
+                } else {
+                    self.set_status_message("No ticket focused".to_string());
+                }
+            }
             _ => {}
         }
         Ok(false)

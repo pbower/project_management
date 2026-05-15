@@ -67,6 +67,9 @@ pub enum InputMode {
 pub enum PromptType {
     /// A path to a file to copy into the given ticket's `artifacts/` dir.
     ArtifactPath(LeafId),
+    /// A new title for the ticket, or a `move <ADDRESS>` instruction to
+    /// reparent it.
+    RenameTicket(LeafId),
 }
 
 /// An active single-line input prompt overlaid on the current mode.
