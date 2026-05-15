@@ -40,8 +40,8 @@ use crate::{
     db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
     tui::{
         enums::{
-            AppState, HierarchyLevel, InputMode, Mode, NavigationContext, Overlay,
-            PendingAction, PromptState, PromptType,
+            AppState, DocumentsState, HierarchyLevel, InputMode, Mode, NavigationContext,
+            Overlay, PendingAction, PromptState, PromptType,
         },
         task_form::{
             TaskForm, ARTIFACTS_GLOBAL_ORDER, DESCRIPTION_GLOBAL_ORDER, DUE_GLOBAL_ORDER,
@@ -96,6 +96,9 @@ pub struct App {
     /// A deferred terminal-suspending action picked up by the run loop. Kept
     /// separate from `overlay` because it is an action to run, not a surface.
     pending_action: Option<PendingAction>,
+    /// State for Mode 2 - the Document Workspace. Maintained across mode
+    /// switches so the cursor and crumb persist when the user returns.
+    documents: DocumentsState,
 }
 
 impl App {
@@ -131,6 +134,7 @@ impl App {
             pm_dir,
             overlay: Overlay::None,
             pending_action: None,
+            documents: DocumentsState::default(),
         };
         
         app.update_filtered_tasks();
@@ -1495,7 +1499,8 @@ impl App {
                         AppState::RequirementsDialog => self.handle_dialog_input(key.code, key.modifiers, false)?,
                         AppState::Confirm => self.handle_confirm_input(key.code, key.modifiers)?,
                     },
-                    Mode::Documents | Mode::Activity => self.handle_mode_stub_input(key.code)?,
+                    Mode::Documents => self.handle_documents_input(key.code, key.modifiers)?,
+                    Mode::Activity => self.handle_mode_stub_input(key.code)?,
                 };
                 if should_quit {
                     return Ok(true);
@@ -2514,7 +2519,7 @@ impl App {
                     self.render_memory_panel(f, chunks[0]);
                 }
             }
-            Mode::Documents => self.render_mode_stub(f, chunks[0], "Document Workspace", "Phase 8"),
+            Mode::Documents => self.render_documents(f, chunks[0]),
             Mode::Activity => self.render_mode_stub(f, chunks[0], "Activity View", "Phase 9"),
         }
 
@@ -2609,8 +2614,114 @@ impl App {
         f.render_widget(widget, panel);
     }
 
-    /// Placeholder screen for Modes 2 and 3 until Phases 8 and 9 build them
-    /// out. Shows which mode is selected and how to switch away.
+    /// Input dispatch for Mode 2 - the Document Workspace. Mode-switch keys
+    /// and `?` / `F1` for help are already consumed before this is reached.
+    /// Later commits in Phase 8 layer on navigation, $EDITOR shell-out, and
+    /// the artifact / memory / rename modals.
+    fn handle_documents_input(
+        &mut self,
+        key: KeyCode,
+        _modifiers: KeyModifiers,
+    ) -> io::Result<bool> {
+        match key {
+            KeyCode::Char('q') | KeyCode::Esc => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    /// Render Mode 2 - the Document Workspace. The breadcrumb at the top
+    /// shows the address chain for the focused ticket; the body below is a
+    /// two-pane split with the doc list on the left and the preview on the
+    /// right. This commit lays the skeleton; the panes are populated by
+    /// later commits in Phase 8.
+    fn render_documents(&mut self, f: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Breadcrumb header
+                Constraint::Min(0),    // Two-pane body
+            ])
+            .split(area);
+
+        let breadcrumb = self.documents_breadcrumb_line();
+        let header = Paragraph::new(breadcrumb)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!("[ {} ]", self.mode.label())),
+            )
+            .alignment(Alignment::Left);
+        f.render_widget(header, chunks[0]);
+
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(chunks[1]);
+
+        if self.documents.crumb.is_empty() {
+            // Without a focused ticket the body has nothing to render. Tell
+            // the user how to get one rather than show an empty pair of
+            // boxes that look broken.
+            let lhs = Paragraph::new(Line::from(
+                "No ticket focused. Switch to Mode 1 (key `1`) and pick one.",
+            ))
+            .block(Block::default().borders(Borders::ALL).title("Documents"))
+            .wrap(Wrap { trim: true });
+            f.render_widget(lhs, panes[0]);
+
+            let rhs = Paragraph::new("")
+                .block(Block::default().borders(Borders::ALL).title("Preview"));
+            f.render_widget(rhs, panes[1]);
+            return;
+        }
+
+        // Skeleton until commit 2 wires the real list + preview content.
+        let lhs = Paragraph::new("")
+            .block(Block::default().borders(Borders::ALL).title("Documents"));
+        f.render_widget(lhs, panes[0]);
+
+        let rhs = Paragraph::new("")
+            .block(Block::default().borders(Borders::ALL).title("Preview"));
+        f.render_widget(rhs, panes[1]);
+    }
+
+    /// Compose the single-line breadcrumb shown in the Mode 2 header. Each
+    /// segment names the type and leaf id of one level in the focused
+    /// ticket's parent chain; the active level is highlighted.
+    fn documents_breadcrumb_line(&self) -> Line<'_> {
+        if self.documents.crumb.is_empty() {
+            return Line::from(Span::styled(
+                "(no ticket focused)",
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        let mut spans: Vec<Span> = Vec::with_capacity(self.documents.crumb.len() * 2);
+        for (idx, leaf) in self.documents.crumb.iter().enumerate() {
+            if idx > 0 {
+                spans.push(Span::raw(" > "));
+            }
+            // The leaf's Display already prints the typed prefix, so the
+            // segment reads e.g. "TSK7" without further dressing. Later
+            // commits will append the ticket's title once it's loaded.
+            let label = leaf.to_string();
+            // The active segment is the one the cursor sits on in the
+            // breadcrumb; the rest are rendered plainly.
+            if idx == self.documents.active_level {
+                spans.push(Span::styled(
+                    label,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::raw(label));
+            }
+        }
+        Line::from(spans)
+    }
+
+    /// Placeholder screen for Mode 3 until Phase 9 builds it out. Shows which
+    /// mode is selected and how to switch away.
     fn render_mode_stub(&mut self, f: &mut Frame, area: Rect, title: &str, arrives_in: &str) {
         let body = vec![
             Line::from(""),
