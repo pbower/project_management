@@ -1,481 +1,227 @@
-# PM - Project Management CLI
+# pm - Local-first project management for humans and agents
 
-Command-line project management tool with hierarchical task organisation and an optional terminal user interface (TUI).
+`pm` is a single-binary project manager that runs in your terminal, talks to AI coding agents through MCP, and keeps every ticket, artifact, and memory as plain files on disk. Hand-edit in your editor of choice, version with `git`, and pick up where you left off in another machine or another decade.
 
-The key use case is rapid low-effort personal project planning for an individual, avoiding web-tool overhead.
+> **v1.0.0** ships with a redesigned data model, an MCP server, a three-tier memory system, and a refreshed TUI. The legacy v0.9.x JSON store is gone; the new format is documented in [docs/file-layout.md](docs/file-layout.md). Migration tooling is part of `pm doctor --migrate`.
 
-It creates a simple local file ~/.pm/tasks.json which it uses as the database, with basic CSV export,
-and no external integrations, so you retain complete control.
+[![CI](https://github.com/pbower/project_management/actions/workflows/ci.yml/badge.svg)](https://github.com/pbower/project_management/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/project_management.svg)](https://crates.io/crates/project_management)
 
-**Change Log**:
-V0.9.3: *Added Workflow Ticket Manager*
-V0.9.0-2: Initial Public Release
+## The 90-second story
 
-## Features
+```bash
+# Install (Rust toolchain required)
+cargo install project_management
 
-- **Hierarchical Task Organisation**: Organise work using a four-level hierarchy:
-  - **Product** → **Epic** → **Task** → **Subtask**
-  - **Milestone** (can be attached to any level)
+# Set up the workspace in your repo (creates .pm/)
+pm init
 
-- **Rich Task Metadata**:
-  - Title, summary, description, and user stories
-  - Requirements specification and artifacts tracking
-  - Priority levels (Must Have, Nice to Have, Cut First)
-  - Urgency matrix (Urgent/Important combinations)
-  - Process stages (Ideation → Design → Prototyping → Implementation → Testing → Refinement → Release)
-  - Project grouping and tag-based categorisation
-  - Due dates with flexible input formats
-  - Issue and PR links for development workflow integration
+# Make a project, a task under it, and a subtask under that
+pm add --kind project "PM tool"               # -> PRJ1
+pm add --kind task "Lock protocol" --parent PRJ1   # -> TSK1
+pm add --kind subtask "TTL heartbeat" --parent TSK1 # -> SBT1
 
-- **Multiple Interfaces**:
-  - Full-featured command-line interface for scripting and automation
-  - Interactive terminal user interface (TUI) for visual task management
-  - Web interface *(PLANNED)* for board status movements.
+# Drop a reference file under the task and watch ARTIFACTS.md update
+echo '...' > .pm/projects/PRJ1/tasks/TSK1/artifacts/schema.png
+pm artifact list TSK1
 
-- **Flexible Querying and Filtering**:
-  - Filter by status, kind, project, tags, due dates
-  - Sort by due date, priority, or ID
-  - Tree view for hierarchical relationships
-  - Ancestor and descendant navigation
+# Open the TUI for visual triage
+pm ui
 
-## Screenshots
+# Or start the MCP server so an agent can drive the same workspace
+pm mcp
+```
 
-### Main Menu
-<img width="2560" height="1595" alt="image" src="https://github.com/user-attachments/assets/5cfbf035-3206-4c56-bce0-373b1fb58680" />
+Every ticket is its own directory with a `CLAUDE.md` describing it. Agents read those files via the cwd cascade or via the MCP server; humans edit them in `$EDITOR`. The two ways stay in sync because they're the same files on disk.
 
-### Manage Workflow Queue
-<img width="2556" height="1589" alt="image" src="https://github.com/user-attachments/assets/21756bd4-d027-4a73-bd22-d07968ee33ac" />
+> *Demo GIF coming - until then, the example commands above are the complete getting-started sequence.*
 
-### Product-View
-<img width="2560" height="1571" alt="image" src="https://github.com/user-attachments/assets/1e884f8d-ee99-403b-95b8-8610502bfeae" />
+## Why it's different
 
-### Add Item
-<img width="2559" height="1599" alt="image" src="https://github.com/user-attachments/assets/819062fb-376e-4079-870e-8aa0d82e23f6" />
+| | Web-based PM tools | Other CLI PMs | `pm` |
+|---|---|---|---|
+| Runs offline | rarely | usually | always |
+| Stores tickets as files you can `grep` and `git diff` | no | sometimes | yes (one CLAUDE.md per ticket) |
+| Agent-ready out of the box | no | rarely | yes (MCP server, three-tier memory) |
+| Visual TUI for triage | no | rarely | yes |
+| Artifacts attached per-ticket | rarely | rarely | yes (per-ticket `artifacts/` folder + auto-curated index) |
+| Cross-platform single binary | n/a | yes | yes |
 
-### Hierarchical Views with Per-Level Colours
-<img width="2560" height="1599" alt="image" src="https://github.com/user-attachments/assets/16c6cc32-2dc5-4203-b595-bbe73905e8ac" />
+## What you get
 
+- **Hierarchical model**: `Project -> Product -> Epic -> Task -> Subtask`, plus `Milestone` as a cross-cutting tag. Each level is its own ticket type with its own id prefix (`PRJ1`, `PRD2`, `EPC3`, `TSK4`, `SBT5`, `MLS6`). Leaf ids are monotonic per type and never reused.
+- **CLAUDE.md per ticket**: front-matter for the structured metadata (status, priority, due, tags, deps, links, memories) and a markdown body with named sections (Description, Acceptance Criteria, Notes, ...). Each kind has a default body template; templates are user-overrideable.
+- **TUI**: three modes - ticket browser, activity feed, and a redesigned workflow board. Vim-style keybindings.
+- **MCP server**: `pm mcp` opens a stdio JSON-RPC server with 14 tools (list, get, read_context, read_artifact, read_memories, write_doc, write_memory, checkout, checkin, complete, next, add, link, events). Under 4.5 k tokens of tool descriptions; spec'd to fit a single agent context window.
+- **Three-tier memory**: user-scope, project-scope, ticket-scope. Front-matter `memories:` references resolve across tiers. PM does not write the user tier directly; that stays under Claude Code's auto-memory control.
+- **Per-ticket artifacts**: drop files in `artifacts/`, `ARTIFACTS.md` regenerates with file-name and timestamp entries. Hand-edited `desc:` and `tags:` fields survive sweeps. Rename via `pm artifact rename` preserves metadata.
+- **Activity feed**: every state-changing action appends one line to `.pm/events.log`. Tail it from another terminal with `pm tv`.
+- **Locks**: optional checkouts (`pm checkout TSK7`) so a busy agent can claim work without stepping on the human. Soft mode warns; hard mode rejects.
 
 ## Installation
 
-### Prerequisites
-
-- Rust 1.70+ (for building from source)
-
-### Building from Source
-
 ```bash
-git clone <repository-url>
-cd pm
-cargo build --release
+cargo install project_management
 ```
 
-The binary will be available at `target/release/pm`.
+Prebuilt binaries for Linux, macOS, and Windows are attached to each [GitHub release](https://github.com/pbower/project_management/releases).
 
-Alternatively, install it directly to ~/.cargo/bin with:
+## Quick reference
+
 ```bash
-cargo install --path .
+# Workspace
+pm init                            # initialise .pm/ in the current directory
+pm doctor                          # rebuild state.json from disk truth
+pm doctor --migrate                # migrate a legacy v0.9.x ~/.pm/tasks.json
+
+# Tickets
+pm add --kind task "Title" --parent EPC3
+pm list --kind task --status open
+pm view TSK7                       # inline view of front-matter + body
+pm complete TSK7
+pm delete TSK7                     # tombstones the id; no reuse
+
+# Context, artifacts, memory
+pm context TSK7                    # composed CLAUDE.md chain to TSK7
+pm artifact list TSK7
+pm artifact rename TSK7 old.png new.png
+pm memory list TSK7
+pm memory write --scope project --type feedback --name <name> "..."
+pm memory promote <name>           # user <-> project promotion
+
+# Templates
+pm template list                   # TaskTemplate presets
+pm template edit task              # section template for the Task kind
+
+# Workflow
+pm checkout TSK7 --intent "..."
+pm checkin TSK7 --summary "..."
+pm next --agent claude-be          # ready-for-work pick
+
+# UI and feeds
+pm ui                              # TUI
+pm tv                              # tail .pm/events.log
+pm mcp                             # JSON-RPC server on stdio
+
+# Help
+pm help
+pm help <verb>
 ```
 
-## Quick Start
+## Hierarchy and identity
 
-### Basic Task Management
+Six ticket types. The first letter you write is which one:
+
+| Prefix | Type | Lives under |
+|---|---|---|
+| `PRJ` | Project | `.pm/projects/<PRJ>/` |
+| `PRD` | Product | `<project>/products/<PRD>/` |
+| `EPC` | Epic | `<product>/epics/<EPC>/` |
+| `TSK` | Task | `<epic>/tasks/<TSK>/` |
+| `SBT` | Subtask | `<task>/subtasks/<SBT>/` |
+| `MLS` | Milestone | `<project>/milestones/<MLS>/` (or top-level for cross-project) |
+
+A ticket's leaf id (e.g. `TSK7`) is durable for its lifetime. Address forms like `PRJ1-PRD1-EPC3-TSK7` derive from the parent chain on disk and regenerate when a ticket moves. Stale address-form references continue to resolve through `aliases.json`.
+
+See [docs/file-layout.md](docs/file-layout.md) for the on-disk model in full.
+
+## Editor integration
+
+`pm edit TSK7` opens the ticket's CLAUDE.md in `$EDITOR`. The default sections (Description, Acceptance Criteria, Notes, etc.) come from the per-kind template; agents can recall them via the cwd cascade or the `read_context` MCP tool. The cascade picks up every `CLAUDE.md` on the path from the ticket directory up to the project root.
+
+Section editing is targeted: `pm write_doc TSK7 --section Description "..."` replaces one named section while leaving every other section and the front-matter untouched.
+
+See [docs/templates.md](docs/templates.md) for template details and customisation.
+
+## Agents (MCP)
 
 ```bash
-# Add a simple task
-pm add "Implement user authentication"
-
-# Add a task with metadata
-pm add "Design login flow" \
-  --desc "Create wireframes and user flow for login process" \
-  --project "auth-system" \
-  --tag "design,ux" \
-  --due "2024-12-31" \
-  --kind epic \
-  --priority must-have \
-  --urgency urgent-important
-
-# List all open tasks
-pm list
-
-# List tasks in tree view
-pm list --tree
-
-# View detailed task information
-pm view 1
-
-# Update a task
-pm update 1 --status in-progress --add-tags "frontend"
-
-# Complete a task
-pm complete 1
-
-# Delete a task
-pm delete 1
+pm mcp
 ```
 
-### Special Features
+Starts an MCP server on stdio. Add this to your agent's MCP config:
 
-#### Smart Date Parsing
-```bash
-# Natural language dates
-pm add "Weekend Task" --due "this weekend"
-pm add "Sprint Review" --due "next friday"
-pm add "Month End Report" --due "end of month"
-pm add "Next Week Task" --due "in 1w"
-pm add "Tomorrow's Meeting" --due "tomorrow"
+```json
+{
+  "mcpServers": {
+    "pm": {
+      "command": "pm",
+      "args": ["mcp"]
+    }
+  }
+}
 ```
 
-#### Task Templates
+The 14-tool surface is documented in [docs/mcp.md](docs/mcp.md). Notable bits:
+
+- Tools are mutate-or-read; mutating tools save atomically and emit a feed event.
+- `complete` can be gated behind a human-approval step via `.pm/config.toml`.
+- The user-scope memory tier is read-only from PM. Agents cannot write there through MCP; the schema reflects that.
+
+## Memory
+
+Three tiers cover the spectrum from "what I personally remember" to "what this ticket needs":
+
+- **User**: Claude Code's auto-memory store. PM reads; PM writes only through promote demotions.
+- **Project**: per-project, committed with the project.
+- **Ticket**: per-ticket, committed with the ticket.
+
+`pm memory link TSK7 feedback-testing` records a typed reference in TSK7's front-matter. The composed view annotates each reference with its tier tag so agents see which tier provided each note.
+
+Full semantics in [docs/memory.md](docs/memory.md).
+
+## Migration from v0.9.x
+
+The on-disk format has changed completely. The good news:
+
 ```bash
-# Create templates for reusable configurations
-pm template create "Bug Fix" \
-  --description "Standard bug fix template" \
-  --priority must-have \
-  --tags "bug,fix" \
-  --process-stage implementation
-
-# Use templates when creating tasks
-pm add "Authentication Issue" --template "Bug Fix"
-
-# Save existing tasks as templates
-pm template save 42 "My Custom Template"
-
-# Manage templates
-pm template list
-pm template delete "Old Template"
+pm doctor --migrate
 ```
 
-#### Bulk Operations
-```bash
-# Complete all tasks with specific tag
-pm complete --tag "sprint-1"
+reads your legacy `~/.pm/tasks.json` (or per-project JSON files) and writes the v1 `.pm/` tree alongside. Original files are preserved under `.legacy-backup/`; no data is lost. Once you're satisfied, you can delete the backup yourself.
 
-# Delete all tasks in a project
-pm delete --project "old-project"
+If you're starting fresh, just `pm init` in a new repo.
 
-# Complete all open tasks
-pm complete --status open
+## Configuration
+
+`.pm/config.toml` (optional) carries workspace-level toggles. Currently recognised keys:
+
+```toml
+# Gate the MCP `complete` tool behind explicit human approval.
+require_complete_approval = true
 ```
 
-#### CSV Export
-```bash
-# Export all tasks to CSV
-pm export --all
+## Storage and portability
 
-# Export filtered tasks
-pm export --tag "bug" --output "bug_report.csv"
-pm export --project "web-app" --output "project_tasks.csv"
+Everything PM writes lives under one workspace-local `.pm/` directory. Drop the workspace into a git repo and version it with your code. Multiple agents can drive the same workspace concurrently; per-ticket locks and the activity feed keep activity visible.
+
+PM stores paths in `state.json` using the local OS's separators. If you rsync a `.pm/` tree from one OS to another and the index ends up with mixed separators, run `pm doctor` on the target OS to rebuild a clean index. The on-disk tree itself is portable.
+
+## Project structure
+
 ```
-
-#### Shell Completions
-```bash
-# Generate completion scripts
-pm completions bash > ~/.bash_completion.d/pm
-pm completions zsh > ~/.zfunc/_pm
-pm completions fish > ~/.config/fish/completions/pm.fish
-```
-
-### Hierarchical Organisation
-
-```bash
-# Create a product
-pm add "E-commerce Platform" --kind product
-
-# Create an epic under the product
-pm add "User Management System" --kind epic --parent "E-commerce Platform"
-
-# Create tasks under the epic
-pm add "User Registration" --kind task --parent "User Management System"
-pm add "User Login" --kind task --parent "User Management System"
-
-# Create subtasks
-pm add "Form Validation" --kind subtask --parent "User Registration"
-pm add "Email Verification" --kind subtask --parent "User Registration"
-```
-
-### Terminal User Interface
-
-Launch the interactive TUI:
-
-```bash
-pm ui
-```
-
-The Terminal UI (TUI) provides:
-- Visual task browsing and editing
-- Hierarchical navigation
-- Form-based task creation and editing
-- Help system with keyboard shortcuts
-
-## Command Reference
-
-### Global Options
-
-- `--db <PATH>`: Specify custom database file location (default: `~/.pm/tasks.json`)
-
-### Commands
-
-#### `add` - Add a new task
-```bash
-pm add <TITLE> [OPTIONS]
-```
-
-**Options:**
-- `--desc <TEXT>`: Longer description
-- `--project <NAME>`: Project name
-- `--tag <TAG>`: Tags (comma-separated, repeatable)
-- `--due <DATE>`: Due date with smart parsing ("next friday", "end of week", "in 2w", "YYYY-MM-DD")
-- `--parent <NAME>`: Parent task name (or ID for legacy compatibility)
-- `--template <NAME>`: Use template for default values
-- `--kind <KIND>`: Task kind (product, epic, task, subtask, milestone) [default: task]
-- `--priority-level <LEVEL>`: Priority (must-have, nice-to-have, cut-first)
-- `--urgency <LEVEL>`: Urgency (urgent-important, urgent-not-important, not-urgent-important, not-urgent-not-important)
-- `--process-stage <STAGE>`: Process stage (ideation, design, prototyping, implementation, testing, refinement, release)
-- `--status <STATUS>`: Initial status (open, in-progress, done) [default: open]
-- `--summary <TEXT>`: One-line summary
-- `--user-story <TEXT>`: User story
-- `--requirements <TEXT>`: Requirements specification
-- `--artifacts <FILES>`: Artifact file paths (comma-separated)
-- `--issue-link <URL>`: Issue tracker URL
-- `--pr-link <URL>`: Pull request URL
-
-#### `list` - List tasks with filtering
-```bash
-pm list [OPTIONS]
-```
-
-**Options:**
-- `--all`: Include completed tasks
-- `--status <STATUS>`: Filter by status
-- `--kind <KIND>`: Filter by kind
-- `--project <PROJECT>`: Filter by project
-- `--tag <TAG>`: Filter by tags (repeatable)
-- `--due <FILTER>`: Due date filter (today, this-week, overdue, none)
-- `--tree`: Display as hierarchical tree
-- `--sort <KEY>`: Sort by (due, priority, id)
-- `--limit <N>`: Limit number of results
-
-#### `view` - View task details
-```bash
-pm view <ID_OR_NAME> [OPTIONS]
-```
-
-**Options:**
-- `--children`: Show child tasks
-- `--parents`: Show parent chain
-
-#### `update` - Update task fields
-```bash
-pm update <ID_OR_NAME> [OPTIONS]
-```
-
-**Options:** (Same as `add` command, plus)
-- `--add-tags <TAGS>`: Add tags
-- `--rm-tags <TAGS>`: Remove tags
-- `--clear-due`: Clear due date
-- `--clear-parent`: Remove parent relationship
-
-#### `complete` - Mark task as done
-```bash
-pm complete <ID_OR_NAME> [OPTIONS]
-# OR bulk operations:
-pm complete --tag <TAG>
-pm complete --project <PROJECT>
-pm complete --status <STATUS>
-```
-
-**Options:**
-- `--recurse`: Also complete all descendant tasks
-
-#### `reopen` - Reopen completed task
-```bash
-pm reopen <ID_OR_NAME>
-```
-
-#### `delete` - Delete task
-```bash
-pm delete <ID_OR_NAME> [OPTIONS]
-# OR bulk operations:
-pm delete --tag <TAG>
-pm delete --project <PROJECT>
-pm delete --status <STATUS>
-```
-
-**Options:**
-- `--cascade`: Also delete all descendant tasks
-
-#### `projects` - List all projects
-```bash
-pm projects
-```
-
-#### `tags` - List all tags with usage counts
-```bash
-pm tags
-```
-
-#### `ui` - Launch terminal user interface
-```bash
-pm ui
-```
-
-#### `template` - Manage task templates
-```bash
-pm template <ACTION>
-```
-
-**Actions:**
-- `create <NAME> [OPTIONS]`: Create new template
-- `save <TASK_ID> <NAME>`: Save existing task as template
-- `list`: List all templates
-- `delete <NAME>`: Delete a template
-
-#### `export` - Export tasks to CSV
-```bash
-pm export [OPTIONS]
-```
-
-**Options:**
-- `-o, --output <FILE>`: Output file (default: tasks.csv)
-- `--all`: Include completed tasks
-- `--project <PROJECT>`: Filter by project
-- `--tag <TAG>`: Filter by tag
-
-#### `completions` - Generate shell completions
-```bash
-pm completions <SHELL>
-```
-
-**Shells:** bash, zsh, fish
-
-## Data Storage
-
-Tasks are stored in a JSON file at `~/.pm/tasks.json` by default. You can specify a custom location using the `--db` option.
-
-The database format is human-readable JSON, making it easy to backup, sync, or integrate with other tools.
-
-## Hierarchy Rules
-
-The tool enforces these hierarchical relationships:
-- **Product** can contain **Epic**
-- **Epic** can contain **Task**
-- **Task** can contain **Subtask**
-- **Subtask** can contain **Subtask** (nested subtasks)
-- **Milestone** can be attached to any level
-
-Reason:
-At a personal level I have found this structure supports effective management
-of large-scale software projects, without being confronted with a sea of low-level task details prematurely.
-
-## Development Process Integration
-
-PM is designed to integrate with modern development workflows:
-
-- **Process Stages**: Track items through ideation → design → implementation → release
-- **Issue/PR Links**: Connect tasks to external tracking systems
-- **Artifacts**: Track associated files and deliverables
-- **Requirements**: Document formal specifications
-- **User Stories**: Capture user-focused requirements
-
-## Examples
-
-### Software Development Project
-
-```bash
-# Create product
-pm add "Task Management App" --kind product
-
-# Create epics
-pm add "Core Task System" --kind epic --parent "Task Management App"
-pm add "User Interface" --kind epic --parent "Task Management App"
-
-# Create tasks
-pm add "Task CRUD Operations" --kind task --parent "Core Task System" --process-stage implementation
-pm add "CLI Interface" --kind task --parent "User Interface" --process-stage design
-
-# Create subtasks with development metadata
-pm add "Add Task Command" --kind subtask --parent "Task CRUD Operations" \
-  --desc "Implement the add command with validation" \
-  --process-stage implementation \
-  --issue-link "https://github.com/user/repo/issues/42" \
-  --priority must-have
-```
-
-### Project Planning with Dates
-
-```bash
-# Sprint planning
-pm add "Sprint 1 Planning" --kind milestone --due "today"
-pm add "User Registration" --kind task --due "in 7d" --priority must-have
-pm add "User Login" --kind task --due "in 14d" --priority must-have
-
-# View sprint work
-pm list --due this-week --tree
+pm/
+├── src/                     # crate source
+├── tests/                   # phase acceptance tests
+├── examples/                # scaffolds demonstrating the building blocks
+├── docs/                    # reference docs for each major surface
+├── .github/workflows/       # CI matrix (Linux/macOS/Windows)
+├── README.md                # you are here
+├── CHANGELOG.md             # release notes
+└── Cargo.toml
 ```
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass: `cargo test`
-5. Submit a pull request
-
-## Getting Started - UI
-
-### Understanding the Hierarchy
-
-The TUI is built around a four-level hierarchy designed to manage complex projects from high-level vision down to implementation details:
-
-- **Product**: The overall deliverable or system (e.g., "E-commerce Platform")
-- **Epic**: Major features or components (e.g., "User Management System", "Payment Processing")
-- **Task**: Specific work items (e.g., "User Registration Form", "Payment Gateway Integration")
-- **Subtask**: Implementation details (e.g., "Email Validation", "API Error Handling")
-
-This structure prevents cognitive overload by allowing you to focus on the appropriate level of abstraction for your current context.
-Additionally, it enables farming low-level (the low-complexity, time-consuming) work out to LLM's such as Claude Code, within manageable system boundaries.
-
-### Navigation Controls
-
-**Basic Navigation:**
-- `LEFT/RIGHT`: Navigate between hierarchy levels (Product ↔ Epic ↔ Task ↔ Subtask)
-- `UP/DOWN`: Move within the current list
-- `ENTER`: Select/drill down into items
-- `ESC`: Go back/up one level
-
-**Advanced Navigation:**
-- `SHIFT+LEFT/SHIFT+RIGHT`: Move items between hierarchy levels (promote/demote)
-- `TAB`: Switch between different views (List, Tree, Calendar, etc.)
-- `?`: Help system with full keyboard shortcuts
-
-The LEFT/RIGHT movement lets you "zoom out" to see the big picture or "zoom in" to focus on specific implementation details, while SHIFT+LEFT/RIGHT actually restructures your project hierarchy.
-
-## Reason This Exists
-
-Most terminal-based project management tools fall into two categories:
-1. **Simple todo lists** that lack hierarchical organisation, or time-based task-only pomodoro counters
-2. **Team collaboration platforms** (Jira, Asana, etc.) that are web-based and designed for multiple stakeholders
-
-There are few high-quality options for **individual developers** who need:
-- **Terminal-native workflow** that integrates with their development environment
-- **Hierarchical thinking** to manage complex projects from vision to implementation
-- **Local control** without web tool overhead or forced collaboration features
-- **Rapid capture** of ideas without context switching to browser tabs
-
-PM fills this gap by providing a personal project management system that scales from quick task capture to complex multi-epic software projects, all while staying in your terminal where development work happens.
-
-## Roadmap
-
-The following are potential future enhancements:
-1. GIT issue integration (likely)
-2. Webbased view - simply for rapid status changing on a simple board.
-
-All free, and user-local, and development will likely stop there, rather than overcooking things,
-so that setup remains zero-config and ready-to-go.
+PRs welcome. CI runs `cargo fmt --check`, `cargo clippy` (advisory at v1.0), `cargo build`, and `cargo test --all` on all three operating systems. A v1.0 stable release lives on `main`; phase branches carry larger reworks.
 
 ## License
 
-MPL Licensed. See LICENSE for details.
+MPL-2.0. See [LICENSE](LICENSE).
 
----
+## See also
+
+- [docs/file-layout.md](docs/file-layout.md) - the on-disk model.
+- [docs/mcp.md](docs/mcp.md) - the JSON-RPC tool catalogue.
+- [docs/memory.md](docs/memory.md) - the three-tier memory model.
+- [docs/templates.md](docs/templates.md) - per-kind section templates and TaskTemplate presets.
