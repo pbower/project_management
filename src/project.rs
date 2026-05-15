@@ -50,7 +50,7 @@ impl Project {
     /// Create the database file for this project if it doesn't exist.
     pub fn create_if_not_exists(&self) -> Result<(), std::io::Error> {
         if !self.file_path.exists() {
-            let db = Database::default();
+            let mut db = Database::default();
             db.save(&self.file_path)?;
         }
         Ok(())

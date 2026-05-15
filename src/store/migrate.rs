@@ -236,7 +236,7 @@ mod tests {
 
     fn write_db(dir: &Path, name: &str, tasks: Vec<Task>) -> PathBuf {
         let p = dir.join(name);
-        let db = Database { tasks, state: State::fresh() };
+        let mut db = Database { tasks, state: State::fresh() };
         db.save(&p).unwrap();
         p
     }

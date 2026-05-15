@@ -1,6 +1,6 @@
 //! Enumerations for TUI state management.
 
-use crate::store::LeafId;
+use crate::store::{LeafId, MemoryRef};
 
 /// Top-level TUI mode. Mode 1 (Tickets) hosts the existing per-screen
 /// [`AppState`] flow; Modes 2 and 3 are their own surfaces, stubbed until
@@ -67,6 +67,9 @@ pub enum InputMode {
 pub enum PromptType {
     /// A path to a file to copy into the given ticket's `artifacts/` dir.
     ArtifactPath(LeafId),
+    /// A new title for the ticket, or a `move <ADDRESS>` instruction to
+    /// reparent it.
+    RenameTicket(LeafId),
 }
 
 /// An active single-line input prompt overlaid on the current mode.
@@ -87,6 +90,22 @@ pub enum Overlay {
     MemoryPanel,
     /// A single-line input prompt.
     Prompt(PromptState),
+    /// The Mode 2 modal for linking and unlinking memories.
+    MemoryLink(MemoryLinkState),
+}
+
+/// One row in the [`MemoryLinkState`] modal.
+pub struct MemoryLinkRow {
+    pub reference: MemoryRef,
+    pub linked: bool,
+}
+
+/// State for the memory link/unlink modal in Mode 2.
+pub struct MemoryLinkState {
+    pub ticket: LeafId,
+    pub rows: Vec<MemoryLinkRow>,
+    pub cursor: usize,
+    pub dirty: bool,
 }
 
 /// A deferred operation picked up by the run loop after the input phase,
@@ -96,6 +115,15 @@ pub enum Overlay {
 pub enum PendingAction {
     /// Open the given ticket's `CLAUDE.md` in `$EDITOR`.
     EditTicket(LeafId),
+    /// Open an arbitrary file in `$EDITOR`, optionally jumping the cursor
+    /// to the given section heading. The owning ticket is tracked so the
+    /// post-edit hooks (event emission, artifact sweep, task refresh) target
+    /// the right node.
+    EditDoc {
+        ticket: LeafId,
+        path: std::path::PathBuf,
+        section: Option<String>,
+    },
 }
 
 /// State for Mode 2 - the Document Workspace.

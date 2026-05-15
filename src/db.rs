@@ -88,26 +88,30 @@ impl Database {
     /// `state.json` is rewritten so `state.items` reflects the current set of
     /// tasks; `state.next` and `state.tombstones` are preserved across the
     /// save so id allocation history survives.
-    pub fn save(&self, pm_dir: &Path) -> std::io::Result<()> {
+    ///
+    /// Takes `&mut self` and rewrites `self.state.items` in place. Callers
+    /// that need to compare pre- and post-save paths for a leaf (e.g.
+    /// `cmd_move` cleaning up a now-vacated directory) can read
+    /// `self.state.items[leaf]` after `save` returns and see the new path.
+    pub fn save(&mut self, pm_dir: &Path) -> std::io::Result<()> {
         let layout = Layout::at(pm_dir);
         layout
             .init()
             .map_err(|e| std::io::Error::other(format!("layout init: {e}")))?;
 
-        // Cloning state lets us rebuild items without losing the next /
-        // tombstones counters held on the in-memory db.
-        let mut state = self.state.clone();
+        // Split the borrow into tasks (read) and state (write) so the loop
+        // can mutate state.items while still iterating tasks.
+        let Database { tasks, state } = self;
         state.items.clear();
 
-        let id_index: HashMap<LeafId, usize> = self
-            .tasks
+        let id_index: HashMap<LeafId, usize> = tasks
             .iter()
             .enumerate()
             .map(|(i, t)| (t.id, i))
             .collect();
 
-        for task in &self.tasks {
-            let address = match build_address(task, &self.tasks, &id_index) {
+        for task in tasks.iter() {
+            let address = match build_address(task, tasks, &id_index) {
                 Some(a) => a,
                 None => {
                     // A task referencing a missing parent in this Database

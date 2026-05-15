@@ -39,8 +39,8 @@ use crate::{
     db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
     tui::{
         enums::{
-            AppState, DocumentsState, InputMode, Mode, NavigationContext,
-            Overlay, PendingAction, PromptState, PromptType,
+            AppState, DocumentsState, InputMode, MemoryLinkRow, MemoryLinkState, Mode,
+            NavigationContext, Overlay, PendingAction, PromptState, PromptType,
         },
         task_form::{
             TaskForm, ARTIFACTS_GLOBAL_ORDER, DESCRIPTION_GLOBAL_ORDER, DUE_GLOBAL_ORDER,
@@ -891,6 +891,13 @@ impl App {
                     return Ok(false);
                 }
 
+                // The memory link modal owns input while it is open. Closing
+                // it persists any toggles back to the ticket's front-matter.
+                if matches!(self.overlay, Overlay::MemoryLink(_)) {
+                    self.handle_memory_link_input(key.code);
+                    return Ok(false);
+                }
+
                 // Mode-switch keys win from any non-text-capturing surface,
                 // and close any active overlay as they switch.
                 if self.try_mode_switch(key.code) {
@@ -1607,6 +1614,9 @@ impl App {
                 PromptType::ArtifactPath(_) => {
                     "Add artifact - path to file (Enter to add, Esc to cancel)"
                 }
+                PromptType::RenameTicket(_) => {
+                    "Rename or move - new title, or `move <ADDRESS>` (Enter / Esc)"
+                }
             };
             let area = centered_rect(70, 20, f.area());
             f.render_widget(Clear, area);
@@ -1615,11 +1625,56 @@ impl App {
             f.render_widget(widget, area);
         }
 
+        // The memory link / unlink modal overlays the current mode.
+        if let Overlay::MemoryLink(state) = &self.overlay {
+            self.render_memory_link_overlay(f, state);
+        }
+
         // The help overlay is modal and mode-independent: drawn last so it
         // sits on top of whatever the current mode rendered.
         if matches!(self.overlay, Overlay::Help { .. }) {
             self.render_help(f, f.area());
         }
+    }
+
+    /// Render the memory link / unlink modal. Each row shows `[x]` or `[ ]`
+    /// based on the row's `linked` flag, followed by the memory reference's
+    /// `@<name>` form and a `[scope]` annotation.
+    fn render_memory_link_overlay(&self, f: &mut Frame, state: &MemoryLinkState) {
+        let area = centered_rect(70, 50, f.area());
+        f.render_widget(Clear, area);
+
+        let mut lines: Vec<Line> = Vec::new();
+        if state.rows.is_empty() {
+            lines.push(Line::from("No project- or ticket-scope memories on disk."));
+            lines.push(Line::from("Drop a file into memories/ and reopen this modal."));
+        } else {
+            for (idx, row) in state.rows.iter().enumerate() {
+                let marker = if row.linked { "[x]" } else { "[ ]" };
+                let label = memory_ref_label(&row.reference);
+                let line = format!("{marker} {label}");
+                let style = if idx == state.cursor {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::from(Span::styled(line, style)));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Space / Enter toggle   Up / Down move   Esc or m closes (saves)",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        let title = format!("Memories - link / unlink ({}, {} rows)",
+            state.ticket,
+            state.rows.len(),
+        );
+        let widget = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .wrap(Wrap { trim: false });
+        f.render_widget(widget, area);
     }
 
     /// Render the activity footer - the last three entries from `events.log`
@@ -1704,9 +1759,323 @@ impl App {
             KeyCode::Down => self.documents_cursor_move(1),
             KeyCode::Left => self.documents_level_move(-1),
             KeyCode::Right => self.documents_level_move(1),
+            KeyCode::Enter => self.documents_open_selected(),
+            // `a` adds an artifact to the focused ticket via a path prompt.
+            // The prompt completion path (in app::prompt) handles the copy
+            // and the ARTIFACTS.md sweep.
+            KeyCode::Char('a') => {
+                let level = self.documents.active_level;
+                if level < self.documents.crumb.len() {
+                    let focus = self.documents.crumb[level];
+                    self.overlay = Overlay::Prompt(PromptState {
+                        prompt_type: PromptType::ArtifactPath(focus),
+                        buffer: String::new(),
+                    });
+                } else {
+                    self.set_status_message("No ticket focused".to_string());
+                }
+            }
+            // `m` opens the memory link/unlink modal for the focused ticket.
+            // Memories are enumerated fresh from the on-disk project and
+            // ticket memory directories; the front-matter `memories:` list
+            // drives which rows start linked.
+            KeyCode::Char('m') => self.documents_open_memory_modal(),
+            // `r` opens a prompt that rewrites the focused ticket's title or
+            // moves it under a different parent (`move <ADDRESS>`).
+            KeyCode::Char('r') => {
+                let level = self.documents.active_level;
+                if level < self.documents.crumb.len() {
+                    let focus = self.documents.crumb[level];
+                    self.overlay = Overlay::Prompt(PromptState {
+                        prompt_type: PromptType::RenameTicket(focus),
+                        buffer: String::new(),
+                    });
+                } else {
+                    self.set_status_message("No ticket focused".to_string());
+                }
+            }
             _ => {}
         }
         Ok(false)
+    }
+
+    /// Build the memory link/unlink modal for the focused ticket. Project-
+    /// scope memories live under `<pm_dir>/projects/<PRJ>/memories/`;
+    /// ticket-scope memories live under the focused ticket's own
+    /// `memories/` directory. User-scope memories are not yet enumerated
+    /// here.
+    fn documents_open_memory_modal(&mut self) {
+        let level = self.documents.active_level;
+        if level >= self.documents.crumb.len() {
+            self.set_status_message("No ticket focused".to_string());
+            return;
+        }
+        let focus = self.documents.crumb[level];
+        let focus_chain: Vec<LeafId> =
+            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let layout = crate::store::Layout::at(&self.pm_dir);
+        let focus_dir = match crate::store::AddressId::new(focus_chain.clone()) {
+            Ok(a) => layout.root.join(layout.directory_for(&a)),
+            Err(_) => {
+                self.set_status_message("Invalid address chain".to_string());
+                return;
+            }
+        };
+
+        // Project-scope memories: walk the crumb for the first PRJ leaf and
+        // scan its memories/ dir.
+        let mut available: Vec<MemoryRef> = Vec::new();
+        if let Some(prj) = self
+            .documents
+            .crumb
+            .iter()
+            .find(|l| l.prefix() == crate::store::TypePrefix::Project)
+        {
+            if let Ok(prj_addr) = crate::store::AddressId::new(vec![*prj]) {
+                let prj_dir = layout.root.join(layout.directory_for(&prj_addr));
+                for name in list_memory_names(&prj_dir.join("memories")) {
+                    available.push(MemoryRef::Project(name));
+                }
+            }
+        }
+        // Ticket-scope memories under the focused ticket's directory.
+        for name in list_memory_names(&focus_dir.join("memories")) {
+            available.push(MemoryRef::Ticket(name));
+        }
+
+        // Pull the currently-linked memories from the ticket's front-matter
+        // so the modal starts with the right rows ticked. Any linked memory
+        // not on disk is included as a row so the user can see and unlink
+        // dangling references.
+        let claude_md = focus_dir.join("CLAUDE.md");
+        let linked: Vec<MemoryRef> = crate::store::Ticket::read(&claude_md)
+            .map(|t| t.front_matter.memories)
+            .unwrap_or_default();
+
+        let mut rows: Vec<MemoryLinkRow> = Vec::new();
+        for available_ref in &available {
+            let already = linked.iter().any(|l| memory_refs_equal(l, available_ref));
+            rows.push(MemoryLinkRow {
+                reference: available_ref.clone(),
+                linked: already,
+            });
+        }
+        for linked_ref in &linked {
+            if !available.iter().any(|a| memory_refs_equal(a, linked_ref)) {
+                rows.push(MemoryLinkRow {
+                    reference: linked_ref.clone(),
+                    linked: true,
+                });
+            }
+        }
+
+        self.overlay = Overlay::MemoryLink(MemoryLinkState {
+            ticket: focus,
+            rows,
+            cursor: 0,
+            dirty: false,
+        });
+    }
+
+    /// Route input to the open memory link modal. Up/Down moves the cursor,
+    /// Space/Enter toggles the highlighted row, Esc/m closes and persists.
+    fn handle_memory_link_input(&mut self, key: KeyCode) {
+        let Overlay::MemoryLink(state) = &mut self.overlay else { return };
+        let rows_len = state.rows.len();
+        match key {
+            KeyCode::Up => {
+                if state.cursor > 0 {
+                    state.cursor -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if state.cursor + 1 < rows_len {
+                    state.cursor += 1;
+                }
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                if let Some(row) = state.rows.get_mut(state.cursor) {
+                    row.linked = !row.linked;
+                    state.dirty = true;
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('m') | KeyCode::Char('q') => {
+                let prev = std::mem::replace(&mut self.overlay, Overlay::None);
+                if let Overlay::MemoryLink(state) = prev {
+                    self.persist_memory_link(state);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Write the toggled memory list back to the focused ticket's CLAUDE.md
+    /// and emit `memory-link` / `memory-unlink` events for each change. If
+    /// nothing was toggled the function is a no-op.
+    fn persist_memory_link(&mut self, state: MemoryLinkState) {
+        if !state.dirty {
+            return;
+        }
+        let ticket = state.ticket;
+        let level = self.documents.active_level;
+        if level >= self.documents.crumb.len() {
+            return;
+        }
+        let focus_chain: Vec<LeafId> =
+            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let layout = crate::store::Layout::at(&self.pm_dir);
+        let address = match crate::store::AddressId::new(focus_chain) {
+            Ok(a) => a,
+            Err(_) => return,
+        };
+        let focus_dir = layout.root.join(layout.directory_for(&address));
+        let claude_md = focus_dir.join("CLAUDE.md");
+
+        let mut ticket_doc = match crate::store::Ticket::read(&claude_md) {
+            Ok(t) => t,
+            Err(e) => {
+                self.set_status_message(format!("memory write failed: {e}"));
+                return;
+            }
+        };
+
+        let before: Vec<MemoryRef> = ticket_doc.front_matter.memories.clone();
+        let after: Vec<MemoryRef> = state
+            .rows
+            .iter()
+            .filter(|r| r.linked)
+            .map(|r| r.reference.clone())
+            .collect();
+
+        let added: Vec<MemoryRef> = after
+            .iter()
+            .filter(|a| !before.iter().any(|b| memory_refs_equal(a, b)))
+            .cloned()
+            .collect();
+        let removed: Vec<MemoryRef> = before
+            .iter()
+            .filter(|b| !after.iter().any(|a| memory_refs_equal(a, b)))
+            .cloned()
+            .collect();
+
+        ticket_doc.front_matter.memories = after;
+        if let Err(e) = ticket_doc.write_to(&focus_dir) {
+            self.set_status_message(format!("memory write failed: {e}"));
+            return;
+        }
+
+        for memref in &added {
+            let _ = events::emit_event(
+                &self.pm_dir,
+                "memory-link",
+                Some(ticket),
+                Some(memory_ref_label(memref).as_str()),
+            );
+        }
+        for memref in &removed {
+            let _ = events::emit_event(
+                &self.pm_dir,
+                "memory-unlink",
+                Some(ticket),
+                Some(memory_ref_label(memref).as_str()),
+            );
+        }
+
+        self.refresh_tasks();
+        self.set_status_message(format!(
+            "{ticket}: memories {} added, {} removed",
+            added.len(),
+            removed.len(),
+        ));
+    }
+
+    /// Resolve the highlighted Mode 2 row to an `$EDITOR` target and queue a
+    /// [`PendingAction::EditDoc`]. Sections jump to their heading line on
+    /// editors that support it; arbitrary files open at the top.
+    fn documents_open_selected(&mut self) {
+        let level = self.documents.active_level;
+        if level >= self.documents.crumb.len() {
+            return;
+        }
+        let focus = self.documents.crumb[level];
+        let items = self.documents_pane_items();
+        let Some(item) = items.get(self.documents.doc_cursor) else { return };
+        let focus_chain: Vec<LeafId> =
+            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let address = match crate::store::AddressId::new(focus_chain) {
+            Ok(a) => a,
+            Err(_) => return,
+        };
+        let layout = crate::store::Layout::at(&self.pm_dir);
+        let abs = layout.root.join(layout.directory_for(&address));
+        let claude_md = abs.join("CLAUDE.md");
+
+        match item {
+            DocsPaneItem::Header(_) | DocsPaneItem::Note(_) => {
+                // Headers and notes do not open anything.
+            }
+            DocsPaneItem::Doc { path, .. } => {
+                self.pending_action = Some(PendingAction::EditDoc {
+                    ticket: focus,
+                    path: path.clone(),
+                    section: None,
+                });
+            }
+            DocsPaneItem::Section { name } => {
+                self.pending_action = Some(PendingAction::EditDoc {
+                    ticket: focus,
+                    path: claude_md,
+                    section: Some(name.clone()),
+                });
+            }
+            DocsPaneItem::Memory(reference) => {
+                // Resolve project- and ticket-scope memories to a file path.
+                // User-scope memories live under ~/.claude/projects/* and the
+                // mapping from the current workspace to that location is not
+                // yet wired; surface a status message and keep going.
+                if let Some(memory_path) = self.resolve_memory_path(reference, &abs) {
+                    self.pending_action = Some(PendingAction::EditDoc {
+                        ticket: focus,
+                        path: memory_path,
+                        section: None,
+                    });
+                } else {
+                    self.set_status_message(
+                        "user-scope memory editing not wired in this phase".to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Compute the on-disk path for a memory reference relative to the
+    /// focused ticket's directory. Returns `None` for user-scope memories
+    /// (their location depends on the global Claude memory dir which is not
+    /// yet plumbed into the TUI).
+    fn resolve_memory_path(
+        &self,
+        reference: &MemoryRef,
+        focus_dir: &std::path::Path,
+    ) -> Option<std::path::PathBuf> {
+        match reference {
+            MemoryRef::User(_) => None,
+            MemoryRef::Project(name) => {
+                // Walk up the crumb to find the nearest PRJ leaf, then map
+                // to projects/<PRJ>/memories/<name>.md under .pm/.
+                let prj_leaf = self
+                    .documents
+                    .crumb
+                    .iter()
+                    .find(|l| l.prefix() == crate::store::TypePrefix::Project)?;
+                let layout = crate::store::Layout::at(&self.pm_dir);
+                let address = crate::store::AddressId::new(vec![*prj_leaf]).ok()?;
+                let project_dir = layout.root.join(layout.directory_for(&address));
+                Some(project_dir.join("memories").join(format!("{name}.md")))
+            }
+            MemoryRef::Ticket(name) => {
+                Some(focus_dir.join("memories").join(format!("{name}.md")))
+            }
+        }
     }
 
     /// Move the breadcrumb focus by `delta` levels (Left = -1, Right = +1).
@@ -2050,28 +2419,147 @@ impl App {
                         return Ok(());
                     }
                 };
-
-                // Hand the terminal to the editor, then take it back.
-                disable_raw_mode()?;
-                execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
-                let status = std::process::Command::new(&editor).arg(&claude_path).status();
-                enable_raw_mode()?;
-                execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
-                terminal.clear()?;
-
-                match status {
-                    Ok(_) => {
-                        self.refresh_tasks();
-                        let _ = events::emit_event(&self.pm_dir, "edit", Some(leaf), None);
-                        self.set_status_message(format!("{leaf}: edited in $EDITOR"));
-                    }
-                    Err(e) => self.set_status_message(format!("editor failed: {e}")),
+                let invocation = editor_invocation_for(&claude_path, None);
+                self.run_editor(terminal, leaf, &claude_path, &invocation)?;
+            }
+            PendingAction::EditDoc { ticket, path, section } => {
+                if !path.exists() {
+                    self.set_status_message(format!(
+                        "{}: does not exist on disk",
+                        path.display()
+                    ));
+                    return Ok(());
                 }
+                let invocation = editor_invocation_for(&path, section.as_deref());
+                self.run_editor(terminal, ticket, &path, &invocation)?;
             }
         }
         Ok(())
     }
+
+    /// Suspend the terminal, run the editor invocation, then resume. On
+    /// success, refresh tasks, sweep the focused ticket's artifacts if the
+    /// file lives under one, and emit an `edit` event.
+    fn run_editor<B: Backend + std::io::Write>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        ticket: LeafId,
+        path: &std::path::Path,
+        invocation: &EditorInvocation,
+    ) -> io::Result<()> {
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+        let mut command = std::process::Command::new(&invocation.program);
+        for arg in &invocation.args {
+            command.arg(arg);
+        }
+        let status = command.status();
+        enable_raw_mode()?;
+        execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+        terminal.clear()?;
+
+        match status {
+            Ok(_) => {
+                self.refresh_tasks();
+                // If the edit landed under an artifacts/ directory, rerun the
+                // sweep so the sibling ARTIFACTS.md reflects any new file the
+                // editor wrote on save (e.g. quick scratch notes).
+                if let Some(parent) = path.parent() {
+                    if parent.file_name().and_then(|n| n.to_str()) == Some("artifacts") {
+                        let _ = crate::store::artifacts::sweep_dir(parent, ticket);
+                    }
+                }
+                let _ = events::emit_event(&self.pm_dir, "edit", Some(ticket), None);
+                self.set_status_message(format!("{ticket}: edited in $EDITOR"));
+            }
+            Err(e) => self.set_status_message(format!("editor failed: {e}")),
+        }
+        Ok(())
+    }
+}
+
+/// Editor invocation: program + args. Built by `editor_invocation_for` so
+/// section-jump arguments stay close to the editor-name detection logic.
+struct EditorInvocation {
+    program: String,
+    args: Vec<std::ffi::OsString>,
+}
+
+/// Build the editor invocation for `path`, optionally jumping the cursor to
+/// the heading line of `section` (`# <section>`). Editor selection follows
+/// `$EDITOR`; an empty / unset env var falls back to `nano`.
+///
+/// Section-jump arguments (PM_DESIGN.md §8.4):
+///
+/// | Editor   | Argument                |
+/// |----------|-------------------------|
+/// | nvim/vim | `+/^# <section>`        |
+/// | nano     | `+<line>`               |
+/// | emacs    | `+<line>`               |
+/// | helix/hx | `+<line>`               |
+/// | other    | no jump (opens at top)  |
+fn editor_invocation_for(
+    path: &std::path::Path,
+    section: Option<&str>,
+) -> EditorInvocation {
+    use std::ffi::OsString;
+
+    let editor_env = std::env::var("EDITOR").unwrap_or_default();
+    let program = if editor_env.trim().is_empty() {
+        "nano".to_string()
+    } else {
+        editor_env
+    };
+    let stem = std::path::Path::new(&program)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(program.as_str())
+        .to_ascii_lowercase();
+
+    let mut args: Vec<OsString> = Vec::new();
+    if let Some(sec) = section {
+        match stem.as_str() {
+            "nvim" | "vim" => {
+                args.push(OsString::from(format!("+/^# {}", regex_escape_vim(sec))));
+            }
+            "nano" | "emacs" | "helix" | "hx" => {
+                if let Some(line) = find_section_line(path, sec) {
+                    args.push(OsString::from(format!("+{line}")));
+                }
+            }
+            _ => {} // unknown editor: open at top
+        }
+    }
+    args.push(OsString::from(path));
+    EditorInvocation { program, args }
+}
+
+/// Escape vim/nvim regex meta-characters likely to appear in a section name.
+fn regex_escape_vim(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(
+            c,
+            '\\' | '.' | '*' | '+' | '?' | '^' | '$' | '[' | ']' | '(' | ')' | '|' | '{' | '}'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Find the 1-based line number of `# <section>` in `path`. Matches the
+/// section parser's convention: level-1 ATX heading on its own line.
+fn find_section_line(path: &std::path::Path, section: &str) -> Option<usize> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let target = format!("# {section}");
+    for (idx, line) in content.lines().enumerate() {
+        if line.trim_end() == target {
+            return Some(idx + 1);
+        }
+    }
+    None
 }
 
 /// One row in the LHS list of Mode 2. Renderer-private; the variants drive
@@ -2155,5 +2643,49 @@ fn documents_preview_memory(reference: &MemoryRef) -> String {
         MemoryRef::User(name) => format!("user-scope memory: {name}\n\n@{name}"),
         MemoryRef::Project(name) => format!("project-scope memory: {name}\n\n@{name}"),
         MemoryRef::Ticket(name) => format!("ticket-scope memory: {name}\n\n@{name}"),
+    }
+}
+
+/// List memory file stems under `dir`. Drops the `.md` suffix and skips
+/// hidden files / non-files. Sorted alphabetically.
+fn list_memory_names(dir: &std::path::Path) -> Vec<String> {
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut names: Vec<String> = read_dir
+        .filter_map(|d| d.ok())
+        .filter(|d| d.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter_map(|d| {
+            let name = d.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || !name.ends_with(".md") {
+                return None;
+            }
+            Some(name.trim_end_matches(".md").to_string())
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Structural equality for `MemoryRef`. The enum derives [`PartialEq`] in
+/// the store module already; this exists so the local code can compare two
+/// references by value without pulling the trait into scope at every site.
+fn memory_refs_equal(a: &MemoryRef, b: &MemoryRef) -> bool {
+    match (a, b) {
+        (MemoryRef::User(x), MemoryRef::User(y))
+        | (MemoryRef::Project(x), MemoryRef::Project(y))
+        | (MemoryRef::Ticket(x), MemoryRef::Ticket(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// `@<name>  [<scope>]` formatting for a memory reference, used both by the
+/// modal and by the LHS list in Mode 2 so the labels match across surfaces.
+fn memory_ref_label(reference: &MemoryRef) -> String {
+    match reference {
+        MemoryRef::User(name) => format!("@{name}  [user]"),
+        MemoryRef::Project(name) => format!("@{name}  [project]"),
+        MemoryRef::Ticket(name) => format!("@{name}  [ticket]"),
     }
 }
