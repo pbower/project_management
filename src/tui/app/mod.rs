@@ -35,6 +35,7 @@ use crate::store::locks::{self, LockFile, LockMode, AcquireOutcome, DEFAULT_TTL_
 use crate::store::events;
 use crate::store::git;
 use crate::task::Task;
+use crate::views::events_view::{ActivityAction, ActivityView};
 use crate::{
     db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
     tui::{
@@ -103,6 +104,12 @@ pub struct App {
     /// State for Mode 2 - the Document Workspace. Maintained across mode
     /// switches so the cursor and crumb persist when the user returns.
     pub(super) documents: DocumentsState,
+    /// State for Mode 3 - the full-screen Activity View. Shares the
+    /// renderer with the standalone `pm tv` binary.
+    pub(super) activity: ActivityView,
+    /// The mode we came from on the most recent mode switch. Mode 3's `q`
+    /// returns here rather than exiting the TUI.
+    pub(super) prev_mode: Mode,
 }
 
 // Per-concern submodules. Each extends `impl App` with the methods that
@@ -123,7 +130,8 @@ impl App {
         let db = Database::load(db_path);
         let navigation_context = NavigationContext::new_all_projects();
         let pm_dir = db_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-        
+        let activity = ActivityView::new(pm_dir.clone());
+
         let mut app = App {
             mode: Mode::Tickets,
             state: AppState::TaskList,
@@ -151,6 +159,8 @@ impl App {
             overlay: Overlay::None,
             pending_action: None,
             documents: DocumentsState::default(),
+            activity,
+            prev_mode: Mode::Tickets,
         };
         
         app.update_filtered_tasks();
@@ -872,6 +882,19 @@ impl App {
                     self.documents.doc_cursor = 0;
                 }
             }
+            if new_mode == Mode::Activity {
+                // Pull the latest events on entry so the first frame in Mode 3
+                // shows the current feed rather than stale data from the
+                // previous visit. An I/O error here is surfaced as a status
+                // message; the activity view itself will keep rendering and
+                // try again on the next refresh.
+                if let Err(e) = self.activity.refresh() {
+                    self.status_message = format!("Could not read events.log: {e}");
+                }
+            }
+            if new_mode != self.mode {
+                self.prev_mode = self.mode;
+            }
             self.mode = new_mode;
             true
         } else {
@@ -930,7 +953,7 @@ impl App {
                         AppState::Confirm => self.handle_confirm_input(key.code, key.modifiers)?,
                     },
                     Mode::Documents => self.handle_documents_input(key.code, key.modifiers)?,
-                    Mode::Activity => self.handle_mode_stub_input(key.code)?,
+                    Mode::Activity => self.handle_activity_input(key.code, key.modifiers)?,
                 };
                 if should_quit {
                     return Ok(true);
@@ -940,13 +963,21 @@ impl App {
         Ok(false)
     }
 
-    /// Input handler for the not-yet-built Modes 2 and 3. Only `q` is live -
-    /// it exits the TUI back to the launcher. Mode-switch keys are already
-    /// consumed before dispatch reaches here.
-    fn handle_mode_stub_input(&mut self, key: KeyCode) -> io::Result<bool> {
-        match key {
-            KeyCode::Char('q') | KeyCode::Esc => Ok(true),
-            _ => Ok(false),
+    /// Mode 3 input dispatch. The activity view consumes most keys; on
+    /// `ActivityAction::ExitView` (either `q` or `Esc`) Mode 3 returns to the
+    /// previous mode rather than exiting the TUI, matching PM_DESIGN.md
+    /// Section 8.3.4.
+    fn handle_activity_input(
+        &mut self,
+        key: KeyCode,
+        mods: KeyModifiers,
+    ) -> io::Result<bool> {
+        match self.activity.handle_key(key, mods) {
+            ActivityAction::Continue => Ok(false),
+            ActivityAction::ExitView => {
+                self.mode = self.prev_mode;
+                Ok(false)
+            }
         }
     }
 
@@ -1572,18 +1603,21 @@ impl App {
     }
 
     /// Main render function that dispatches to appropriate view renderers.
+    /// Each mode owns its full layout end-to-end (content, footers, status
+    /// row). Overlays (prompts, modals, help) render on top after dispatch.
     fn render(&mut self, f: &mut Frame) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(0),    // mode content
-                Constraint::Length(5), // activity footer (bordered, 3 events)
-                Constraint::Length(1), // context-sensitive help row
-            ].as_ref())
-            .split(f.area());
-
         match self.mode {
             Mode::Tickets => {
+                // Three-band layout: content / activity-footer tail / status.
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Min(0),
+                        Constraint::Length(5),
+                        Constraint::Length(1),
+                    ].as_ref())
+                    .split(f.area());
+
                 match self.state {
                     AppState::TaskList => self.render_task_list(f, chunks[0]),
                     AppState::TaskDetail => self.render_task_detail(f, chunks[0]),
@@ -1600,13 +1634,42 @@ impl App {
                 if matches!(self.overlay, Overlay::MemoryPanel) && self.state == AppState::TaskList {
                     self.render_memory_panel(f, chunks[0]);
                 }
-            }
-            Mode::Documents => self.render_documents(f, chunks[0]),
-            Mode::Activity => self.render_mode_stub(f, chunks[0], "Activity View", "Phase 9"),
-        }
 
-        self.render_activity_footer(f, chunks[1]);
-        self.render_status_bar(f, chunks[2]);
+                self.render_activity_footer(f, chunks[1]);
+                self.render_status_bar(f, chunks[2]);
+            }
+            Mode::Documents => {
+                // Same three-band layout as Tickets - the document workspace
+                // benefits from the activity tail being visible underneath.
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Min(0),
+                        Constraint::Length(5),
+                        Constraint::Length(1),
+                    ].as_ref())
+                    .split(f.area());
+
+                self.render_documents(f, chunks[0]);
+                self.render_activity_footer(f, chunks[1]);
+                self.render_status_bar(f, chunks[2]);
+            }
+            Mode::Activity => {
+                // Two-band layout: the activity view owns its own filter and
+                // keybinding rows, so the standard activity footer would
+                // duplicate content. Status bar still shown beneath.
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Min(0),
+                        Constraint::Length(1),
+                    ].as_ref())
+                    .split(f.area());
+
+                self.activity.render(f, chunks[0]);
+                self.render_status_bar(f, chunks[1]);
+            }
+        }
 
         // An active input prompt overlays the current mode.
         if let Overlay::Prompt(prompt) = &self.overlay {
@@ -2358,35 +2421,21 @@ impl App {
         Line::from(spans)
     }
 
-    /// Placeholder screen for Mode 3 until Phase 9 builds it out. Shows which
-    /// mode is selected and how to switch away.
-    fn render_mode_stub(&mut self, f: &mut Frame, area: Rect, title: &str, arrives_in: &str) {
-        let body = vec![
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                self.mode.label(),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(""),
-            Line::from(format!("{title} arrives in {arrives_in}.")),
-            Line::from(""),
-            Line::from("Tab / Shift+Tab / 1 / 2 / 3 to switch modes      q to exit"),
-        ];
-        let widget = Paragraph::new(body)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!("[ {} ]", self.mode.label())),
-            )
-            .alignment(Alignment::Center);
-        f.render_widget(widget, area);
-    }
 
     /// Main event loop for the TUI application.
     /// 
     /// Handles rendering and input processing until the user exits.
     pub fn run<B: Backend + std::io::Write>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
         loop {
+            // Keep the activity view's buffer in sync with the on-disk feed
+            // while we are showing it. refresh() is incremental and cheap so
+            // it can run per tick without hurting frame rates.
+            if matches!(self.mode, Mode::Activity) {
+                if let Err(e) = self.activity.refresh() {
+                    self.status_message = format!("Could not read events.log: {e}");
+                }
+            }
+
             terminal.draw(|f| self.render(f))?;
 
             if self.handle_input()? {
