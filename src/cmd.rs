@@ -13,6 +13,7 @@ use std::fs;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
 use crate::db::*;
 use crate::fields::*;
+use crate::mcp::server::run as run_mcp_server;
 use crate::memory::{
     lookup_by_name, promote_memory, write_memory, MemoryFile, MemoryHit, MemoryType, Scope,
 };
@@ -465,6 +466,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: MemoryAction,
     },
+
+    /// Run the stdio MCP server. Exposes the 14-tool surface defined in
+    /// PM_DESIGN.md Section 8.2 over JSON-RPC 2.0. The loop runs until
+    /// stdin closes.
+    Mcp,
 }
 
 #[derive(Subcommand)]
@@ -3526,6 +3532,15 @@ fn db_ref(db: &Database) -> &Database { db }
 /// `pm memory <action>` (Phase 10): three-tier memory store. Dispatches each
 /// `MemoryAction` to the matching helper. Errors print a friendly message
 /// and exit with code 1.
+/// `pm mcp`: drive the stdio MCP server until stdin closes. Errors during
+/// the loop exit with code 1.
+pub fn cmd_mcp(pm_dir: &Path) {
+    if let Err(e) = run_mcp_server(pm_dir.to_path_buf()) {
+        eprintln!("pm mcp: {e}");
+        std::process::exit(1);
+    }
+}
+
 pub fn cmd_memory(db: &mut Database, pm_dir: &Path, action: MemoryAction) {
     match action {
         MemoryAction::Link { id, name } => memory_link(db, pm_dir, &id, &name),

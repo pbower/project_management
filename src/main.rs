@@ -219,5 +219,6 @@ fn main() {
         Commands::Tv { path } => cmd_tv(path.as_deref().unwrap_or(&pm_dir)),
         Commands::Log { id } => cmd_log(&pm_dir, &id),
         Commands::Memory { action } => cmd_memory(&mut db, &pm_dir, action),
+        Commands::Mcp => cmd_mcp(&pm_dir),
     }
 }
