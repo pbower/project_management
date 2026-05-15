@@ -18,10 +18,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use project_management::store::{
-    AddressId, ItemEntry, Layout, State, Ticket, TypePrefix,
-};
 use project_management::store::templates::{builtin, resolve};
+use project_management::store::{AddressId, ItemEntry, Layout, State, Ticket, TypePrefix};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -61,13 +59,28 @@ fn main() -> ExitCode {
     // Map (kind, leaf, title, directory) so we can both write CLAUDE.md and
     // populate state.items in one pass.
     let placements: Vec<(TypePrefix, project_management::store::LeafId, &str, PathBuf)> = vec![
-        (TypePrefix::Project,   prj,    "pm",                                                                          prj_dir),
-        (TypePrefix::Product,   prd,    "core",                                                                        prd_dir),
-        (TypePrefix::Epic,      epc,    "Checkout protocol",                                                           epc_dir),
-        (TypePrefix::Task,      tsk,    "Lock protocol with TTL and heartbeat",                                        tsk_dir),
-        (TypePrefix::Subtask,   sbt,    "Stale-lock cleanup on missed heartbeat",                                      subtask_dir),
-        (TypePrefix::Milestone, mls,    "v1.0 release",                                                                mls_dir),
-        (TypePrefix::Task,      orphan, "A standalone task with no product",                                           orphan_dir),
+        (TypePrefix::Project, prj, "pm", prj_dir),
+        (TypePrefix::Product, prd, "core", prd_dir),
+        (TypePrefix::Epic, epc, "Checkout protocol", epc_dir),
+        (
+            TypePrefix::Task,
+            tsk,
+            "Lock protocol with TTL and heartbeat",
+            tsk_dir,
+        ),
+        (
+            TypePrefix::Subtask,
+            sbt,
+            "Stale-lock cleanup on missed heartbeat",
+            subtask_dir,
+        ),
+        (TypePrefix::Milestone, mls, "v1.0 release", mls_dir),
+        (
+            TypePrefix::Task,
+            orphan,
+            "A standalone task with no product",
+            orphan_dir,
+        ),
     ];
 
     for (prefix, leaf, title, rel) in &placements {
@@ -108,7 +121,9 @@ fn main() -> ExitCode {
         "Acceptance Criteria",
         "- TTL expires within 60s of last heartbeat.\n- Cleanup runs on `pm doctor`.\n",
     );
-    reloaded.write_to(tsk_path.parent().unwrap()).expect("rewrite task");
+    reloaded
+        .write_to(tsk_path.parent().unwrap())
+        .expect("rewrite task");
 
     let final_state = Ticket::read(&tsk_path).expect("final read");
     println!();
@@ -120,7 +135,9 @@ fn main() -> ExitCode {
     let orphan_path = layout.root.join("tasks/TSK2/CLAUDE.md");
     let mut orphan_t = Ticket::read(&orphan_path).expect("read orphan");
     orphan_t.apply_template(builtin(TypePrefix::Task));
-    orphan_t.write_to(orphan_path.parent().unwrap()).expect("write orphan");
+    orphan_t
+        .write_to(orphan_path.parent().unwrap())
+        .expect("write orphan");
 
     println!("--- Orphan TSK2 CLAUDE.md ---");
     let orphan_final = Ticket::read(&orphan_path).expect("orphan final read");

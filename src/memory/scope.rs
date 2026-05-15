@@ -119,7 +119,11 @@ pub fn user_dir(home: &Path, cwd: &Path) -> PathBuf {
 pub fn user_file(home: &Path, cwd: &Path, name: &str) -> MemoryLocation {
     let directory = user_dir(home, cwd);
     let file = directory.join(format!("{name}.md"));
-    MemoryLocation { scope: Scope::User, directory, file }
+    MemoryLocation {
+        scope: Scope::User,
+        directory,
+        file,
+    }
 }
 
 /// Build the project-tier directory for a given `PRJ` leaf id under
@@ -135,7 +139,11 @@ pub fn project_dir(pm_root: &Path, prj: LeafId) -> PathBuf {
 pub fn project_file(pm_root: &Path, prj: LeafId, name: &str) -> MemoryLocation {
     let directory = project_dir(pm_root, prj);
     let file = directory.join(format!("{name}.md"));
-    MemoryLocation { scope: Scope::Project, directory, file }
+    MemoryLocation {
+        scope: Scope::Project,
+        directory,
+        file,
+    }
 }
 
 /// Build the ticket-tier directory for a ticket whose CLAUDE.md lives at
@@ -148,7 +156,11 @@ pub fn ticket_dir(ticket_dir: &Path) -> PathBuf {
 pub fn ticket_file(ticket_dir_path: &Path, name: &str) -> MemoryLocation {
     let directory = ticket_dir(ticket_dir_path);
     let file = directory.join(format!("{name}.md"));
-    MemoryLocation { scope: Scope::Ticket, directory, file }
+    MemoryLocation {
+        scope: Scope::Ticket,
+        directory,
+        file,
+    }
 }
 
 #[cfg(test)]
@@ -191,7 +203,11 @@ mod tests {
 
     #[test]
     fn user_paths_resolve_under_claude_projects() {
-        let loc = user_file(Path::new("/home/me"), Path::new("/home/me/pm"), "feedback-testing");
+        let loc = user_file(
+            Path::new("/home/me"),
+            Path::new("/home/me/pm"),
+            "feedback-testing",
+        );
         assert_eq!(
             loc.directory,
             PathBuf::from("/home/me/.claude/projects/-home-me-pm/memory"),
@@ -215,10 +231,7 @@ mod tests {
     fn ticket_paths_resolve_under_ticket_dir() {
         let dir = Path::new("/work/.pm/projects/PRJ1/.../tasks/TSK7");
         let loc = ticket_file(dir, "lock-design");
-        assert_eq!(
-            loc.directory,
-            dir.join("memories"),
-        );
+        assert_eq!(loc.directory, dir.join("memories"),);
         assert_eq!(loc.scope, Scope::Ticket);
     }
 }

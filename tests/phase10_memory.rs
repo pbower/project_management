@@ -28,7 +28,9 @@ fn tmp_dir(label: &str) -> PathBuf {
 fn pm(pm_dir: &Path, home: &Path, args: &[&str]) -> Output {
     let bin = env!("CARGO_BIN_EXE_pm");
     let mut cmd = Command::new(bin);
-    cmd.arg("--db").arg(pm_dir).args(args)
+    cmd.arg("--db")
+        .arg(pm_dir)
+        .args(args)
         .env("HOME", home)
         .current_dir(pm_dir);
     cmd.output().expect("invoke pm binary")
@@ -59,7 +61,11 @@ fn seed_minimal(label: &str) -> (PathBuf, PathBuf) {
 
     assert_ok(&pm(&pm_dir, &home, &["init"]), "pm init");
     assert_ok(
-        &pm(&pm_dir, &home, &["add", "Demo project", "--kind", "project"]),
+        &pm(
+            &pm_dir,
+            &home,
+            &["add", "Demo project", "--kind", "project"],
+        ),
         "add PRJ",
     );
     assert_ok(
@@ -98,20 +104,29 @@ fn write_project_then_link_and_list() {
         &pm_dir,
         &home,
         &[
-            "memory", "write",
-            "--scope", "project",
-            "--ty", "project",
-            "--name", "auth-stack",
-            "--desc", "Auth conventions",
-            "--project", "PRJ1",
+            "memory",
+            "write",
+            "--scope",
+            "project",
+            "--ty",
+            "project",
+            "--name",
+            "auth-stack",
+            "--desc",
+            "Auth conventions",
+            "--project",
+            "PRJ1",
             "Use bearer JWTs.\n",
         ],
     );
     assert_ok(&write, "memory write project");
 
-    let project_file = pm_dir
-        .join("projects/PRJ1/memories/auth-stack.md");
-    assert!(project_file.is_file(), "project-tier file written: {}", project_file.display());
+    let project_file = pm_dir.join("projects/PRJ1/memories/auth-stack.md");
+    assert!(
+        project_file.is_file(),
+        "project-tier file written: {}",
+        project_file.display()
+    );
 
     let link = pm(&pm_dir, &home, &["memory", "link", "TSK1", "auth-stack"]);
     assert_ok(&link, "memory link");
@@ -124,8 +139,14 @@ fn write_project_then_link_and_list() {
     let list = pm(&pm_dir, &home, &["memory", "list", "TSK1"]);
     assert_ok(&list, "memory list");
     let stdout = String::from_utf8_lossy(&list.stdout);
-    assert!(stdout.contains("auth-stack"), "list shows the name: {stdout}");
-    assert!(stdout.contains("[project]"), "list annotates tier: {stdout}");
+    assert!(
+        stdout.contains("auth-stack"),
+        "list shows the name: {stdout}"
+    );
+    assert!(
+        stdout.contains("[project]"),
+        "list annotates tier: {stdout}"
+    );
 }
 
 #[test]
@@ -136,22 +157,31 @@ fn write_user_scope_is_rejected() {
         &pm_dir,
         &home,
         &[
-            "memory", "write",
-            "--scope", "user",
-            "--ty", "user",
-            "--name", "do-not-write",
+            "memory",
+            "write",
+            "--scope",
+            "user",
+            "--ty",
+            "user",
+            "--name",
+            "do-not-write",
             "body",
         ],
     );
     assert!(!out.status.success(), "user-tier writes must be rejected");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("user-tier") || stderr.contains("user tier") ||
-        stderr.contains("does not write"),
+        stderr.contains("user-tier")
+            || stderr.contains("user tier")
+            || stderr.contains("does not write"),
         "stderr explains the refusal: {stderr}"
     );
 
-    let user_dir = home.join(".claude").join("projects").join(encode_cwd(&pm_dir)).join("memory");
+    let user_dir = home
+        .join(".claude")
+        .join("projects")
+        .join(encode_cwd(&pm_dir))
+        .join("memory");
     assert!(
         !user_dir.join("do-not-write.md").exists(),
         "no user-tier file created"
@@ -162,10 +192,23 @@ fn write_user_scope_is_rejected() {
 fn unlink_removes_from_front_matter() {
     let (pm_dir, home) = seed_minimal("unlink");
     assert_ok(
-        &pm(&pm_dir, &home, &[
-            "memory", "write", "--scope", "project", "--ty", "project",
-            "--name", "foo", "--project", "PRJ1", "body",
-        ]),
+        &pm(
+            &pm_dir,
+            &home,
+            &[
+                "memory",
+                "write",
+                "--scope",
+                "project",
+                "--ty",
+                "project",
+                "--name",
+                "foo",
+                "--project",
+                "PRJ1",
+                "body",
+            ],
+        ),
         "write project memory",
     );
     assert_ok(
@@ -208,30 +251,54 @@ fn promote_user_to_project_moves_and_leaves_backref() {
     );
     assert_ok(&out, "promote up");
 
-    let project_file = pm_dir
-        .join("projects/PRJ1/memories/config-style.md");
+    let project_file = pm_dir.join("projects/PRJ1/memories/config-style.md");
     assert!(project_file.is_file(), "project canonical written");
     let project_body = fs::read_to_string(&project_file).unwrap();
-    assert!(project_body.contains("Use snake_case"), "project copy has the content");
+    assert!(
+        project_body.contains("Use snake_case"),
+        "project copy has the content"
+    );
 
     // User-tier file is now a back-reference (type: reference, body
     // pointing at the canonical project path).
     let user_body = fs::read_to_string(&user_file).unwrap();
-    assert!(user_body.contains("type: reference"), "user file demoted to a reference");
-    assert!(user_body.contains("Canonical:"), "user file mentions canonical path");
+    assert!(
+        user_body.contains("type: reference"),
+        "user file demoted to a reference"
+    );
+    assert!(
+        user_body.contains("Canonical:"),
+        "user file mentions canonical path"
+    );
 }
 
 #[test]
 fn context_no_memories_flag_suppresses_section() {
     let (pm_dir, home) = seed_minimal("context-flag");
     assert_ok(
-        &pm(&pm_dir, &home, &[
-            "memory", "write", "--scope", "project", "--ty", "project",
-            "--name", "n", "--project", "PRJ1", "memory body\n",
-        ]),
+        &pm(
+            &pm_dir,
+            &home,
+            &[
+                "memory",
+                "write",
+                "--scope",
+                "project",
+                "--ty",
+                "project",
+                "--name",
+                "n",
+                "--project",
+                "PRJ1",
+                "memory body\n",
+            ],
+        ),
         "write memory",
     );
-    assert_ok(&pm(&pm_dir, &home, &["memory", "link", "TSK1", "n"]), "link");
+    assert_ok(
+        &pm(&pm_dir, &home, &["memory", "link", "TSK1", "n"]),
+        "link",
+    );
 
     let with_memories = pm(&pm_dir, &home, &["context", "TSK1"]);
     assert_ok(&with_memories, "pm context (default includes memories)");

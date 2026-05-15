@@ -55,8 +55,13 @@ fn main() -> ExitCode {
     let epc_dir = layout.directory_for(&AddressId::new(vec![prj, prd, epc]).unwrap());
     let tsk_dir = layout.directory_for(&AddressId::new(vec![prj, prd, epc, tsk]).unwrap());
 
-    for (leaf, rel) in [(prj, prj_dir), (prd, prd_dir), (epc, epc_dir),
-        (tsk, tsk_dir), (sbt, task_dir.clone()), (mls, mls_dir),
+    for (leaf, rel) in [
+        (prj, prj_dir),
+        (prd, prd_dir),
+        (epc, epc_dir),
+        (tsk, tsk_dir),
+        (sbt, task_dir.clone()),
+        (mls, mls_dir),
     ] {
         let rel: PathBuf = rel;
         if let Err(e) = layout.ensure_node_path(&rel) {

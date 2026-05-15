@@ -45,9 +45,20 @@ impl std::fmt::Display for GitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GitError::GitNotFound(e) => write!(f, "git: could not run the `git` binary: {e}"),
-            GitError::CommandFailed { args, status, stderr } => {
-                let code = status.map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
-                write!(f, "git {} failed (exit {code}): {}", args.join(" "), stderr.trim())
+            GitError::CommandFailed {
+                args,
+                status,
+                stderr,
+            } => {
+                let code = status
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".into());
+                write!(
+                    f,
+                    "git {} failed (exit {code}): {}",
+                    args.join(" "),
+                    stderr.trim()
+                )
             }
             GitError::Io(e) => write!(f, "git io: {e}"),
             GitError::WorkspaceOutsideRepo => {
@@ -60,7 +71,9 @@ impl std::fmt::Display for GitError {
 impl std::error::Error for GitError {}
 
 impl From<std::io::Error> for GitError {
-    fn from(e: std::io::Error) -> Self { GitError::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        GitError::Io(e)
+    }
 }
 
 /// Run a `git` subcommand with `cwd` as the working directory. Returns stdout
@@ -152,13 +165,17 @@ pub fn commit_workspace(pm_dir: &Path, message: &str) -> GitResult<String> {
     run_git(
         &root,
         &[
-            "-c", "user.name=pm",
-            "-c", "user.email=pm@workspace",
-            "-c", "commit.gpgsign=false",
+            "-c",
+            "user.name=pm",
+            "-c",
+            "user.email=pm@workspace",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "--no-verify",
             "--allow-empty",
-            "-m", message,
+            "-m",
+            message,
         ],
     )?;
     run_git(&root, &["rev-parse", "HEAD"])
@@ -195,13 +212,17 @@ pub fn squash_since(pm_dir: &Path, base_commit: &str, message: &str) -> GitResul
     run_git(
         &root,
         &[
-            "-c", "user.name=pm",
-            "-c", "user.email=pm@workspace",
-            "-c", "commit.gpgsign=false",
+            "-c",
+            "user.name=pm",
+            "-c",
+            "user.email=pm@workspace",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "--no-verify",
             "--allow-empty",
-            "-m", message,
+            "-m",
+            message,
         ],
     )?;
     run_git(&root, &["rev-parse", "HEAD"])
@@ -241,7 +262,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "pm-store-git-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -290,7 +314,11 @@ mod tests {
         let dir = tmp_dir();
         std::fs::write(dir.join("a.txt"), b"hello").unwrap();
         let hash1 = commit_workspace(&dir, "pm: initial").unwrap();
-        assert_eq!(hash1.len(), 40, "expected a full commit hash, got {hash1:?}");
+        assert_eq!(
+            hash1.len(),
+            40,
+            "expected a full commit hash, got {hash1:?}"
+        );
 
         // Make a change and commit again.
         std::fs::write(dir.join("a.txt"), b"world").unwrap();
@@ -327,7 +355,8 @@ mod tests {
     /// Count commits reachable from HEAD.
     fn commit_count(root: &Path) -> usize {
         let out = Command::new("git")
-            .arg("-C").arg(root)
+            .arg("-C")
+            .arg(root)
             .args(["rev-list", "--count", "HEAD"])
             .output()
             .expect("git rev-list");
@@ -380,7 +409,9 @@ mod tests {
     fn subject_renders_known_shapes() {
         struct Leaf(&'static str);
         impl std::fmt::Display for Leaf {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.0) }
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
         }
         assert_eq!(subject(&Leaf("TSK7"), "status", None), "pm: TSK7 status");
         assert_eq!(

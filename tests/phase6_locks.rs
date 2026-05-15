@@ -10,7 +10,10 @@ fn tmp_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "pm-phase6-{label}-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -50,10 +53,29 @@ fn workspace_with_tasks(label: &str, task_count: usize) -> PathBuf {
     let dir = tmp_dir(label);
     pm(&dir, None, &["init"]);
     pm(&dir, None, &["add", "--kind", "project", "PM tool"]);
-    pm(&dir, None, &["add", "--kind", "product", "Core", "--parent", "PRJ1"]);
-    pm(&dir, None, &["add", "--kind", "epic", "Checkouts", "--parent", "PRD1"]);
+    pm(
+        &dir,
+        None,
+        &["add", "--kind", "product", "Core", "--parent", "PRJ1"],
+    );
+    pm(
+        &dir,
+        None,
+        &["add", "--kind", "epic", "Checkouts", "--parent", "PRD1"],
+    );
     for n in 0..task_count {
-        pm(&dir, None, &["add", "--kind", "task", &format!("Task {n}"), "--parent", "EPC1"]);
+        pm(
+            &dir,
+            None,
+            &[
+                "add",
+                "--kind",
+                "task",
+                &format!("Task {n}"),
+                "--parent",
+                "EPC1",
+            ],
+        );
     }
     dir
 }
@@ -74,22 +96,42 @@ fn lock_path(pm_dir: &Path, id: &str) -> PathBuf {
 fn two_agents_check_out_different_tickets_concurrently() {
     let dir = workspace_with_tasks("two-agents", 2);
 
-    pm(&dir, Some("claude-a"), &["checkout", "TSK1", "--intent", "ttl"]);
-    pm(&dir, Some("claude-b"), &["checkout", "TSK2", "--intent", "heartbeat"]);
+    pm(
+        &dir,
+        Some("claude-a"),
+        &["checkout", "TSK1", "--intent", "ttl"],
+    );
+    pm(
+        &dir,
+        Some("claude-b"),
+        &["checkout", "TSK2", "--intent", "heartbeat"],
+    );
 
     // Both lock files exist and credit the right agents.
     assert!(lock_path(&dir, "TSK1").is_file());
     assert!(lock_path(&dir, "TSK2").is_file());
     let l1 = fs::read_to_string(lock_path(&dir, "TSK1")).unwrap();
     let l2 = fs::read_to_string(lock_path(&dir, "TSK2")).unwrap();
-    assert!(l1.contains("\"claude-a\""), "TSK1 should be held by claude-a: {l1}");
-    assert!(l2.contains("\"claude-b\""), "TSK2 should be held by claude-b: {l2}");
+    assert!(
+        l1.contains("\"claude-a\""),
+        "TSK1 should be held by claude-a: {l1}"
+    );
+    assert!(
+        l2.contains("\"claude-b\""),
+        "TSK2 should be held by claude-b: {l2}"
+    );
 
     // `pm locks` lists both.
     let out = pm(&dir, None, &["locks"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("TSK1") && stdout.contains("claude-a"), "locks output: {stdout}");
-    assert!(stdout.contains("TSK2") && stdout.contains("claude-b"), "locks output: {stdout}");
+    assert!(
+        stdout.contains("TSK1") && stdout.contains("claude-a"),
+        "locks output: {stdout}"
+    );
+    assert!(
+        stdout.contains("TSK2") && stdout.contains("claude-b"),
+        "locks output: {stdout}"
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -98,10 +140,21 @@ fn two_agents_check_out_different_tickets_concurrently() {
 fn soft_lock_overlap_warns_but_does_not_block() {
     let dir = workspace_with_tasks("soft-overlap", 1);
 
-    pm(&dir, Some("claude-a"), &["checkout", "TSK1", "--intent", "first"]);
+    pm(
+        &dir,
+        Some("claude-a"),
+        &["checkout", "TSK1", "--intent", "first"],
+    );
     // A second agent checking out the same ticket must succeed (soft lock).
-    let out = pm_raw(&dir, Some("claude-b"), &["checkout", "TSK1", "--intent", "second"]);
-    assert!(out.status.success(), "soft overlap must not block the checkout");
+    let out = pm_raw(
+        &dir,
+        Some("claude-b"),
+        &["checkout", "TSK1", "--intent", "second"],
+    );
+    assert!(
+        out.status.success(),
+        "soft overlap must not block the checkout"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("already checked out by claude-a"),
@@ -109,7 +162,10 @@ fn soft_lock_overlap_warns_but_does_not_block() {
     );
     // Last-writer-wins: claude-b now holds the lock.
     let lock = fs::read_to_string(lock_path(&dir, "TSK1")).unwrap();
-    assert!(lock.contains("\"claude-b\""), "claude-b should now hold TSK1: {lock}");
+    assert!(
+        lock.contains("\"claude-b\""),
+        "claude-b should now hold TSK1: {lock}"
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -128,11 +184,19 @@ fn stale_lock_is_reaped_by_pm_locks() {
 
     let out = pm(&dir, None, &["locks"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("reaped stale lock on TSK1"), "locks output: {stdout}");
-    assert!(!path.exists(), "stale lock file should be gone after `pm locks`");
+    assert!(
+        stdout.contains("reaped stale lock on TSK1"),
+        "locks output: {stdout}"
+    );
+    assert!(
+        !path.exists(),
+        "stale lock file should be gone after `pm locks`"
+    );
     // The reap is recorded in the activity feed.
     assert!(
-        events(&dir).iter().any(|e| e["verb"] == "lock-reaped" && e["id"] == "TSK1"),
+        events(&dir)
+            .iter()
+            .any(|e| e["verb"] == "lock-reaped" && e["id"] == "TSK1"),
         "expected a lock-reaped event for TSK1",
     );
 
@@ -152,8 +216,14 @@ fn stale_lock_is_reaped_by_pm_doctor() {
 
     let out = pm(&dir, None, &["doctor"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("reaped stale lock on TSK1"), "doctor output: {stdout}");
-    assert!(!path.exists(), "stale lock file should be gone after `pm doctor`");
+    assert!(
+        stdout.contains("reaped stale lock on TSK1"),
+        "doctor output: {stdout}"
+    );
+    assert!(
+        !path.exists(),
+        "stale lock file should be gone after `pm doctor`"
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -175,15 +245,24 @@ fn heartbeat_keeps_a_lock_alive() {
     let refreshed: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     let after = refreshed["last_heartbeat"].as_str().unwrap();
-    assert_ne!(after, "2020-06-01T00:00:00Z", "heartbeat must bump last_heartbeat");
-    assert!(after > before.as_str(), "refreshed heartbeat must be newer than the original");
+    assert_ne!(
+        after, "2020-06-01T00:00:00Z",
+        "heartbeat must bump last_heartbeat"
+    );
+    assert!(
+        after > before.as_str(),
+        "refreshed heartbeat must be newer than the original"
+    );
 
     // Heartbeat on a ticket with no lock fails cleanly.
     let out = pm_raw(&dir, None, &["heartbeat", "TSK1"]);
     let _ = out; // TSK1 still locked here; instead probe a never-locked ticket.
     let dir2 = workspace_with_tasks("heartbeat-nolock", 1);
     let out = pm_raw(&dir2, None, &["heartbeat", "TSK1"]);
-    assert!(!out.status.success(), "heartbeat on an unlocked ticket should fail");
+    assert!(
+        !out.status.success(),
+        "heartbeat on an unlocked ticket should fail"
+    );
     fs::remove_dir_all(&dir2).ok();
 
     fs::remove_dir_all(&dir).ok();
@@ -193,9 +272,21 @@ fn heartbeat_keeps_a_lock_alive() {
 fn events_log_records_every_verb_with_actor_and_id() {
     let dir = tmp_dir("events");
     pm(&dir, Some("claude-be"), &["init"]);
-    pm(&dir, Some("claude-be"), &["add", "--kind", "project", "PM tool"]);
-    pm(&dir, Some("claude-be"), &["add", "--kind", "product", "Core", "--parent", "PRJ1"]);
-    pm(&dir, Some("claude-be"), &["set-status", "PRD1", "in-progress"]);
+    pm(
+        &dir,
+        Some("claude-be"),
+        &["add", "--kind", "project", "PM tool"],
+    );
+    pm(
+        &dir,
+        Some("claude-be"),
+        &["add", "--kind", "product", "Core", "--parent", "PRJ1"],
+    );
+    pm(
+        &dir,
+        Some("claude-be"),
+        &["set-status", "PRD1", "in-progress"],
+    );
     pm(&dir, Some("claude-be"), &["priority", "PRD1", "must-have"]);
     pm(&dir, Some("claude-be"), &["tag", "PRD1", "+infra"]);
 
@@ -203,18 +294,30 @@ fn events_log_records_every_verb_with_actor_and_id() {
     // Every verb in the session is present.
     let verbs: Vec<&str> = log.iter().map(|e| e["verb"].as_str().unwrap()).collect();
     for expected in ["init", "add", "status", "priority", "tag"] {
-        assert!(verbs.contains(&expected), "events.log missing verb {expected:?}: {verbs:?}");
+        assert!(
+            verbs.contains(&expected),
+            "events.log missing verb {expected:?}: {verbs:?}"
+        );
     }
     // The actor is honoured from PM_AGENT_ID on every line.
     for e in &log {
-        assert_eq!(e["actor"], "claude-be", "every event must credit PM_AGENT_ID");
+        assert_eq!(
+            e["actor"], "claude-be",
+            "every event must credit PM_AGENT_ID"
+        );
     }
     // Ticket-scoped verbs carry the right id; init does not.
     let add_prd = log.iter().find(|e| e["verb"] == "add" && e["id"] == "PRD1");
     assert!(add_prd.is_some(), "add event for PRD1 missing");
-    assert!(add_prd.unwrap()["detail"] == "Core", "add detail should be the title");
+    assert!(
+        add_prd.unwrap()["detail"] == "Core",
+        "add detail should be the title"
+    );
     let init = log.iter().find(|e| e["verb"] == "init").unwrap();
-    assert!(init.get("id").is_none() || init["id"].is_null(), "init has no ticket id");
+    assert!(
+        init.get("id").is_none() || init["id"].is_null(),
+        "init has no ticket id"
+    );
     let status = log.iter().find(|e| e["verb"] == "status").unwrap();
     assert_eq!(status["id"], "PRD1");
 
@@ -227,17 +330,40 @@ fn events_log_grows_synchronously_per_command() {
     // consumer sees an entry land for every state change as it happens.
     let dir = workspace_with_tasks("feed-growth", 1);
     let after_setup = events(&dir).len();
-    assert!(after_setup >= 4, "init + 3 adds should already be on the feed");
+    assert!(
+        after_setup >= 4,
+        "init + 3 adds should already be on the feed"
+    );
 
     pm(&dir, Some("claude-a"), &["checkout", "TSK1"]);
     let after_checkout = events(&dir).len();
-    assert_eq!(after_checkout, after_setup + 1, "checkout appends exactly one line");
+    assert_eq!(
+        after_checkout,
+        after_setup + 1,
+        "checkout appends exactly one line"
+    );
 
-    pm(&dir, Some("claude-a"), &["set-status", "TSK1", "in-progress"]);
-    assert_eq!(events(&dir).len(), after_checkout + 1, "status appends exactly one line");
+    pm(
+        &dir,
+        Some("claude-a"),
+        &["set-status", "TSK1", "in-progress"],
+    );
+    assert_eq!(
+        events(&dir).len(),
+        after_checkout + 1,
+        "status appends exactly one line"
+    );
 
-    pm(&dir, Some("claude-a"), &["checkin", "TSK1", "--summary", "done"]);
-    assert_eq!(events(&dir).len(), after_checkout + 2, "checkin appends exactly one line");
+    pm(
+        &dir,
+        Some("claude-a"),
+        &["checkin", "TSK1", "--summary", "done"],
+    );
+    assert_eq!(
+        events(&dir).len(),
+        after_checkout + 2,
+        "checkin appends exactly one line"
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -246,8 +372,16 @@ fn events_log_grows_synchronously_per_command() {
 fn checkin_squashes_the_checkout_span_by_default() {
     let dir = workspace_with_tasks("squash", 1);
 
-    pm(&dir, Some("claude-a"), &["checkout", "TSK1", "--intent", "implement"]);
-    pm(&dir, Some("claude-a"), &["set-status", "TSK1", "in-progress"]);
+    pm(
+        &dir,
+        Some("claude-a"),
+        &["checkout", "TSK1", "--intent", "implement"],
+    );
+    pm(
+        &dir,
+        Some("claude-a"),
+        &["set-status", "TSK1", "in-progress"],
+    );
     pm(&dir, Some("claude-a"), &["priority", "TSK1", "must-have"]);
 
     let before = git_subjects(&dir);
@@ -256,12 +390,25 @@ fn checkin_squashes_the_checkout_span_by_default() {
     assert!(before.iter().any(|s| s == "pm: TSK1 status"));
     assert!(before.iter().any(|s| s == "pm: TSK1 priority"));
 
-    pm(&dir, Some("claude-a"), &["checkin", "TSK1", "--summary", "implemented"]);
+    pm(
+        &dir,
+        Some("claude-a"),
+        &["checkin", "TSK1", "--summary", "implemented"],
+    );
     let after = git_subjects(&dir);
     // The span collapsed to a single checkin commit.
-    assert!(after.iter().any(|s| s == "pm: TSK1 checkin (implemented)"), "after: {after:?}");
-    assert!(!after.iter().any(|s| s == "pm: TSK1 checkout (implement)"), "checkout commit should be squashed away: {after:?}");
-    assert!(!after.iter().any(|s| s == "pm: TSK1 status"), "status commit should be squashed away: {after:?}");
+    assert!(
+        after.iter().any(|s| s == "pm: TSK1 checkin (implemented)"),
+        "after: {after:?}"
+    );
+    assert!(
+        !after.iter().any(|s| s == "pm: TSK1 checkout (implement)"),
+        "checkout commit should be squashed away: {after:?}"
+    );
+    assert!(
+        !after.iter().any(|s| s == "pm: TSK1 status"),
+        "status commit should be squashed away: {after:?}"
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -270,15 +417,36 @@ fn checkin_squashes_the_checkout_span_by_default() {
 fn checkin_granular_keeps_the_span_commits() {
     let dir = workspace_with_tasks("granular", 1);
 
-    pm(&dir, Some("claude-a"), &["checkout", "TSK1", "--intent", "implement"]);
-    pm(&dir, Some("claude-a"), &["set-status", "TSK1", "in-progress"]);
-    pm(&dir, Some("claude-a"), &["checkin", "TSK1", "--summary", "implemented", "--granular"]);
+    pm(
+        &dir,
+        Some("claude-a"),
+        &["checkout", "TSK1", "--intent", "implement"],
+    );
+    pm(
+        &dir,
+        Some("claude-a"),
+        &["set-status", "TSK1", "in-progress"],
+    );
+    pm(
+        &dir,
+        Some("claude-a"),
+        &["checkin", "TSK1", "--summary", "implemented", "--granular"],
+    );
 
     let after = git_subjects(&dir);
     // With --granular every span commit survives alongside the checkin.
-    assert!(after.iter().any(|s| s == "pm: TSK1 checkout (implement)"), "after: {after:?}");
-    assert!(after.iter().any(|s| s == "pm: TSK1 status"), "after: {after:?}");
-    assert!(after.iter().any(|s| s == "pm: TSK1 checkin (implemented)"), "after: {after:?}");
+    assert!(
+        after.iter().any(|s| s == "pm: TSK1 checkout (implement)"),
+        "after: {after:?}"
+    );
+    assert!(
+        after.iter().any(|s| s == "pm: TSK1 status"),
+        "after: {after:?}"
+    );
+    assert!(
+        after.iter().any(|s| s == "pm: TSK1 checkin (implemented)"),
+        "after: {after:?}"
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -286,11 +454,16 @@ fn checkin_granular_keeps_the_span_commits() {
 /// Git commit subjects, newest first.
 fn git_subjects(repo_root: &Path) -> Vec<String> {
     let out = Command::new("git")
-        .arg("-C").arg(repo_root)
+        .arg("-C")
+        .arg(repo_root)
         .args(["log", "--pretty=%s"])
         .output()
         .expect("git log");
-    assert!(out.status.success(), "git log failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git log failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8(out.stdout)
         .unwrap()
         .lines()

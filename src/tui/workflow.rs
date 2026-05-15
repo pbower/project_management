@@ -18,14 +18,16 @@ use ratatui::{
     Frame, Terminal,
 };
 
-use crate::{fields::*, tui::colors::{DARK_GREEN, DARK_PURPLE, DARK_RED, GOLD}};
 use crate::store::LeafId;
 use crate::task::Task;
 use crate::{
-    db::{Database, format_status, project_label},
+    db::{format_status, project_label, Database},
     tui::enums::{HierarchyLevel, NavigationContext},
 };
-
+use crate::{
+    fields::*,
+    tui::colors::{DARK_GREEN, DARK_PURPLE, DARK_RED, GOLD},
+};
 
 /// Return value for workflow app to indicate what should happen next
 #[derive(Debug)]
@@ -39,16 +41,16 @@ pub struct WorkflowApp {
     db: Database,
     db_path: std::path::PathBuf,
     navigation_context: NavigationContext,
-    navigation_stack: Vec<NavigationContext>,  // For drill-down/up navigation
-    selected_column: usize,  // Current process stage column (0-8)
-    selected_card: usize,    // Selected card within the column
-    column_scroll_offsets: [usize; 9],  // Scroll offset for each column
+    navigation_stack: Vec<NavigationContext>, // For drill-down/up navigation
+    selected_column: usize,                   // Current process stage column (0-8)
+    selected_card: usize,                     // Selected card within the column
+    column_scroll_offsets: [usize; 9],        // Scroll offset for each column
     status_message: String,
-    show_task_detail: bool,  // Whether to show task detail popup
-    show_completed: bool,    // Whether to show completed tasks
-    edit_task_id: Option<LeafId>,  // Task ID to edit when exiting
-    filter_active: bool,     // Whether filter mode is active
-    filter_text: String,     // Current filter text
+    show_task_detail: bool,       // Whether to show task detail popup
+    show_completed: bool,         // Whether to show completed tasks
+    edit_task_id: Option<LeafId>, // Task ID to edit when exiting
+    filter_active: bool,          // Whether filter mode is active
+    filter_text: String,          // Current filter text
 
     // Organised tasks by process stage. 9 columns: None, Ideation, Design,
     // Prototyping, Ready to Implement, Implementation, Testing, Refinement,
@@ -60,7 +62,7 @@ impl WorkflowApp {
     /// Create a new WorkflowApp instance
     pub fn new(db_path: &Path) -> io::Result<Self> {
         let db = Database::load(db_path);
-        
+
         let mut app = WorkflowApp {
             db,
             db_path: db_path.to_path_buf(),
@@ -71,13 +73,13 @@ impl WorkflowApp {
             column_scroll_offsets: [0; 9],
             status_message: String::new(),
             show_task_detail: false,
-            show_completed: false,  // Hide completed tasks by default
+            show_completed: false, // Hide completed tasks by default
             edit_task_id: None,
             filter_active: false,
             filter_text: String::new(),
             columns: Default::default(),
         };
-        
+
         app.update_columns();
         Ok(app)
     }
@@ -85,19 +87,19 @@ impl WorkflowApp {
     /// Get the theme color for the current hierarchy level
     fn get_hierarchy_color(&self) -> Color {
         match self.navigation_context.level {
-            HierarchyLevel::Project => Color::Cyan,        // Cyan for Project (top-level)
-            HierarchyLevel::Product => Color::Blue,        // Navy
-            HierarchyLevel::Epic => DARK_GREEN,           // Green
-            HierarchyLevel::Task => GOLD,                 // Gold
-            HierarchyLevel::Subtask => DARK_RED,          // Red
-            HierarchyLevel::Milestone => DARK_PURPLE,     // Purple (shouldn't appear in workflow but just in case)
+            HierarchyLevel::Project => Color::Cyan, // Cyan for Project (top-level)
+            HierarchyLevel::Product => Color::Blue, // Navy
+            HierarchyLevel::Epic => DARK_GREEN,     // Green
+            HierarchyLevel::Task => GOLD,           // Gold
+            HierarchyLevel::Subtask => DARK_RED,    // Red
+            HierarchyLevel::Milestone => DARK_PURPLE, // Purple (shouldn't appear in workflow but just in case)
         }
     }
 
     /// Get the current project name from the database path
     fn get_current_project_name(&self) -> String {
         use crate::project::Project;
-        
+
         if let Some(project) = Project::from_file(self.db_path.clone()) {
             project.display_name
         } else {
@@ -122,7 +124,7 @@ impl WorkflowApp {
             if task.status == Status::Done && !self.show_completed {
                 continue;
             }
-            
+
             // Filter by hierarchy level
             let required_kind = match hierarchy_level {
                 HierarchyLevel::Project => Kind::Project,
@@ -149,7 +151,10 @@ impl WorkflowApp {
             if !self.filter_text.is_empty() {
                 let filter_lower = self.filter_text.to_lowercase();
                 let title_matches = task.title.to_lowercase().contains(&filter_lower);
-                let tags_match = task.tags.iter().any(|tag| tag.to_lowercase().contains(&filter_lower));
+                let tags_match = task
+                    .tags
+                    .iter()
+                    .any(|tag| tag.to_lowercase().contains(&filter_lower));
                 let project_matches = project_label(&self.db, task)
                     .to_lowercase()
                     .contains(&filter_lower);
@@ -192,30 +197,31 @@ impl WorkflowApp {
         } else if self.selected_card >= column_len {
             self.selected_card = column_len - 1;
         }
-        
+
         self.update_scroll_for_selection();
     }
-    
+
     /// Update scroll offset to ensure selected card is visible
     fn update_scroll_for_selection(&mut self) {
         // This will be called when navigating to ensure the selected card is visible
         // The actual calculation happens in render_column where we know the available height
     }
-    
+
     /// Toggle completion status of the selected task
     fn toggle_task_completion(&mut self) {
         if self.columns[self.selected_column].is_empty() {
             return;
         }
-        
+
         let task_id = self.columns[self.selected_column][self.selected_card];
-        
+
         if let Some(task) = self.db.get_mut(task_id) {
             // Toggle between Done and Open (or InProgress if it was InProgress)
             let new_status = if task.status == Status::Done {
                 // Uncomplete: restore to Open or InProgress based on process stage
-                if task.process_stage == Some(ProcessStage::Implementation) 
-                    || task.process_stage == Some(ProcessStage::Testing) {
+                if task.process_stage == Some(ProcessStage::Implementation)
+                    || task.process_stage == Some(ProcessStage::Testing)
+                {
                     Status::InProgress
                 } else {
                     Status::Open
@@ -223,9 +229,9 @@ impl WorkflowApp {
             } else {
                 Status::Done
             };
-            
+
             task.status = new_status;
-            
+
             if let Err(e) = self.save_db() {
                 self.set_status_message(format!("Error saving: {}", e));
             } else {
@@ -235,7 +241,7 @@ impl WorkflowApp {
                     Status::Open => "Task marked as open",
                 };
                 self.set_status_message(status_text.to_string());
-                
+
                 // If we just completed a task and we're hiding completed, it will disappear
                 if new_status == Status::Done && !self.show_completed {
                     self.update_columns();
@@ -264,7 +270,17 @@ impl WorkflowApp {
 
     /// Get column titles
     fn get_column_titles() -> [&'static str; 9] {
-        ["Unassigned", "Ideation", "Design", "Prototyping", "Ready to Implement", "Implementation", "Testing", "Refinement", "Release"]
+        [
+            "Unassigned",
+            "Ideation",
+            "Design",
+            "Prototyping",
+            "Ready to Implement",
+            "Implementation",
+            "Testing",
+            "Refinement",
+            "Release",
+        ]
     }
 
     /// Handle keyboard input
@@ -285,11 +301,11 @@ impl WorkflowApp {
                             if self.filter_text.is_empty() {
                                 self.set_status_message("Filter cleared".to_string());
                             } else {
-                                let total_tasks: usize = self.columns.iter().map(|col| col.len()).sum();
+                                let total_tasks: usize =
+                                    self.columns.iter().map(|col| col.len()).sum();
                                 self.set_status_message(format!(
                                     "Filter: '{}' ({} tasks shown)",
-                                    self.filter_text,
-                                    total_tasks
+                                    self.filter_text, total_tasks
                                 ));
                             }
                         }
@@ -307,12 +323,16 @@ impl WorkflowApp {
                     }
                     return Ok(false);
                 }
-                
+
                 self.clear_status_message();
 
                 match key.code {
-                    KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
+                    KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Ok(true)
+                    }
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Ok(true)
+                    }
                     KeyCode::Esc => return Ok(true),
                     // Drill down/up navigation
                     KeyCode::Char('d') => {
@@ -392,16 +412,17 @@ impl WorkflowApp {
                     // Edit task
                     KeyCode::Char('e') => {
                         if !self.columns[self.selected_column].is_empty() {
-                            self.edit_task_id = Some(self.columns[self.selected_column][self.selected_card]);
+                            self.edit_task_id =
+                                Some(self.columns[self.selected_column][self.selected_card]);
                             return Ok(true); // Exit workflow to edit
                         }
                     }
-                    
+
                     // Complete/uncomplete task
                     KeyCode::Char('c') => {
                         self.toggle_task_completion();
                     }
-                    
+
                     // Toggle showing completed tasks
                     KeyCode::Char('t') => {
                         self.show_completed = !self.show_completed;
@@ -413,18 +434,18 @@ impl WorkflowApp {
                         };
                         self.set_status_message(status.to_string());
                     }
-                    
+
                     // Filter mode
                     KeyCode::Char('/') => {
                         self.filter_active = true;
                         self.set_status_message("Filter: Type to search title/tags/project, Enter to apply, Esc to cancel".to_string());
                     }
-                    
+
                     // Help
                     KeyCode::Char('h') => {
                         self.set_status_message("Help: Enter: Details | e: Edit | c: Complete | t: Toggle done | /: Filter | d: Drill | u: Up | m: Menu | Esc: Exit".to_string());
                     }
-                    
+
                     _ => {}
                 }
             }
@@ -439,17 +460,17 @@ impl WorkflowApp {
         }
 
         let task_id = self.columns[self.selected_column][self.selected_card];
-        
+
         if let Some(task) = self.db.get_mut(task_id) {
             let new_stage = match self.selected_column {
-                1 => None, // Ideation -> Unassigned
-                2 => Some(ProcessStage::Ideation), // Design -> Ideation
-                3 => Some(ProcessStage::Design), // Prototyping -> Design
-                4 => Some(ProcessStage::Prototyping), // Ready to Implement -> Prototyping
+                1 => None,                                 // Ideation -> Unassigned
+                2 => Some(ProcessStage::Ideation),         // Design -> Ideation
+                3 => Some(ProcessStage::Design),           // Prototyping -> Design
+                4 => Some(ProcessStage::Prototyping),      // Ready to Implement -> Prototyping
                 5 => Some(ProcessStage::ReadyToImplement), // Implementation -> Ready to Implement
-                6 => Some(ProcessStage::Implementation), // Testing -> Implementation
-                7 => Some(ProcessStage::Testing), // Refinement -> Testing
-                8 => Some(ProcessStage::Refinement), // Release -> Refinement
+                6 => Some(ProcessStage::Implementation),   // Testing -> Implementation
+                7 => Some(ProcessStage::Testing),          // Refinement -> Testing
+                8 => Some(ProcessStage::Refinement),       // Release -> Refinement
                 _ => return,
             };
 
@@ -458,12 +479,17 @@ impl WorkflowApp {
                 self.set_status_message(format!("Error saving: {}", e));
             } else {
                 let target_column = self.selected_column - 1;
-                self.set_status_message(format!("Moved task to {}", 
-                    Self::get_column_titles()[target_column]));
+                self.set_status_message(format!(
+                    "Moved task to {}",
+                    Self::get_column_titles()[target_column]
+                ));
                 self.selected_column = target_column;
-                
+
                 // Find the task in the new column and select it
-                if let Some(new_position) = self.columns[target_column].iter().position(|&id| id == task_id) {
+                if let Some(new_position) = self.columns[target_column]
+                    .iter()
+                    .position(|&id| id == task_id)
+                {
                     self.selected_card = new_position;
                 } else {
                     self.clamp_selection();
@@ -474,22 +500,24 @@ impl WorkflowApp {
 
     /// Move the selected card to the right column (next process stage)
     fn move_card_right(&mut self) {
-        if self.selected_column >= self.columns.len() - 1 || self.columns[self.selected_column].is_empty() {
+        if self.selected_column >= self.columns.len() - 1
+            || self.columns[self.selected_column].is_empty()
+        {
             return;
         }
 
         let task_id = self.columns[self.selected_column][self.selected_card];
-        
+
         if let Some(task) = self.db.get_mut(task_id) {
             let new_stage = match self.selected_column {
-                0 => Some(ProcessStage::Ideation), // Unassigned -> Ideation
-                1 => Some(ProcessStage::Design), // Ideation -> Design
+                0 => Some(ProcessStage::Ideation),    // Unassigned -> Ideation
+                1 => Some(ProcessStage::Design),      // Ideation -> Design
                 2 => Some(ProcessStage::Prototyping), // Design -> Prototyping
                 3 => Some(ProcessStage::ReadyToImplement), // Prototyping -> Ready to Implement
                 4 => Some(ProcessStage::Implementation), // Ready to Implement -> Implementation
-                5 => Some(ProcessStage::Testing), // Implementation -> Testing
-                6 => Some(ProcessStage::Refinement), // Testing -> Refinement
-                7 => Some(ProcessStage::Release), // Refinement -> Release
+                5 => Some(ProcessStage::Testing),     // Implementation -> Testing
+                6 => Some(ProcessStage::Refinement),  // Testing -> Refinement
+                7 => Some(ProcessStage::Release),     // Refinement -> Release
                 _ => return,
             };
 
@@ -498,12 +526,17 @@ impl WorkflowApp {
                 self.set_status_message(format!("Error saving: {}", e));
             } else {
                 let target_column = self.selected_column + 1;
-                self.set_status_message(format!("Moved task to {}", 
-                    Self::get_column_titles()[target_column]));
+                self.set_status_message(format!(
+                    "Moved task to {}",
+                    Self::get_column_titles()[target_column]
+                ));
                 self.selected_column = target_column;
-                
+
                 // Find the task in the new column and select it
-                if let Some(new_position) = self.columns[target_column].iter().position(|&id| id == task_id) {
+                if let Some(new_position) = self.columns[target_column]
+                    .iter()
+                    .position(|&id| id == task_id)
+                {
                     self.selected_card = new_position;
                 } else {
                     self.clamp_selection();
@@ -536,8 +569,14 @@ impl WorkflowApp {
 
         // Preserve the filtered state but change the level
         self.navigation_context = if let Some(parent_id) = self.navigation_context.parent_id {
-            NavigationContext::new_filtered(new_level, parent_id, 
-                self.navigation_context.parent_title.clone().unwrap_or_default())
+            NavigationContext::new_filtered(
+                new_level,
+                parent_id,
+                self.navigation_context
+                    .parent_title
+                    .clone()
+                    .unwrap_or_default(),
+            )
         } else {
             NavigationContext::new_all_level(new_level)
         };
@@ -545,20 +584,26 @@ impl WorkflowApp {
         self.update_columns();
         self.selected_column = 0;
         self.selected_card = 0;
-        self.set_status_message(format!("Switched to {}", self.navigation_context.get_display_name()));
+        self.set_status_message(format!(
+            "Switched to {}",
+            self.navigation_context.get_display_name()
+        ));
     }
 
     /// Toggle between filtered and unfiltered views within the same hierarchy level
     fn toggle_filtered_view(&mut self, _forward: bool) {
         if self.navigation_context.parent_id.is_some() {
             // Currently filtered, switch to unfiltered
-            self.navigation_context = NavigationContext::new_all_level(self.navigation_context.level);
+            self.navigation_context =
+                NavigationContext::new_all_level(self.navigation_context.level);
             self.set_status_message("Switched to unfiltered view".to_string());
         } else {
             // Currently unfiltered, would need to pick a parent - show message for now
-            self.set_status_message("To filter: select a parent item first (feature pending)".to_string());
+            self.set_status_message(
+                "To filter: select a parent item first (feature pending)".to_string(),
+            );
         }
-        
+
         self.update_columns();
         self.selected_column = 0;
         self.selected_card = 0;
@@ -573,7 +618,7 @@ impl WorkflowApp {
         }
 
         let selected_task_id = self.columns[self.selected_column][self.selected_card];
-        
+
         if let Some(task) = self.db.get(selected_task_id) {
             // Determine the child hierarchy level based on the task's kind
             let child_level = match task.kind {
@@ -593,18 +638,18 @@ impl WorkflowApp {
 
             // Push current context to stack before changing
             self.navigation_stack.push(self.navigation_context.clone());
-            
+
             // Create new filtered context
-            self.navigation_context = NavigationContext::new_filtered(
-                child_level,
-                selected_task_id,
-                task.title.clone()
-            );
+            self.navigation_context =
+                NavigationContext::new_filtered(child_level, selected_task_id, task.title.clone());
 
             self.update_columns();
             self.selected_column = 0;
             self.selected_card = 0;
-            self.set_status_message(format!("Drilled down to {}", self.navigation_context.get_display_name()));
+            self.set_status_message(format!(
+                "Drilled down to {}",
+                self.navigation_context.get_display_name()
+            ));
         }
     }
 
@@ -617,7 +662,10 @@ impl WorkflowApp {
             self.update_columns();
             self.selected_column = 0;
             self.selected_card = 0;
-            self.set_status_message(format!("Navigated back to {}", self.navigation_context.get_display_name()));
+            self.set_status_message(format!(
+                "Navigated back to {}",
+                self.navigation_context.get_display_name()
+            ));
         } else {
             self.set_status_message("No previous context to return to".to_string());
         }
@@ -647,23 +695,26 @@ impl WorkflowApp {
     /// Render the header
     fn render_header(&self, f: &mut Frame, area: Rect) {
         let project_name = self.get_current_project_name();
-        let context_display = format!("Current Project: {}  Current View: {}", 
-            project_name, self.navigation_context.get_display_name());
-            
-        let header_text = vec![
-            Line::from(vec![
-                Span::styled(
-                    "WORKFLOW MANAGEMENT",
-                    Style::default().add_modifier(Modifier::BOLD)
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    context_display,
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC)
-                )
-            ])
-        ];
-        
+        let context_display = format!(
+            "Current Project: {}  Current View: {}",
+            project_name,
+            self.navigation_context.get_display_name()
+        );
+
+        let header_text = vec![Line::from(vec![
+            Span::styled(
+                "WORKFLOW MANAGEMENT",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                context_display,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ])];
+
         let header_block = Paragraph::new(header_text)
             .block(Block::default().borders(Borders::ALL))
             .alignment(Alignment::Center);
@@ -683,7 +734,7 @@ impl WorkflowApp {
             .split(area);
 
         let column_titles = Self::get_column_titles();
-        
+
         for (i, &column_area) in columns_layout.iter().enumerate() {
             self.render_column(f, column_area, i, column_titles[i]);
         }
@@ -693,9 +744,11 @@ impl WorkflowApp {
     fn render_column(&mut self, f: &mut Frame, area: Rect, column_index: usize, title: &str) {
         let is_selected = column_index == self.selected_column;
         let hierarchy_color = self.get_hierarchy_color();
-        
+
         let border_style = if is_selected {
-            Style::default().fg(hierarchy_color).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(hierarchy_color)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
@@ -718,13 +771,13 @@ impl WorkflowApp {
         let card_height = 5; // 5 lines to show full title
         let available_height = inner.height as usize;
         let visible_cards = available_height / card_height;
-        
+
         // Calculate scroll offset for this column
         let scroll_offset = if is_selected {
             // Update scroll to ensure selected card is visible
             let start_visible = self.column_scroll_offsets[column_index];
             let end_visible = start_visible + visible_cards;
-            
+
             if self.selected_card < start_visible {
                 // Scroll up
                 self.column_scroll_offsets[column_index] = self.selected_card;
@@ -740,7 +793,7 @@ impl WorkflowApp {
         } else {
             self.column_scroll_offsets[column_index]
         };
-        
+
         let mut current_y = 0;
         let mut rendered_cards = 0;
 
@@ -751,9 +804,9 @@ impl WorkflowApp {
                 if current_y + card_height > available_height {
                     break;
                 }
-                
+
                 let is_this_card_selected = is_selected && card_index == self.selected_card;
-                
+
                 let card_area = Rect {
                     x: inner.x,
                     y: inner.y + current_y as u16,
@@ -762,7 +815,7 @@ impl WorkflowApp {
                 };
 
                 self.render_card(f, card_area, task, is_this_card_selected);
-                
+
                 current_y += card_height;
                 rendered_cards += 1;
             }
@@ -772,54 +825,61 @@ impl WorkflowApp {
         if scroll_offset > 0 {
             // Show "more above" indicator
             let indicator_text = format!("▲ +{} above", scroll_offset);
-            let indicator = Paragraph::new(indicator_text)
-                .style(Style::default().fg(Color::Cyan));
-            f.render_widget(indicator, Rect {
-                x: inner.x,
-                y: inner.y,
-                width: inner.width,
-                height: 1,
-            });
+            let indicator = Paragraph::new(indicator_text).style(Style::default().fg(Color::Cyan));
+            f.render_widget(
+                indicator,
+                Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
         }
-        
+
         let remaining = cards.len() - scroll_offset - rendered_cards;
         if remaining > 0 {
             // Show "more below" indicator
             let indicator_text = format!("▼ +{} below", remaining);
-            let indicator = Paragraph::new(indicator_text)
-                .style(Style::default().fg(Color::Cyan));
-            f.render_widget(indicator, Rect {
-                x: inner.x,
-                y: inner.y + inner.height - 1,
-                width: inner.width,
-                height: 1,
-            });
+            let indicator = Paragraph::new(indicator_text).style(Style::default().fg(Color::Cyan));
+            f.render_widget(
+                indicator,
+                Rect {
+                    x: inner.x,
+                    y: inner.y + inner.height - 1,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
         }
     }
 
     /// Render a single task card
     fn render_card(&self, f: &mut Frame, area: Rect, task: &Task, is_selected: bool) {
         let hierarchy_color = self.get_hierarchy_color();
-        
+
         let style = if is_selected {
-            Style::default().bg(hierarchy_color).fg(Color::Black).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(hierarchy_color)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().bg(Color::DarkGray)
         };
 
         // All cards now show full title wrapped across multiple lines
         let mut card_text = vec![];
-        
+
         // Show ID on first line
         card_text.push(Line::from(format!("#{}", task.id)));
-        
+
         // Manually wrap the title to fit in the available width (accounting for borders)
         let available_width = area.width.saturating_sub(2) as usize;
-        
+
         // Simple word wrapping
         let mut current_line = String::new();
         let mut lines = Vec::new();
-        
+
         for word in task.title.split_whitespace() {
             if current_line.is_empty() {
                 current_line = word.to_string();
@@ -837,16 +897,18 @@ impl WorkflowApp {
         if !current_line.is_empty() && lines.len() < 2 {
             lines.push(current_line);
         }
-        
+
         for line in lines {
             card_text.push(Line::from(line));
         }
-        
+
         // Add status line at the bottom. Project label is derived from the
         // parent chain via project_label rather than a free-form field.
-        card_text.push(Line::from(format!("{} | {}",
+        card_text.push(Line::from(format!(
+            "{} | {}",
             format_status(task.status),
-            project_label(&self.db, task))));
+            project_label(&self.db, task)
+        )));
 
         let card_block = Paragraph::new(card_text)
             .block(Block::default().borders(Borders::ALL))
@@ -859,16 +921,19 @@ impl WorkflowApp {
     /// Render the status bar
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
         let status_text = if self.filter_active {
-            format!("Filter: {} | Type to search, Enter to apply, Esc to cancel", self.filter_text)
+            format!(
+                "Filter: {} | Type to search, Enter to apply, Esc to cancel",
+                self.filter_text
+            )
         } else if !self.status_message.is_empty() {
             self.status_message.clone()
         } else {
             let total_tasks: usize = self.columns.iter().map(|col| col.len()).sum();
             let completed_indicator = if self.show_completed { " [+Done]" } else { "" };
-            let filter_indicator = if !self.filter_text.is_empty() { 
-                format!(" [Filter: {}]", self.filter_text) 
-            } else { 
-                String::new() 
+            let filter_indicator = if !self.filter_text.is_empty() {
+                format!(" [Filter: {}]", self.filter_text)
+            } else {
+                String::new()
             };
             format!("Tasks: {}{}{} | /: Filter | c: Complete | t: Toggle done | d/u: Drill | m: Menu | h: Help", 
                 total_tasks, completed_indicator, filter_indicator)
@@ -877,9 +942,9 @@ impl WorkflowApp {
         let hierarchy_color = self.get_hierarchy_color();
         let text_color = match hierarchy_color {
             GOLD => Color::Rgb(20, 20, 20),
-            _ => Color::White
+            _ => Color::White,
         };
-        
+
         let status = Paragraph::new(status_text)
             .style(Style::default().bg(hierarchy_color).fg(text_color))
             .alignment(Alignment::Left);
@@ -909,7 +974,10 @@ impl WorkflowApp {
             f.render_widget(Clear, popup_area);
 
             // Create task detail content
-            use crate::db::{format_kind, format_priority, format_urgency, format_process_stage, format_due_relative};
+            use crate::db::{
+                format_due_relative, format_kind, format_priority, format_process_stage,
+                format_urgency,
+            };
             use chrono::Local;
 
             let today = Local::now().date_naive();
@@ -925,18 +993,33 @@ impl WorkflowApp {
             };
 
             let mut detail_lines = vec![
-                Line::from(vec![Span::styled(format!("Task {}: {}", task.id, task.title),
-                    Style::default().add_modifier(Modifier::BOLD))]),
+                Line::from(vec![Span::styled(
+                    format!("Task {}: {}", task.id, task.title),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )]),
                 Line::from(""),
                 Line::from(format!("Kind:         {}", format_kind(task.kind))),
                 Line::from(format!("Status:       {}", format_status(task.status))),
-                Line::from(format!("Priority:     {}", format_priority(task.priority_level))),
+                Line::from(format!(
+                    "Priority:     {}",
+                    format_priority(task.priority_level)
+                )),
                 Line::from(format!("Urgency:      {}", format_urgency(task.urgency))),
-                Line::from(format!("Process Stage: {}", format_process_stage(task.process_stage))),
+                Line::from(format!(
+                    "Process Stage: {}",
+                    format_process_stage(task.process_stage)
+                )),
                 Line::from(format!("Due:          {}", due_str)),
                 Line::from(format!("Parent:       {}", parent_str)),
                 Line::from(format!("Project:      {}", project_label(&self.db, task))),
-                Line::from(format!("Tags:         {}", if task.tags.is_empty() { "-".to_string() } else { task.tags.join(", ") })),
+                Line::from(format!(
+                    "Tags:         {}",
+                    if task.tags.is_empty() {
+                        "-".to_string()
+                    } else {
+                        task.tags.join(", ")
+                    }
+                )),
                 Line::from(""),
                 Line::from("Description:"),
                 Line::from(task.description.as_deref().unwrap_or("-")),
@@ -957,7 +1040,11 @@ impl WorkflowApp {
                 .borders(Borders::ALL)
                 .title("Task Details (Press Enter to close)")
                 .title_alignment(Alignment::Center)
-                .border_style(Style::default().fg(hierarchy_color).add_modifier(Modifier::BOLD));
+                .border_style(
+                    Style::default()
+                        .fg(hierarchy_color)
+                        .add_modifier(Modifier::BOLD),
+                );
 
             let popup_paragraph = Paragraph::new(detail_lines)
                 .block(popup_block)
@@ -976,7 +1063,7 @@ impl WorkflowApp {
             WorkflowExit::Quit
         }
     }
-    
+
     /// Main event loop
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
         loop {

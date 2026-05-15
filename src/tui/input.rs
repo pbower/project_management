@@ -61,5 +61,4 @@ impl InputField {
             self.cursor += 1;
         }
     }
-
 }

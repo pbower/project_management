@@ -44,10 +44,34 @@ fn main() -> ExitCode {
         eprintln!("ensure_node_path: {e}");
         return ExitCode::FAILURE;
     }
-    state.insert(prj, ItemEntry { path: layout.directory_for(&project_management::store::AddressId::new(vec![prj]).unwrap()) });
-    state.insert(prd, ItemEntry { path: layout.directory_for(&project_management::store::AddressId::new(vec![prj, prd]).unwrap()) });
-    state.insert(epc, ItemEntry { path: layout.directory_for(&project_management::store::AddressId::new(vec![prj, prd, epc]).unwrap()) });
-    state.insert(tsk, ItemEntry { path: task_dir_rel.clone() });
+    state.insert(
+        prj,
+        ItemEntry {
+            path: layout
+                .directory_for(&project_management::store::AddressId::new(vec![prj]).unwrap()),
+        },
+    );
+    state.insert(
+        prd,
+        ItemEntry {
+            path: layout
+                .directory_for(&project_management::store::AddressId::new(vec![prj, prd]).unwrap()),
+        },
+    );
+    state.insert(
+        epc,
+        ItemEntry {
+            path: layout.directory_for(
+                &project_management::store::AddressId::new(vec![prj, prd, epc]).unwrap(),
+            ),
+        },
+    );
+    state.insert(
+        tsk,
+        ItemEntry {
+            path: task_dir_rel.clone(),
+        },
+    );
 
     let ticket = Ticket::scaffold(tsk, "Lock protocol", builtin(TypePrefix::Task));
     let task_dir = layout.root.join(&task_dir_rel);
@@ -73,8 +97,7 @@ fn main() -> ExitCode {
     // Hand-edit a description on schema.png, then drop another file; the
     // description should survive the sweep triggered by the third file.
     let mut idx = ArtifactsIndex::load(&index_path).unwrap();
-    idx.find_mut("schema.png").unwrap().desc =
-        "ER diagram of the lock-file format".into();
+    idx.find_mut("schema.png").unwrap().desc = "ER diagram of the lock-file format".into();
     idx.find_mut("schema.png").unwrap().tags = vec!["reference".into(), "design".into()];
     idx.save(&index_path).unwrap();
     std::fs::write(artifacts_dir.join("notes.md"), b"# scratch\n").unwrap();
@@ -83,8 +106,7 @@ fn main() -> ExitCode {
     print_index(&index_path, "after hand-edit + new file");
 
     // Rename schema.png -> er-diagram.png. Description must carry over.
-    rename_artifact(&artifacts_dir, "schema.png", "er-diagram.png")
-        .expect("rename artifact");
+    rename_artifact(&artifacts_dir, "schema.png", "er-diagram.png").expect("rename artifact");
     std::thread::sleep(Duration::from_millis(450));
 
     print_index(&index_path, "after rename");

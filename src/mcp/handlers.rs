@@ -43,7 +43,12 @@ impl Context {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        Context { pm_dir, db, home, cwd }
+        Context {
+            pm_dir,
+            db,
+            home,
+            cwd,
+        }
     }
 
     pub fn reload(&mut self) {
@@ -77,28 +82,47 @@ pub fn dispatch(ctx: &mut Context, tool: &str, args: &Value) -> Result<Value, St
 // ----- list ---------------------------------------------------------------
 
 fn handle_list(ctx: &Context, args: &Value) -> Result<Value, String> {
-    let status = args.get("status").and_then(Value::as_str).map(parse_status).transpose()?;
-    let kind = args.get("kind").and_then(Value::as_str).map(parse_kind).transpose()?;
+    let status = args
+        .get("status")
+        .and_then(Value::as_str)
+        .map(parse_status)
+        .transpose()?;
+    let kind = args
+        .get("kind")
+        .and_then(Value::as_str)
+        .map(parse_kind)
+        .transpose()?;
     let parent_arg = args.get("parent").and_then(Value::as_str);
     let parent = parent_arg
         .map(|s| resolve_leaf(&ctx.db, s).ok_or_else(|| format!("parent not found: {s}")))
         .transpose()?;
     let tag = args.get("tag").and_then(Value::as_str).map(str::to_string);
-    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(u64::MAX) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::MAX) as usize;
 
     let mut rows: Vec<Value> = Vec::new();
     for task in ctx.db.tasks.iter() {
         if let Some(s) = status {
-            if task.status != s { continue; }
+            if task.status != s {
+                continue;
+            }
         }
         if let Some(k) = kind {
-            if task.kind != k { continue; }
+            if task.kind != k {
+                continue;
+            }
         }
         if let Some(p) = parent {
-            if task.parent != Some(p) { continue; }
+            if task.parent != Some(p) {
+                continue;
+            }
         }
         if let Some(t) = &tag {
-            if !task.tags.iter().any(|x| x == t) { continue; }
+            if !task.tags.iter().any(|x| x == t) {
+                continue;
+            }
         }
         rows.push(json!({
             "id": task.id.to_string(),
@@ -106,7 +130,9 @@ fn handle_list(ctx: &Context, args: &Value) -> Result<Value, String> {
             "kind": kind_label(task.kind),
             "status": status_label(task.status),
         }));
-        if rows.len() >= limit { break; }
+        if rows.len() >= limit {
+            break;
+        }
     }
     Ok(json!({"tickets": rows}))
 }
@@ -117,7 +143,12 @@ fn handle_get(ctx: &Context, args: &Value) -> Result<Value, String> {
     let id = require_str(args, "id")?;
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
     let task = ctx.db.get(leaf).ok_or_else(|| "missing task".to_string())?;
-    let children = ctx.db.tasks.iter().filter(|t| t.parent == Some(leaf)).count();
+    let children = ctx
+        .db
+        .tasks
+        .iter()
+        .filter(|t| t.parent == Some(leaf))
+        .count();
     Ok(json!({
         "id": task.id.to_string(),
         "title": task.title,
@@ -135,16 +166,30 @@ fn handle_get(ctx: &Context, args: &Value) -> Result<Value, String> {
 fn handle_read_context(ctx: &Context, args: &Value) -> Result<Value, String> {
     let id = require_str(args, "id")?;
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
-    let no_memories = args.get("no_memories").and_then(Value::as_bool).unwrap_or(false);
+    let no_memories = args
+        .get("no_memories")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let chain = walk_ancestor_chain(&ctx.db, leaf);
     let mut out = String::new();
     for cid in &chain {
-        let Some(entry) = ctx.db.state.items.get(cid) else { continue; };
-        let path = ctx.pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
-        let Ok(ticket) = Ticket::read(&path) else { continue; };
+        let Some(entry) = ctx.db.state.items.get(cid) else {
+            continue;
+        };
+        let path = ctx
+            .pm_dir
+            .join(&entry.path)
+            .join(crate::store::claude_md::CLAUDE_MD);
+        let Ok(ticket) = Ticket::read(&path) else {
+            continue;
+        };
         let task = ctx.db.get(*cid).expect("walk returned only known leaves");
-        out.push_str(&format!("# {} - {} ({cid})\n", kind_label_upper(task.kind), task.title));
+        out.push_str(&format!(
+            "# {} - {} ({cid})\n",
+            kind_label_upper(task.kind),
+            task.title
+        ));
         for section in &ticket.body.sections {
             out.push_str("\n# ");
             out.push_str(&section.name);
@@ -156,7 +201,10 @@ fn handle_read_context(ctx: &Context, args: &Value) -> Result<Value, String> {
 
     if !no_memories {
         if let Some(entry) = ctx.db.state.items.get(&leaf) {
-            let path = ctx.pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
+            let path = ctx
+                .pm_dir
+                .join(&entry.path)
+                .join(crate::store::claude_md::CLAUDE_MD);
             if let Ok(ticket) = Ticket::read(&path) {
                 if !ticket.front_matter.memories.is_empty() {
                     out.push_str(&render_linked_memories(ctx, leaf, &ticket));
@@ -174,9 +222,17 @@ fn handle_read_artifact(ctx: &Context, args: &Value) -> Result<Value, String> {
     let id = require_str(args, "id")?;
     let filename = require_str(args, "filename")?;
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
-    let entry = ctx.db.state.items.get(&leaf)
+    let entry = ctx
+        .db
+        .state
+        .items
+        .get(&leaf)
         .ok_or_else(|| format!("state.json has no entry for {id}"))?;
-    let path = ctx.pm_dir.join(&entry.path).join("artifacts").join(filename);
+    let path = ctx
+        .pm_dir
+        .join(&entry.path)
+        .join("artifacts")
+        .join(filename);
     if !path.is_file() {
         return Err(format!("artifact not found: {filename}"));
     }
@@ -195,10 +251,18 @@ fn handle_read_artifact(ctx: &Context, args: &Value) -> Result<Value, String> {
 fn handle_read_memories(ctx: &Context, args: &Value) -> Result<Value, String> {
     let id = require_str(args, "id")?;
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
-    let entry = ctx.db.state.items.get(&leaf)
+    let entry = ctx
+        .db
+        .state
+        .items
+        .get(&leaf)
         .ok_or_else(|| format!("state.json has no entry for {id}"))?;
-    let ticket = Ticket::read(&ctx.pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD))
-        .map_err(|e| format!("read ticket: {e}"))?;
+    let ticket = Ticket::read(
+        &ctx.pm_dir
+            .join(&entry.path)
+            .join(crate::store::claude_md::CLAUDE_MD),
+    )
+    .map_err(|e| format!("read ticket: {e}"))?;
     let mctx = memory_context(ctx, Some(leaf));
 
     let mut out: Vec<Value> = Vec::new();
@@ -234,22 +298,31 @@ fn handle_write_doc(ctx: &mut Context, args: &Value) -> Result<Value, String> {
     let section = require_str(args, "section")?;
     let content = require_str(args, "content")?;
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
-    let entry = ctx.db.state.items.get(&leaf)
+    let entry = ctx
+        .db
+        .state
+        .items
+        .get(&leaf)
         .ok_or_else(|| format!("state.json has no entry for {id}"))?
         .clone();
     let ticket_dir = ctx.pm_dir.join(&entry.path);
     let claude_path = ticket_dir.join(crate::store::claude_md::CLAUDE_MD);
     let mut ticket = Ticket::read(&claude_path).map_err(|e| format!("read ticket: {e}"))?;
     let replaced = ticket.upsert_section(section, content.to_string());
-    ticket.write_to(&ticket_dir).map_err(|e| format!("write ticket: {e}"))?;
+    ticket
+        .write_to(&ticket_dir)
+        .map_err(|e| format!("write ticket: {e}"))?;
 
-    let _ = append_event(&ctx.pm_dir, &Event {
-        ts: Utc::now(),
-        actor: default_actor(),
-        verb: "edit".to_string(),
-        id: Some(leaf),
-        detail: Some(format!("write_doc section={section}")),
-    });
+    let _ = append_event(
+        &ctx.pm_dir,
+        &Event {
+            ts: Utc::now(),
+            actor: default_actor(),
+            verb: "edit".to_string(),
+            id: Some(leaf),
+            detail: Some(format!("write_doc section={section}")),
+        },
+    );
 
     Ok(json!({
         "id": leaf.to_string(),
@@ -263,17 +336,19 @@ fn handle_write_doc(ctx: &mut Context, args: &Value) -> Result<Value, String> {
 
 fn handle_write_memory(ctx: &mut Context, args: &Value) -> Result<Value, String> {
     let scope_str = require_str(args, "scope")?;
-    let scope = Scope::parse(scope_str)
-        .ok_or_else(|| format!("unknown scope: {scope_str}"))?;
+    let scope = Scope::parse(scope_str).ok_or_else(|| format!("unknown scope: {scope_str}"))?;
     if matches!(scope, Scope::User) {
         return Err("user-tier writes are not exposed via MCP; use promotion".into());
     }
     let kind_str = require_str(args, "type")?;
-    let kind = MemoryType::parse(kind_str)
-        .ok_or_else(|| format!("unknown memory type: {kind_str}"))?;
+    let kind =
+        MemoryType::parse(kind_str).ok_or_else(|| format!("unknown memory type: {kind_str}"))?;
     let name = require_str(args, "name")?;
     let content = require_str(args, "content")?;
-    let description = args.get("description").and_then(Value::as_str).map(str::to_string);
+    let description = args
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::to_string);
 
     let ticket_arg = args.get("ticket").and_then(Value::as_str);
     let project_arg = args.get("project").and_then(Value::as_str);
@@ -282,13 +357,16 @@ fn handle_write_memory(ctx: &mut Context, args: &Value) -> Result<Value, String>
     let loc = write_memory(&mctx, scope, name, kind, description, content)
         .map_err(|e| format!("write_memory: {e}"))?;
 
-    let _ = append_event(&ctx.pm_dir, &Event {
-        ts: Utc::now(),
-        actor: default_actor(),
-        verb: "memory-write".to_string(),
-        id: None,
-        detail: Some(format!("{}:{name}", scope.as_str())),
-    });
+    let _ = append_event(
+        &ctx.pm_dir,
+        &Event {
+            ts: Utc::now(),
+            actor: default_actor(),
+            verb: "memory-write".to_string(),
+            id: None,
+            detail: Some(format!("{}:{name}", scope.as_str())),
+        },
+    );
     Ok(json!({
         "path": loc.file.display().to_string(),
         "scope": scope.as_str(),
@@ -306,7 +384,10 @@ fn handle_checkout(ctx: &mut Context, args: &Value) -> Result<Value, String> {
         "hard" => LockMode::Hard,
         other => return Err(format!("unknown mode: {other}")),
     };
-    let ttl = args.get("ttl_seconds").and_then(Value::as_u64).unwrap_or(DEFAULT_TTL_SECONDS);
+    let ttl = args
+        .get("ttl_seconds")
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_TTL_SECONDS);
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
     let now = Utc::now();
     let lock = LockFile::new(leaf, Some(intent.to_string()), ttl, mode, None);
@@ -317,10 +398,9 @@ fn handle_checkout(ctx: &mut Context, args: &Value) -> Result<Value, String> {
             "outcome": "soft-overlap",
             "previous_agent": previous.agent,
         })),
-        Ok(AcquireOutcome::Blocked { holder }) => Err(format!(
-            "lock refused: held by {}",
-            holder.agent,
-        )),
+        Ok(AcquireOutcome::Blocked { holder }) => {
+            Err(format!("lock refused: held by {}", holder.agent,))
+        }
         Err(e) => Err(format!("checkout: {e}")),
     }
 }
@@ -332,13 +412,16 @@ fn handle_checkin(ctx: &mut Context, args: &Value) -> Result<Value, String> {
     let summary = require_str(args, "summary")?;
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
     let removed = locks::release(&ctx.pm_dir, leaf).map_err(|e| format!("checkin: {e}"))?;
-    let _ = append_event(&ctx.pm_dir, &Event {
-        ts: Utc::now(),
-        actor: default_actor(),
-        verb: "checkin".to_string(),
-        id: Some(leaf),
-        detail: Some(summary.to_string()),
-    });
+    let _ = append_event(
+        &ctx.pm_dir,
+        &Event {
+            ts: Utc::now(),
+            actor: default_actor(),
+            verb: "checkin".to_string(),
+            id: Some(leaf),
+            detail: Some(summary.to_string()),
+        },
+    );
     Ok(json!({"id": leaf.to_string(), "released": removed}))
 }
 
@@ -346,23 +429,32 @@ fn handle_checkin(ctx: &mut Context, args: &Value) -> Result<Value, String> {
 
 fn handle_complete(ctx: &mut Context, args: &Value) -> Result<Value, String> {
     if approval_required(&ctx.pm_dir) {
-        return Err("complete: workspace config requires user approval; mark complete via the TUI or CLI".into());
+        return Err(
+            "complete: workspace config requires user approval; mark complete via the TUI or CLI"
+                .into(),
+        );
     }
     let id = require_str(args, "id")?;
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
     {
-        let task = ctx.db.get_mut(leaf).ok_or_else(|| "missing task".to_string())?;
+        let task = ctx
+            .db
+            .get_mut(leaf)
+            .ok_or_else(|| "missing task".to_string())?;
         task.status = Status::Done;
         task.updated_at_utc = Utc::now().timestamp();
     }
     ctx.db.save(&ctx.pm_dir).map_err(|e| format!("save: {e}"))?;
-    let _ = append_event(&ctx.pm_dir, &Event {
-        ts: Utc::now(),
-        actor: default_actor(),
-        verb: "complete".to_string(),
-        id: Some(leaf),
-        detail: None,
-    });
+    let _ = append_event(
+        &ctx.pm_dir,
+        &Event {
+            ts: Utc::now(),
+            actor: default_actor(),
+            verb: "complete".to_string(),
+            id: Some(leaf),
+            detail: None,
+        },
+    );
     Ok(json!({"id": leaf.to_string(), "status": "done"}))
 }
 
@@ -370,7 +462,11 @@ fn handle_complete(ctx: &mut Context, args: &Value) -> Result<Value, String> {
 
 fn handle_next(ctx: &Context, args: &Value) -> Result<Value, String> {
     let agent = require_str(args, "agent")?;
-    let kind_filter = args.get("kind").and_then(Value::as_str).map(parse_kind).transpose()?;
+    let kind_filter = args
+        .get("kind")
+        .and_then(Value::as_str)
+        .map(parse_kind)
+        .transpose()?;
     let tag_filter = args.get("tag").and_then(Value::as_str).map(str::to_string);
 
     let active_locks: std::collections::HashSet<LeafId> = locks::list(&ctx.pm_dir)
@@ -380,16 +476,27 @@ fn handle_next(ctx: &Context, args: &Value) -> Result<Value, String> {
         .map(|l| l.id)
         .collect();
 
-    let mut candidates: Vec<&Task> = ctx.db.tasks.iter()
+    let mut candidates: Vec<&Task> = ctx
+        .db
+        .tasks
+        .iter()
         .filter(|t| t.status == Status::Open)
         .filter(|t| !active_locks.contains(&t.id))
         .filter(|t| kind_filter.map_or(true, |k| t.kind == k))
-        .filter(|t| tag_filter.as_ref().map_or(true, |tag| t.tags.iter().any(|x| x == tag)))
+        .filter(|t| {
+            tag_filter
+                .as_ref()
+                .map_or(true, |tag| t.tags.iter().any(|x| x == tag))
+        })
         .collect();
     candidates.sort_by_key(|t| t.id.number());
 
     for task in candidates {
-        if task.deps.iter().all(|dep| matches!(ctx.db.get(*dep).map(|d| d.status), Some(Status::Done))) {
+        if task
+            .deps
+            .iter()
+            .all(|dep| matches!(ctx.db.get(*dep).map(|d| d.status), Some(Status::Done)))
+        {
             return Ok(json!({
                 "id": task.id.to_string(),
                 "title": task.title,
@@ -412,7 +519,10 @@ fn handle_add(ctx: &mut Context, args: &Value) -> Result<Value, String> {
         None => None,
     };
     if let Some(parent_leaf) = parent {
-        let parent_task = ctx.db.get(parent_leaf).ok_or_else(|| "parent missing".to_string())?;
+        let parent_task = ctx
+            .db
+            .get(parent_leaf)
+            .ok_or_else(|| "parent missing".to_string())?;
         if !crate::db::validate_hierarchy(parent_task.kind, kind) {
             return Err(format!(
                 "{} cannot be a child of {}",
@@ -421,7 +531,9 @@ fn handle_add(ctx: &mut Context, args: &Value) -> Result<Value, String> {
             ));
         }
     }
-    let id = ctx.db.allocate_id(crate::store::migrate::kind_to_prefix(kind));
+    let id = ctx
+        .db
+        .allocate_id(crate::store::migrate::kind_to_prefix(kind));
     let now = Utc::now().timestamp();
     let task = Task {
         id,
@@ -449,13 +561,16 @@ fn handle_add(ctx: &mut Context, args: &Value) -> Result<Value, String> {
     };
     ctx.db.tasks.push(task);
     ctx.db.save(&ctx.pm_dir).map_err(|e| format!("save: {e}"))?;
-    let _ = append_event(&ctx.pm_dir, &Event {
-        ts: Utc::now(),
-        actor: default_actor(),
-        verb: "add".to_string(),
-        id: Some(id),
-        detail: Some(title.to_string()),
-    });
+    let _ = append_event(
+        &ctx.pm_dir,
+        &Event {
+            ts: Utc::now(),
+            actor: default_actor(),
+            verb: "add".to_string(),
+            id: Some(id),
+            detail: Some(title.to_string()),
+        },
+    );
     Ok(json!({"id": id.to_string()}))
 }
 
@@ -470,20 +585,26 @@ fn handle_link(ctx: &mut Context, args: &Value) -> Result<Value, String> {
         return Err("a ticket cannot depend on itself".into());
     }
     {
-        let task = ctx.db.get_mut(leaf).ok_or_else(|| "missing task".to_string())?;
+        let task = ctx
+            .db
+            .get_mut(leaf)
+            .ok_or_else(|| "missing task".to_string())?;
         if !task.deps.contains(&dep_leaf) {
             task.deps.push(dep_leaf);
             task.updated_at_utc = Utc::now().timestamp();
         }
     }
     ctx.db.save(&ctx.pm_dir).map_err(|e| format!("save: {e}"))?;
-    let _ = append_event(&ctx.pm_dir, &Event {
-        ts: Utc::now(),
-        actor: default_actor(),
-        verb: "link".to_string(),
-        id: Some(leaf),
-        detail: Some(format!("needs {dep_leaf}")),
-    });
+    let _ = append_event(
+        &ctx.pm_dir,
+        &Event {
+            ts: Utc::now(),
+            actor: default_actor(),
+            verb: "link".to_string(),
+            id: Some(leaf),
+            detail: Some(format!("needs {dep_leaf}")),
+        },
+    );
     Ok(json!({"id": leaf.to_string(), "dep_id": dep_leaf.to_string()}))
 }
 
@@ -507,13 +628,21 @@ fn handle_events(ctx: &Context, args: &Value) -> Result<Value, String> {
             }
         }
     };
-    let payload: Vec<Value> = filtered.into_iter().rev().take(limit).rev().map(|e| json!({
-        "ts": e.ts.to_rfc3339(),
-        "actor": e.actor,
-        "verb": e.verb,
-        "id": e.id.map(|i| i.to_string()),
-        "detail": e.detail,
-    })).collect();
+    let payload: Vec<Value> = filtered
+        .into_iter()
+        .rev()
+        .take(limit)
+        .rev()
+        .map(|e| {
+            json!({
+                "ts": e.ts.to_rfc3339(),
+                "actor": e.actor,
+                "verb": e.verb,
+                "id": e.id.map(|i| i.to_string()),
+                "detail": e.detail,
+            })
+        })
+        .collect();
     Ok(json!({"events": payload}))
 }
 
@@ -579,7 +708,11 @@ fn kind_label_upper(k: Kind) -> &'static str {
 fn resolve_leaf(db: &Database, input: &str) -> Option<LeafId> {
     let parsed: IdInput = input.parse().ok()?;
     let leaf = parsed.leaf();
-    if db.get(leaf).is_some() { Some(leaf) } else { None }
+    if db.get(leaf).is_some() {
+        Some(leaf)
+    } else {
+        None
+    }
 }
 
 fn walk_ancestor_chain(db: &Database, start: LeafId) -> Vec<LeafId> {
@@ -587,9 +720,13 @@ fn walk_ancestor_chain(db: &Database, start: LeafId) -> Vec<LeafId> {
     let mut cursor = Some(start);
     let mut guard = 0;
     while let Some(cid) = cursor {
-        if guard > 16 { break; }
+        if guard > 16 {
+            break;
+        }
         guard += 1;
-        let Some(task) = db.get(cid) else { break; };
+        let Some(task) = db.get(cid) else {
+            break;
+        };
         chain.push(task.id);
         cursor = task.parent;
     }
@@ -612,8 +749,13 @@ fn memref_tier(m: &MemoryRef) -> &'static str {
 }
 
 fn memory_context(ctx: &Context, ticket: Option<LeafId>) -> MemoryContext {
-    let active_ticket_dir = ticket
-        .and_then(|leaf| ctx.db.state.items.get(&leaf).map(|e| ctx.pm_dir.join(&e.path)));
+    let active_ticket_dir = ticket.and_then(|leaf| {
+        ctx.db
+            .state
+            .items
+            .get(&leaf)
+            .map(|e| ctx.pm_dir.join(&e.path))
+    });
     let active_project = ticket.and_then(|leaf| project_ancestor(&ctx.db, leaf));
     MemoryContext {
         home: ctx.home.clone(),
@@ -650,7 +792,9 @@ fn project_ancestor(db: &Database, leaf: LeafId) -> Option<LeafId> {
     let mut cursor = Some(leaf);
     let mut guard = 0;
     while let Some(id) = cursor {
-        if guard > 16 { break; }
+        if guard > 16 {
+            break;
+        }
         guard += 1;
         let task = db.get(id)?;
         if matches!(task.kind, Kind::Project) {
@@ -665,7 +809,9 @@ fn solo_project(db: &Database) -> Option<LeafId> {
     let mut found: Option<LeafId> = None;
     for task in db.tasks.iter() {
         if matches!(task.kind, Kind::Project) {
-            if found.is_some() { return None; }
+            if found.is_some() {
+                return None;
+            }
             found = Some(task.id);
         }
     }
@@ -701,8 +847,13 @@ fn approval_required(pm_dir: &std::path::Path) -> bool {
     // `[mcp] require_complete_approval = true`. Absence of the file or the
     // key means the gate is off.
     let path = pm_dir.join("config.toml");
-    if !path.is_file() { return false; }
-    let raw = match fs::read_to_string(&path) { Ok(s) => s, Err(_) => return false };
+    if !path.is_file() {
+        return false;
+    }
+    let raw = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
     raw.lines().any(|l| {
         let t = l.trim();
         t.starts_with("require_complete_approval") && t.contains("true")

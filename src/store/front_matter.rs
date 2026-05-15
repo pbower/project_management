@@ -83,7 +83,9 @@ pub struct FrontMatter {
 }
 
 /// Default status when the field is omitted from the YAML block.
-fn default_status() -> Status { Status::Open }
+fn default_status() -> Status {
+    Status::Open
+}
 
 /// A typed reference to a memory file at a specific tier.
 ///
@@ -155,7 +157,10 @@ impl Document {
     pub fn parse(raw: &str) -> Result<Self, FrontMatterError> {
         let (yaml, body) = split_front_matter(raw)?;
         let fm = FrontMatter::from_yaml(yaml)?;
-        Ok(Document { front_matter: fm, body: body.to_string() })
+        Ok(Document {
+            front_matter: fm,
+            body: body.to_string(),
+        })
     }
 
     /// Read a file path and parse it.
@@ -188,9 +193,14 @@ impl Document {
 /// be `---`; otherwise reports [`FrontMatterError::MissingOpenDelimiter`].
 pub fn split_front_matter(raw: &str) -> Result<(&str, &str), FrontMatterError> {
     let raw = raw.strip_prefix('\u{FEFF}').unwrap_or(raw);
-    let raw = raw.strip_prefix("\r\n").or_else(|| raw.strip_prefix('\n')).unwrap_or(raw);
+    let raw = raw
+        .strip_prefix("\r\n")
+        .or_else(|| raw.strip_prefix('\n'))
+        .unwrap_or(raw);
 
-    let first_line_end = raw.find('\n').ok_or(FrontMatterError::MissingOpenDelimiter)?;
+    let first_line_end = raw
+        .find('\n')
+        .ok_or(FrontMatterError::MissingOpenDelimiter)?;
     let first_line = raw[..first_line_end].trim_end_matches('\r').trim_end();
     if first_line != "---" {
         return Err(FrontMatterError::MissingOpenDelimiter);
@@ -200,12 +210,18 @@ pub fn split_front_matter(raw: &str) -> Result<(&str, &str), FrontMatterError> {
     let mut search = rest;
     let mut consumed = 0usize;
     loop {
-        let line_end = search.find('\n').ok_or(FrontMatterError::MissingCloseDelimiter)?;
+        let line_end = search
+            .find('\n')
+            .ok_or(FrontMatterError::MissingCloseDelimiter)?;
         let line = search[..line_end].trim_end_matches('\r');
         if line.trim_end() == "---" {
             let yaml = &rest[..consumed];
             let body_start = consumed + line_end + 1;
-            let body = if body_start <= rest.len() { &rest[body_start..] } else { "" };
+            let body = if body_start <= rest.len() {
+                &rest[body_start..]
+            } else {
+                ""
+            };
             // Strip one leading newline after the closing delimiter so callers
             // see a clean body rather than a stray blank line.
             let body = body.strip_prefix('\n').unwrap_or(body);
@@ -247,7 +263,9 @@ mod tests {
     use super::*;
     use crate::store::id::TypePrefix;
 
-    fn sample_id() -> LeafId { LeafId::new(TypePrefix::Task, 7) }
+    fn sample_id() -> LeafId {
+        LeafId::new(TypePrefix::Task, 7)
+    }
 
     #[test]
     fn new_initialises_required_fields() {
@@ -287,7 +305,8 @@ mod tests {
             MemoryRef::User("feedback-testing".into()),
             MemoryRef::Project("auth-stack-conventions".into()),
         ];
-        fm.links.insert("github_issue".into(), "pbower/project_management#42".into());
+        fm.links
+            .insert("github_issue".into(), "pbower/project_management#42".into());
 
         let yaml = fm.to_yaml().unwrap();
         let back = FrontMatter::from_yaml(&yaml).unwrap();
