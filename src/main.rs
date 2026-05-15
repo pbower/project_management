@@ -216,7 +216,7 @@ fn main() {
         Commands::Locks => cmd_locks(&pm_dir),
 
         // Deferred to later phases
-        Commands::Tv => cmd_tv(&pm_dir),
+        Commands::Tv { path } => cmd_tv(path.as_deref().unwrap_or(&pm_dir)),
         Commands::Log { id } => cmd_log(&pm_dir, &id),
         Commands::Memory { action } => cmd_memory(&mut db, &pm_dir, action),
     }

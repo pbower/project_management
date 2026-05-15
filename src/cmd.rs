@@ -16,7 +16,7 @@ use crate::fields::*;
 use crate::store::id::{IdInput, LeafId};
 use crate::store::migrate::kind_to_prefix;
 use crate::task::{Task, TaskTemplate};
-use crate::tui::run::{run_tui, run_tui_with_edit};
+use crate::tui::run::{run_activity_view, run_tui, run_tui_with_edit};
 use crate::tui::menu::MenuApp;
 use crate::tui::workflow_run::run_workflow_tui;
 use crate::tui::workflow::WorkflowExit;
@@ -439,8 +439,15 @@ pub enum Commands {
     /// (Phase 6) List active locks.
     Locks,
 
-    /// (Phase 9) Open the full-screen activity feed.
-    Tv,
+    /// Open the full-screen activity feed (Mode 3 renderer in a standalone
+    /// loop). Defaults to the current workspace; pass a path to monitor a
+    /// different `.pm/` directory.
+    Tv {
+        /// Path to the `.pm/` directory (or any directory that contains
+        /// `.pm/`). Defaults to the resolved `pm_dir`.
+        #[arg(value_name = "PATH")]
+        path: Option<std::path::PathBuf>,
+    },
 
     /// (Phase 5) Filter git log to the ticket's slice of the tree.
     Log {
@@ -3298,7 +3305,14 @@ pub fn cmd_next(pm_dir: &Path, agent: Option<&str>, _filter: Option<&str>) {
     }
 }
 
-pub fn cmd_tv(_pm_dir: &Path) { cmd_deferred("tv", "Phase 9"); }
+/// `pm tv [PATH]`: drive the full-screen activity view (Phase 9). Shares its
+/// renderer with Mode 3 in the main TUI via [`run_activity_view`].
+pub fn cmd_tv(pm_dir: &Path) {
+    if let Err(e) = run_activity_view(pm_dir) {
+        eprintln!("pm tv: {e}");
+        std::process::exit(1);
+    }
+}
 /// `pm log <id>`: print the git history filtered to commits that touched the
 /// ticket's directory. Shells out to `git log -- <ticket-path>`, which does
 /// the subtree filtering natively.
