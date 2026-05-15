@@ -96,6 +96,15 @@ pub enum Overlay {
 pub enum PendingAction {
     /// Open the given ticket's `CLAUDE.md` in `$EDITOR`.
     EditTicket(LeafId),
+    /// Open an arbitrary file in `$EDITOR`, optionally jumping the cursor
+    /// to the given section heading. The owning ticket is tracked so the
+    /// post-edit hooks (event emission, artifact sweep, task refresh) target
+    /// the right node.
+    EditDoc {
+        ticket: LeafId,
+        path: std::path::PathBuf,
+        section: Option<String>,
+    },
 }
 
 /// State for Mode 2 - the Document Workspace.

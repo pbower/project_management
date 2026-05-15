@@ -1704,9 +1704,99 @@ impl App {
             KeyCode::Down => self.documents_cursor_move(1),
             KeyCode::Left => self.documents_level_move(-1),
             KeyCode::Right => self.documents_level_move(1),
+            KeyCode::Enter => self.documents_open_selected(),
             _ => {}
         }
         Ok(false)
+    }
+
+    /// Resolve the highlighted Mode 2 row to an `$EDITOR` target and queue a
+    /// [`PendingAction::EditDoc`]. Sections jump to their heading line on
+    /// editors that support it; arbitrary files open at the top.
+    fn documents_open_selected(&mut self) {
+        let level = self.documents.active_level;
+        if level >= self.documents.crumb.len() {
+            return;
+        }
+        let focus = self.documents.crumb[level];
+        let items = self.documents_pane_items();
+        let Some(item) = items.get(self.documents.doc_cursor) else { return };
+        let focus_chain: Vec<LeafId> =
+            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let address = match crate::store::AddressId::new(focus_chain) {
+            Ok(a) => a,
+            Err(_) => return,
+        };
+        let layout = crate::store::Layout::at(&self.pm_dir);
+        let abs = layout.root.join(layout.directory_for(&address));
+        let claude_md = abs.join("CLAUDE.md");
+
+        match item {
+            DocsPaneItem::Header(_) | DocsPaneItem::Note(_) => {
+                // Headers and notes do not open anything.
+            }
+            DocsPaneItem::Doc { path, .. } => {
+                self.pending_action = Some(PendingAction::EditDoc {
+                    ticket: focus,
+                    path: path.clone(),
+                    section: None,
+                });
+            }
+            DocsPaneItem::Section { name } => {
+                self.pending_action = Some(PendingAction::EditDoc {
+                    ticket: focus,
+                    path: claude_md,
+                    section: Some(name.clone()),
+                });
+            }
+            DocsPaneItem::Memory(reference) => {
+                // Resolve project- and ticket-scope memories to a file path.
+                // User-scope memories live under ~/.claude/projects/* and the
+                // mapping from the current workspace to that location is not
+                // yet wired; surface a status message and keep going.
+                if let Some(memory_path) = self.resolve_memory_path(reference, &abs) {
+                    self.pending_action = Some(PendingAction::EditDoc {
+                        ticket: focus,
+                        path: memory_path,
+                        section: None,
+                    });
+                } else {
+                    self.set_status_message(
+                        "user-scope memory editing not wired in this phase".to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Compute the on-disk path for a memory reference relative to the
+    /// focused ticket's directory. Returns `None` for user-scope memories
+    /// (their location depends on the global Claude memory dir which is not
+    /// yet plumbed into the TUI).
+    fn resolve_memory_path(
+        &self,
+        reference: &MemoryRef,
+        focus_dir: &std::path::Path,
+    ) -> Option<std::path::PathBuf> {
+        match reference {
+            MemoryRef::User(_) => None,
+            MemoryRef::Project(name) => {
+                // Walk up the crumb to find the nearest PRJ leaf, then map
+                // to projects/<PRJ>/memories/<name>.md under .pm/.
+                let prj_leaf = self
+                    .documents
+                    .crumb
+                    .iter()
+                    .find(|l| l.prefix() == crate::store::TypePrefix::Project)?;
+                let layout = crate::store::Layout::at(&self.pm_dir);
+                let address = crate::store::AddressId::new(vec![*prj_leaf]).ok()?;
+                let project_dir = layout.root.join(layout.directory_for(&address));
+                Some(project_dir.join("memories").join(format!("{name}.md")))
+            }
+            MemoryRef::Ticket(name) => {
+                Some(focus_dir.join("memories").join(format!("{name}.md")))
+            }
+        }
     }
 
     /// Move the breadcrumb focus by `delta` levels (Left = -1, Right = +1).
@@ -2050,28 +2140,147 @@ impl App {
                         return Ok(());
                     }
                 };
-
-                // Hand the terminal to the editor, then take it back.
-                disable_raw_mode()?;
-                execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
-                let status = std::process::Command::new(&editor).arg(&claude_path).status();
-                enable_raw_mode()?;
-                execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
-                terminal.clear()?;
-
-                match status {
-                    Ok(_) => {
-                        self.refresh_tasks();
-                        let _ = events::emit_event(&self.pm_dir, "edit", Some(leaf), None);
-                        self.set_status_message(format!("{leaf}: edited in $EDITOR"));
-                    }
-                    Err(e) => self.set_status_message(format!("editor failed: {e}")),
+                let invocation = editor_invocation_for(&claude_path, None);
+                self.run_editor(terminal, leaf, &claude_path, &invocation)?;
+            }
+            PendingAction::EditDoc { ticket, path, section } => {
+                if !path.exists() {
+                    self.set_status_message(format!(
+                        "{}: does not exist on disk",
+                        path.display()
+                    ));
+                    return Ok(());
                 }
+                let invocation = editor_invocation_for(&path, section.as_deref());
+                self.run_editor(terminal, ticket, &path, &invocation)?;
             }
         }
         Ok(())
     }
+
+    /// Suspend the terminal, run the editor invocation, then resume. On
+    /// success, refresh tasks, sweep the focused ticket's artifacts if the
+    /// file lives under one, and emit an `edit` event.
+    fn run_editor<B: Backend + std::io::Write>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        ticket: LeafId,
+        path: &std::path::Path,
+        invocation: &EditorInvocation,
+    ) -> io::Result<()> {
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+        let mut command = std::process::Command::new(&invocation.program);
+        for arg in &invocation.args {
+            command.arg(arg);
+        }
+        let status = command.status();
+        enable_raw_mode()?;
+        execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+        terminal.clear()?;
+
+        match status {
+            Ok(_) => {
+                self.refresh_tasks();
+                // If the edit landed under an artifacts/ directory, rerun the
+                // sweep so the sibling ARTIFACTS.md reflects any new file the
+                // editor wrote on save (e.g. quick scratch notes).
+                if let Some(parent) = path.parent() {
+                    if parent.file_name().and_then(|n| n.to_str()) == Some("artifacts") {
+                        let _ = crate::store::artifacts::sweep_dir(parent, ticket);
+                    }
+                }
+                let _ = events::emit_event(&self.pm_dir, "edit", Some(ticket), None);
+                self.set_status_message(format!("{ticket}: edited in $EDITOR"));
+            }
+            Err(e) => self.set_status_message(format!("editor failed: {e}")),
+        }
+        Ok(())
+    }
+}
+
+/// Editor invocation: program + args. Built by `editor_invocation_for` so
+/// section-jump arguments stay close to the editor-name detection logic.
+struct EditorInvocation {
+    program: String,
+    args: Vec<std::ffi::OsString>,
+}
+
+/// Build the editor invocation for `path`, optionally jumping the cursor to
+/// the heading line of `section` (`# <section>`). Editor selection follows
+/// `$EDITOR`; an empty / unset env var falls back to `nano`.
+///
+/// Section-jump arguments (PM_DESIGN.md §8.4):
+///
+/// | Editor   | Argument                |
+/// |----------|-------------------------|
+/// | nvim/vim | `+/^# <section>`        |
+/// | nano     | `+<line>`               |
+/// | emacs    | `+<line>`               |
+/// | helix/hx | `+<line>`               |
+/// | other    | no jump (opens at top)  |
+fn editor_invocation_for(
+    path: &std::path::Path,
+    section: Option<&str>,
+) -> EditorInvocation {
+    use std::ffi::OsString;
+
+    let editor_env = std::env::var("EDITOR").unwrap_or_default();
+    let program = if editor_env.trim().is_empty() {
+        "nano".to_string()
+    } else {
+        editor_env
+    };
+    let stem = std::path::Path::new(&program)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(program.as_str())
+        .to_ascii_lowercase();
+
+    let mut args: Vec<OsString> = Vec::new();
+    if let Some(sec) = section {
+        match stem.as_str() {
+            "nvim" | "vim" => {
+                args.push(OsString::from(format!("+/^# {}", regex_escape_vim(sec))));
+            }
+            "nano" | "emacs" | "helix" | "hx" => {
+                if let Some(line) = find_section_line(path, sec) {
+                    args.push(OsString::from(format!("+{line}")));
+                }
+            }
+            _ => {} // unknown editor: open at top
+        }
+    }
+    args.push(OsString::from(path));
+    EditorInvocation { program, args }
+}
+
+/// Escape vim/nvim regex meta-characters likely to appear in a section name.
+fn regex_escape_vim(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(
+            c,
+            '\\' | '.' | '*' | '+' | '?' | '^' | '$' | '[' | ']' | '(' | ')' | '|' | '{' | '}'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Find the 1-based line number of `# <section>` in `path`. Matches the
+/// section parser's convention: level-1 ATX heading on its own line.
+fn find_section_line(path: &std::path::Path, section: &str) -> Option<usize> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let target = format!("# {section}");
+    for (idx, line) in content.lines().enumerate() {
+        if line.trim_end() == target {
+            return Some(idx + 1);
+        }
+    }
+    None
 }
 
 /// One row in the LHS list of Mode 2. Renderer-private; the variants drive
