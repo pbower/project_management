@@ -39,8 +39,8 @@ use crate::{
     db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
     tui::{
         enums::{
-            AppState, DocumentsState, InputMode, Mode, NavigationContext,
-            Overlay, PendingAction, PromptState, PromptType,
+            AppState, DocumentsState, InputMode, MemoryLinkRow, MemoryLinkState, Mode,
+            NavigationContext, Overlay, PendingAction, PromptState, PromptType,
         },
         task_form::{
             TaskForm, ARTIFACTS_GLOBAL_ORDER, DESCRIPTION_GLOBAL_ORDER, DUE_GLOBAL_ORDER,
@@ -891,6 +891,13 @@ impl App {
                     return Ok(false);
                 }
 
+                // The memory link modal owns input while it is open. Closing
+                // it persists any toggles back to the ticket's front-matter.
+                if matches!(self.overlay, Overlay::MemoryLink(_)) {
+                    self.handle_memory_link_input(key.code);
+                    return Ok(false);
+                }
+
                 // Mode-switch keys win from any non-text-capturing surface,
                 // and close any active overlay as they switch.
                 if self.try_mode_switch(key.code) {
@@ -1615,11 +1622,56 @@ impl App {
             f.render_widget(widget, area);
         }
 
+        // The memory link / unlink modal overlays the current mode.
+        if let Overlay::MemoryLink(state) = &self.overlay {
+            self.render_memory_link_overlay(f, state);
+        }
+
         // The help overlay is modal and mode-independent: drawn last so it
         // sits on top of whatever the current mode rendered.
         if matches!(self.overlay, Overlay::Help { .. }) {
             self.render_help(f, f.area());
         }
+    }
+
+    /// Render the memory link / unlink modal. Each row shows `[x]` or `[ ]`
+    /// based on the row's `linked` flag, followed by the memory reference's
+    /// `@<name>` form and a `[scope]` annotation.
+    fn render_memory_link_overlay(&self, f: &mut Frame, state: &MemoryLinkState) {
+        let area = centered_rect(70, 50, f.area());
+        f.render_widget(Clear, area);
+
+        let mut lines: Vec<Line> = Vec::new();
+        if state.rows.is_empty() {
+            lines.push(Line::from("No project- or ticket-scope memories on disk."));
+            lines.push(Line::from("Drop a file into memories/ and reopen this modal."));
+        } else {
+            for (idx, row) in state.rows.iter().enumerate() {
+                let marker = if row.linked { "[x]" } else { "[ ]" };
+                let label = memory_ref_label(&row.reference);
+                let line = format!("{marker} {label}");
+                let style = if idx == state.cursor {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::from(Span::styled(line, style)));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Space / Enter toggle   Up / Down move   Esc or m closes (saves)",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        let title = format!("Memories - link / unlink ({}, {} rows)",
+            state.ticket,
+            state.rows.len(),
+        );
+        let widget = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .wrap(Wrap { trim: false });
+        f.render_widget(widget, area);
     }
 
     /// Render the activity footer - the last three entries from `events.log`
@@ -1720,9 +1772,204 @@ impl App {
                     self.set_status_message("No ticket focused".to_string());
                 }
             }
+            // `m` opens the memory link/unlink modal for the focused ticket.
+            // Memories are enumerated fresh from the on-disk project and
+            // ticket memory directories; the front-matter `memories:` list
+            // drives which rows start linked.
+            KeyCode::Char('m') => self.documents_open_memory_modal(),
             _ => {}
         }
         Ok(false)
+    }
+
+    /// Build the memory link/unlink modal for the focused ticket. Project-
+    /// scope memories live under `<pm_dir>/projects/<PRJ>/memories/`;
+    /// ticket-scope memories live under the focused ticket's own
+    /// `memories/` directory. User-scope memories are not yet enumerated
+    /// here.
+    fn documents_open_memory_modal(&mut self) {
+        let level = self.documents.active_level;
+        if level >= self.documents.crumb.len() {
+            self.set_status_message("No ticket focused".to_string());
+            return;
+        }
+        let focus = self.documents.crumb[level];
+        let focus_chain: Vec<LeafId> =
+            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let layout = crate::store::Layout::at(&self.pm_dir);
+        let focus_dir = match crate::store::AddressId::new(focus_chain.clone()) {
+            Ok(a) => layout.root.join(layout.directory_for(&a)),
+            Err(_) => {
+                self.set_status_message("Invalid address chain".to_string());
+                return;
+            }
+        };
+
+        // Project-scope memories: walk the crumb for the first PRJ leaf and
+        // scan its memories/ dir.
+        let mut available: Vec<MemoryRef> = Vec::new();
+        if let Some(prj) = self
+            .documents
+            .crumb
+            .iter()
+            .find(|l| l.prefix() == crate::store::TypePrefix::Project)
+        {
+            if let Ok(prj_addr) = crate::store::AddressId::new(vec![*prj]) {
+                let prj_dir = layout.root.join(layout.directory_for(&prj_addr));
+                for name in list_memory_names(&prj_dir.join("memories")) {
+                    available.push(MemoryRef::Project(name));
+                }
+            }
+        }
+        // Ticket-scope memories under the focused ticket's directory.
+        for name in list_memory_names(&focus_dir.join("memories")) {
+            available.push(MemoryRef::Ticket(name));
+        }
+
+        // Pull the currently-linked memories from the ticket's front-matter
+        // so the modal starts with the right rows ticked. Any linked memory
+        // not on disk is included as a row so the user can see and unlink
+        // dangling references.
+        let claude_md = focus_dir.join("CLAUDE.md");
+        let linked: Vec<MemoryRef> = crate::store::Ticket::read(&claude_md)
+            .map(|t| t.front_matter.memories)
+            .unwrap_or_default();
+
+        let mut rows: Vec<MemoryLinkRow> = Vec::new();
+        for available_ref in &available {
+            let already = linked.iter().any(|l| memory_refs_equal(l, available_ref));
+            rows.push(MemoryLinkRow {
+                reference: available_ref.clone(),
+                linked: already,
+            });
+        }
+        for linked_ref in &linked {
+            if !available.iter().any(|a| memory_refs_equal(a, linked_ref)) {
+                rows.push(MemoryLinkRow {
+                    reference: linked_ref.clone(),
+                    linked: true,
+                });
+            }
+        }
+
+        self.overlay = Overlay::MemoryLink(MemoryLinkState {
+            ticket: focus,
+            rows,
+            cursor: 0,
+            dirty: false,
+        });
+    }
+
+    /// Route input to the open memory link modal. Up/Down moves the cursor,
+    /// Space/Enter toggles the highlighted row, Esc/m closes and persists.
+    fn handle_memory_link_input(&mut self, key: KeyCode) {
+        let Overlay::MemoryLink(state) = &mut self.overlay else { return };
+        let rows_len = state.rows.len();
+        match key {
+            KeyCode::Up => {
+                if state.cursor > 0 {
+                    state.cursor -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if state.cursor + 1 < rows_len {
+                    state.cursor += 1;
+                }
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                if let Some(row) = state.rows.get_mut(state.cursor) {
+                    row.linked = !row.linked;
+                    state.dirty = true;
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('m') | KeyCode::Char('q') => {
+                let prev = std::mem::replace(&mut self.overlay, Overlay::None);
+                if let Overlay::MemoryLink(state) = prev {
+                    self.persist_memory_link(state);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Write the toggled memory list back to the focused ticket's CLAUDE.md
+    /// and emit `memory-link` / `memory-unlink` events for each change. If
+    /// nothing was toggled the function is a no-op.
+    fn persist_memory_link(&mut self, state: MemoryLinkState) {
+        if !state.dirty {
+            return;
+        }
+        let ticket = state.ticket;
+        let level = self.documents.active_level;
+        if level >= self.documents.crumb.len() {
+            return;
+        }
+        let focus_chain: Vec<LeafId> =
+            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let layout = crate::store::Layout::at(&self.pm_dir);
+        let address = match crate::store::AddressId::new(focus_chain) {
+            Ok(a) => a,
+            Err(_) => return,
+        };
+        let focus_dir = layout.root.join(layout.directory_for(&address));
+        let claude_md = focus_dir.join("CLAUDE.md");
+
+        let mut ticket_doc = match crate::store::Ticket::read(&claude_md) {
+            Ok(t) => t,
+            Err(e) => {
+                self.set_status_message(format!("memory write failed: {e}"));
+                return;
+            }
+        };
+
+        let before: Vec<MemoryRef> = ticket_doc.front_matter.memories.clone();
+        let after: Vec<MemoryRef> = state
+            .rows
+            .iter()
+            .filter(|r| r.linked)
+            .map(|r| r.reference.clone())
+            .collect();
+
+        let added: Vec<MemoryRef> = after
+            .iter()
+            .filter(|a| !before.iter().any(|b| memory_refs_equal(a, b)))
+            .cloned()
+            .collect();
+        let removed: Vec<MemoryRef> = before
+            .iter()
+            .filter(|b| !after.iter().any(|a| memory_refs_equal(a, b)))
+            .cloned()
+            .collect();
+
+        ticket_doc.front_matter.memories = after;
+        if let Err(e) = ticket_doc.write_to(&focus_dir) {
+            self.set_status_message(format!("memory write failed: {e}"));
+            return;
+        }
+
+        for memref in &added {
+            let _ = events::emit_event(
+                &self.pm_dir,
+                "memory-link",
+                Some(ticket),
+                Some(memory_ref_label(memref).as_str()),
+            );
+        }
+        for memref in &removed {
+            let _ = events::emit_event(
+                &self.pm_dir,
+                "memory-unlink",
+                Some(ticket),
+                Some(memory_ref_label(memref).as_str()),
+            );
+        }
+
+        self.refresh_tasks();
+        self.set_status_message(format!(
+            "{ticket}: memories {} added, {} removed",
+            added.len(),
+            removed.len(),
+        ));
     }
 
     /// Resolve the highlighted Mode 2 row to an `$EDITOR` target and queue a
@@ -2379,5 +2626,49 @@ fn documents_preview_memory(reference: &MemoryRef) -> String {
         MemoryRef::User(name) => format!("user-scope memory: {name}\n\n@{name}"),
         MemoryRef::Project(name) => format!("project-scope memory: {name}\n\n@{name}"),
         MemoryRef::Ticket(name) => format!("ticket-scope memory: {name}\n\n@{name}"),
+    }
+}
+
+/// List memory file stems under `dir`. Drops the `.md` suffix and skips
+/// hidden files / non-files. Sorted alphabetically.
+fn list_memory_names(dir: &std::path::Path) -> Vec<String> {
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut names: Vec<String> = read_dir
+        .filter_map(|d| d.ok())
+        .filter(|d| d.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter_map(|d| {
+            let name = d.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || !name.ends_with(".md") {
+                return None;
+            }
+            Some(name.trim_end_matches(".md").to_string())
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Structural equality for `MemoryRef`. The enum derives [`PartialEq`] in
+/// the store module already; this exists so the local code can compare two
+/// references by value without pulling the trait into scope at every site.
+fn memory_refs_equal(a: &MemoryRef, b: &MemoryRef) -> bool {
+    match (a, b) {
+        (MemoryRef::User(x), MemoryRef::User(y))
+        | (MemoryRef::Project(x), MemoryRef::Project(y))
+        | (MemoryRef::Ticket(x), MemoryRef::Ticket(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// `@<name>  [<scope>]` formatting for a memory reference, used both by the
+/// modal and by the LHS list in Mode 2 so the labels match across surfaces.
+fn memory_ref_label(reference: &MemoryRef) -> String {
+    match reference {
+        MemoryRef::User(name) => format!("@{name}  [user]"),
+        MemoryRef::Project(name) => format!("@{name}  [project]"),
+        MemoryRef::Ticket(name) => format!("@{name}  [ticket]"),
     }
 }
