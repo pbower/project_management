@@ -272,4 +272,22 @@ mod tests {
         assert_eq!(v["description"].as_str(), Some(tool.description));
         assert!(v["inputSchema"].is_object());
     }
+
+    /// PM_BUILD_PLAN.md Phase 11 exit criterion: the full tool-set fits in
+    /// roughly 4.5k tokens when serialised for `tools/list`. The estimate
+    /// is `chars / 4`, a widely-used token rule of thumb for English-and-JSON
+    /// payloads. The check is conservative on purpose - the real tokeniser
+    /// would treat short JSON punctuation as a single token, which our
+    /// chars/4 rule overestimates.
+    #[test]
+    fn tools_list_payload_fits_under_45k_tokens() {
+        let listings: Vec<_> = tool_catalog().into_iter().map(|t| t.to_listing()).collect();
+        let payload = serde_json::json!({"tools": listings});
+        let serialised = serde_json::to_string(&payload).expect("serialise listings");
+        let est_tokens = (serialised.chars().count() + 3) / 4;
+        assert!(
+            est_tokens <= 4500,
+            "tools/list payload uses ~{est_tokens} tokens (cap is 4500). Trim descriptions or schemas.",
+        );
+    }
 }
