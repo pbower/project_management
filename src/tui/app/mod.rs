@@ -1705,6 +1705,21 @@ impl App {
             KeyCode::Left => self.documents_level_move(-1),
             KeyCode::Right => self.documents_level_move(1),
             KeyCode::Enter => self.documents_open_selected(),
+            // `a` adds an artifact to the focused ticket via a path prompt.
+            // The prompt completion path (in app::prompt) handles the copy
+            // and the ARTIFACTS.md sweep.
+            KeyCode::Char('a') => {
+                let level = self.documents.active_level;
+                if level < self.documents.crumb.len() {
+                    let focus = self.documents.crumb[level];
+                    self.overlay = Overlay::Prompt(PromptState {
+                        prompt_type: PromptType::ArtifactPath(focus),
+                        buffer: String::new(),
+                    });
+                } else {
+                    self.set_status_message("No ticket focused".to_string());
+                }
+            }
             _ => {}
         }
         Ok(false)
