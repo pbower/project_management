@@ -21,7 +21,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, TableState, Wrap},
     Frame, Terminal,
 };
 
@@ -38,12 +38,12 @@ use crate::views::events_view::{ActivityAction, ActivityView};
 use crate::{
     db::{
         format_due_relative, format_kind, format_priority, format_process_stage, format_status,
-        format_urgency, kind_to_prefix, project_label, *,
+        format_urgency, kind_to_prefix, *,
     },
     tui::{
         enums::{
-            AppState, DocumentsState, InputMode, MemoryLinkRow, MemoryLinkState, Mode,
-            NavigationContext, Overlay, PendingAction, PromptState, PromptType,
+            AppState, DocumentsState, HierarchyLevel, InputMode, MemoryLinkRow, MemoryLinkState,
+            Mode, NavigationContext, Overlay, PendingAction, PromptState, PromptType,
         },
         task_form::{
             TaskForm, ARTIFACTS_GLOBAL_ORDER, DESCRIPTION_GLOBAL_ORDER, DUE_GLOBAL_ORDER,
@@ -55,10 +55,7 @@ use crate::{
         utils::centered_rect,
     },
 };
-use crate::{
-    fields::*,
-    tui::colors::{DARK_GREEN, DARK_PURPLE, DARK_RED, GOLD},
-};
+use crate::{fields::*, tui::colors::GOLD};
 
 /// State snapshot for navigation history. `pub(super)` so the navigation
 /// submodule can construct and consume snapshots while keeping the type
@@ -1019,195 +1016,282 @@ impl App {
 
     /// Render the main task list view with table and hierarchy context.
     fn render_task_list(&mut self, f: &mut Frame, area: Rect) {
-        let today = Local::now().date_naive();
-        let hierarchy_color = self.get_hierarchy_color();
-
-        // Split the area to accommodate the ASCII header
+        // Body composes top-down: breadcrumb header, Miller-column hierarchy
+        // nav, a detail band for the active ticket, and a keybinding footer.
+        // The outer mode dispatcher draws the 3-line activity tail and the
+        // status row beneath the body, so this function stops at the keys
+        // footer.
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // ASCII header height
-                Constraint::Min(0),    // Rest for the table
+                Constraint::Length(3), // breadcrumb header
+                Constraint::Min(8),    // miller columns
+                Constraint::Length(6), // detail band
+                Constraint::Length(5), // keys footer
             ])
             .split(area);
 
-        // Render ASCII header with consistent app styling and context
-        let project_name = self.get_current_project_name();
-        let context_display = format!(
-            "Current Project: {}  Current View: {}",
-            project_name,
-            self.navigation_context.get_display_name()
-        );
-        let header_text = vec![Line::from(vec![
-            Span::styled(
-                format!("[ {} ]", self.mode.label()),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                "PROJECT MANAGEMENT",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                context_display,
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ])];
+        self.render_breadcrumb_header(f, chunks[0]);
+        self.render_miller_columns(f, chunks[1]);
+        self.render_detail_band(f, chunks[2]);
+        self.render_keys_footer(f, chunks[3]);
+    }
 
-        let header_block = Paragraph::new(header_text)
-            .block(Block::default().borders(Borders::ALL))
-            .alignment(Alignment::Center);
-        f.render_widget(header_block, chunks[0]);
-
-        let header_cells = [
-            "ID", "Kind", "Status", "Priority", "Urgency", "Stage", "Due", "Project", "Lock",
-            "Title",
-        ]
-        .iter()
-        .map(|h| {
-            ratatui::widgets::Cell::from(*h).style(Style::default().add_modifier(Modifier::BOLD))
-        });
-
-        let text_color = match hierarchy_color {
-            GOLD => Color::Rgb(20, 20, 20),
-            _ => Color::White,
-        };
-
-        let header = Row::new(header_cells)
-            .style(Style::default().bg(hierarchy_color).fg(text_color))
-            .height(1);
-
-        // Calculate depth map for tree view
-        let mut depth_map: HashMap<LeafId, usize> = HashMap::new();
-        for task in &self.db.tasks {
-            let mut depth = 0usize;
-            let mut cur = task.parent;
-            while let Some(pid) = cur {
-                depth += 1;
-                cur = self.db.get(pid).and_then(|p| p.parent);
-                if depth > 64 {
-                    break;
-                } // cycle guard
+    /// Render the top header per §8.3.2 mockup:
+    /// `[ Mode 1 Tickets | PRJ pm > PRD core > EPC checkouts ]`.
+    fn render_breadcrumb_header(&self, f: &mut Frame, area: Rect) {
+        let mut parts: Vec<String> = Vec::new();
+        for ctx in &self.navigation_stack {
+            if let (Some(pid), Some(title)) = (&ctx.parent_id, &ctx.parent_title) {
+                parts.push(format!("{} {}", kind_prefix_for(&self.db, *pid), title));
             }
-            depth_map.insert(task.id, depth);
         }
+        if let (Some(pid), Some(title)) = (
+            self.navigation_context.parent_id,
+            &self.navigation_context.parent_title,
+        ) {
+            parts.push(format!("{} {}", kind_prefix_for(&self.db, pid), title));
+        }
+        let crumb = if parts.is_empty() {
+            "Root".to_string()
+        } else {
+            parts.join(" > ")
+        };
+        let title = format!("[ {} | {} ]", self.mode.label(), crumb);
+        let widget = Paragraph::new("")
+            .block(
+                Block::default().borders(Borders::ALL).title(Span::styled(
+                    title,
+                    Style::default()
+                        .fg(self.get_hierarchy_color())
+                        .add_modifier(Modifier::BOLD),
+                )),
+            )
+            .alignment(Alignment::Left);
+        f.render_widget(widget, area);
+    }
 
-        // Load active locks once per render, keyed by ticket id, so each row
-        // can show its lock state without a per-row directory read.
+    /// Render the Miller-column hierarchy nav. Each column shows the items at
+    /// one level filtered by the previous column's selection. The current
+    /// navigation level is the active column and carries the hierarchy
+    /// colour; ancestor columns are dim.
+    fn render_miller_columns(&mut self, f: &mut Frame, area: Rect) {
+        // Pre-load lock state once per render.
         let lock_map: HashMap<LeafId, LockFile> = locks::list(&self.pm_dir)
             .unwrap_or_default()
             .into_iter()
-            .map(|lock| (lock.id, lock))
+            .map(|l| (l.id, l))
             .collect();
         let now = Utc::now();
 
-        let rows: Vec<Row> = self
+        // Build the column chain: one entry per navigation_stack ancestor,
+        // plus the current context. For each ancestor column the "selected"
+        // item is the parent_id of the next entry in the chain - that's
+        // what the user drilled into.
+        let mut next_parents: Vec<Option<LeafId>> = self
+            .navigation_stack
+            .iter()
+            .skip(1)
+            .map(|c| c.parent_id)
+            .collect();
+        next_parents.push(self.navigation_context.parent_id);
+
+        struct Col<'a> {
+            label: &'static str,
+            items: Vec<&'a Task>,
+            selected_idx: Option<usize>,
+            active: bool,
+        }
+        let mut cols: Vec<Col> = Vec::new();
+        for (i, ctx) in self.navigation_stack.iter().enumerate() {
+            let items = items_at_level(&self.db, ctx.level, ctx.parent_id);
+            let sel = next_parents.get(i).copied().flatten();
+            let selected_idx = sel.and_then(|sp| items.iter().position(|t| t.id == sp));
+            cols.push(Col {
+                label: level_label(ctx.level),
+                items,
+                selected_idx,
+                active: false,
+            });
+        }
+        // Active column from the current context. We use filtered_tasks here
+        // so type-to-filter and sort modes still apply; ancestor columns are
+        // raw children-of-parent lists.
+        let active_items: Vec<&Task> = self
             .filtered_tasks
             .iter()
-            .filter_map(|&id| self.db.get(id))
-            .map(|task| {
-                let due_str = format_due_relative(task.due, today);
-                let project_label_str = project_label(&self.db, task);
-                let project_str = if project_label_str == "-" {
-                    "-".to_string()
-                } else {
-                    project_label_str
-                };
-                let tags_str = if task.tags.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", task.tags.join(","))
-                };
-
-                // Determine hierarchy color
-                let hierarchy_color = match task.kind {
-                    Kind::Project => Color::Cyan, // Cyan for the top-level Project tickets
-                    Kind::Product => Color::Blue, // Dark Blue (keeping existing)
-                    Kind::Epic => DARK_GREEN,     // Forest Green
-                    Kind::Task => GOLD,           // Gold
-                    Kind::Subtask => DARK_RED,    // Crimson Red
-                    Kind::Milestone => DARK_PURPLE, // Magenta for milestones
-                };
-
-                let style = match task.status {
-                    Status::Done => Style::default().fg(Color::DarkGray),
-                    Status::InProgress => Style::default()
-                        .fg(hierarchy_color)
-                        .add_modifier(Modifier::BOLD),
-                    _ => Style::default().fg(Color::White),
-                };
-
-                let depth = depth_map.get(&task.id).copied().unwrap_or(0);
-                let indent_str = " ".repeat(depth);
-                // M:n badge for tickets with linked memories. The count comes
-                // straight from front-matter; memory file content is a Mode 2
-                // concern, not loaded here.
-                let memory_badge = if task.memories.is_empty() {
-                    String::new()
-                } else {
-                    format!("  M:{}", task.memories.len())
-                };
-                let title_with_tags = format!("{}{}{}", task.title, tags_str, memory_badge);
-
-                // Lock state: empty when free, STALE past the TTL window,
-                // otherwise the holding agent (truncated to the column).
-                let lock_cell = match lock_map.get(&task.id) {
-                    None => ratatui::widgets::Cell::from(""),
-                    Some(lock) if lock.is_stale(now) => ratatui::widgets::Cell::from("STALE")
-                        .style(Style::default().fg(DARK_RED).add_modifier(Modifier::BOLD)),
-                    Some(lock) => ratatui::widgets::Cell::from(truncate(&lock.agent, 16))
-                        .style(Style::default().fg(GOLD)),
-                };
-
-                Row::new(vec![
-                    ratatui::widgets::Cell::from(task.id.to_string()),
-                    ratatui::widgets::Cell::from(format_kind(task.kind)),
-                    ratatui::widgets::Cell::from(format_status(task.status)),
-                    ratatui::widgets::Cell::from(format_priority(task.priority_level)),
-                    ratatui::widgets::Cell::from(format_urgency(task.urgency)),
-                    ratatui::widgets::Cell::from(format_process_stage(task.process_stage)),
-                    ratatui::widgets::Cell::from(due_str),
-                    ratatui::widgets::Cell::from(project_str),
-                    lock_cell,
-                    ratatui::widgets::Cell::from(if depth == 0 {
-                        title_with_tags
-                    } else {
-                        format!("{}{}", indent_str, title_with_tags)
-                    }),
-                ])
-                .style(style)
-            })
+            .filter_map(|id| self.db.get(*id))
             .collect();
+        let active_sel = self.task_list_state.selected();
+        cols.push(Col {
+            label: level_label(self.navigation_context.level),
+            items: active_items,
+            selected_idx: active_sel,
+            active: true,
+        });
 
-        let widths = [
-            Constraint::Length(4),  // ID
-            Constraint::Length(10), // Kind
-            Constraint::Length(12), // Status
-            Constraint::Length(15), // Priority
-            Constraint::Length(18), // Urgency
-            Constraint::Length(13), // Stage
-            Constraint::Length(12), // Due
-            Constraint::Length(12), // Project
-            Constraint::Length(16), // Lock
-            Constraint::Min(25),    // Title
+        // Only the rightmost 4 columns are visible if the chain is deeper.
+        let show_from = cols.len().saturating_sub(4);
+        let visible: Vec<&Col> = cols[show_from..].iter().collect();
+
+        if visible.is_empty() {
+            let empty = Paragraph::new(Line::from("No tickets yet. Press `n` to add one."))
+                .block(Block::default().borders(Borders::ALL).title("Tickets"));
+            f.render_widget(empty, area);
+            return;
+        }
+
+        let n = visible.len() as u32;
+        let constraints: Vec<Constraint> = (0..visible.len())
+            .map(|_| Constraint::Ratio(1, n))
+            .collect();
+        let col_rects = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(constraints)
+            .split(area);
+
+        let active_color = self.get_hierarchy_color();
+        for (i, col) in visible.iter().enumerate() {
+            let lines: Vec<Line> = col
+                .items
+                .iter()
+                .enumerate()
+                .map(|(idx, task)| {
+                    let cursor = if Some(idx) == col.selected_idx {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    let mem_badge = if task.memories.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  M:{}", task.memories.len())
+                    };
+                    let lock_badge = match lock_map.get(&task.id) {
+                        None => String::new(),
+                        Some(lock) if lock.is_stale(now) => "  STALE".to_string(),
+                        Some(lock) => format!("  @{}", truncate(&lock.agent, 12)),
+                    };
+                    let line = format!(
+                        "{} {} {}{}{}",
+                        cursor, task.id, task.title, mem_badge, lock_badge
+                    );
+                    let style = if Some(idx) == col.selected_idx && col.active {
+                        Style::default()
+                            .bg(active_color)
+                            .fg(Color::Black)
+                            .add_modifier(Modifier::BOLD)
+                    } else if Some(idx) == col.selected_idx {
+                        Style::default().add_modifier(Modifier::BOLD)
+                    } else if task.status == Status::Done {
+                        Style::default().fg(Color::DarkGray)
+                    } else {
+                        Style::default()
+                    };
+                    Line::from(Span::styled(line, style))
+                })
+                .collect();
+
+            let border_color = if col.active {
+                active_color
+            } else {
+                Color::DarkGray
+            };
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(Span::styled(
+                    col.label,
+                    Style::default()
+                        .fg(border_color)
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .border_style(Style::default().fg(border_color));
+
+            let widget = Paragraph::new(lines).block(block);
+            f.render_widget(widget, col_rects[i]);
+        }
+    }
+
+    /// Render the detail band for the currently-selected ticket per §8.3.2.
+    fn render_detail_band(&self, f: &mut Frame, area: Rect) {
+        let selected_task: Option<&Task> = self
+            .task_list_state
+            .selected()
+            .and_then(|i| self.filtered_tasks.get(i))
+            .and_then(|id| self.db.get(*id));
+
+        let lines = match selected_task {
+            None => vec![Line::from(Span::styled(
+                "Nothing selected. Use ^v to move within the active column, <- -> to switch columns, Enter to drill.",
+                Style::default().fg(Color::DarkGray),
+            ))],
+            Some(t) => {
+                let lock = locks::read(&self.pm_dir, t.id).ok().flatten();
+                let lock_str = lock.map(|l| l.agent).unwrap_or_else(|| "-".into());
+                let due_str = format_due_relative(t.due, Local::now().date_naive());
+                let tags_str = if t.tags.is_empty() {
+                    "-".into()
+                } else {
+                    t.tags.join(", ")
+                };
+                let deps_str = if t.deps.is_empty() {
+                    "-".into()
+                } else {
+                    t.deps
+                        .iter()
+                        .map(|d| d.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let milestone_str = t
+                    .milestone
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| "-".into());
+                let mem_str = if t.memories.is_empty() {
+                    "no memories linked".into()
+                } else {
+                    format!("M:{} memories linked", t.memories.len())
+                };
+                vec![
+                    Line::from(Span::styled(
+                        format!("{} {}", t.id, t.title),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(format!(
+                        "  Status: {:<14} Priority: {:<14} Locked: {}",
+                        format_status(t.status),
+                        format_priority(t.priority_level),
+                        lock_str
+                    )),
+                    Line::from(format!("  Due: {:<14} Tags: {}", due_str, tags_str)),
+                    Line::from(format!(
+                        "  Deps: {:<13} Milestone: {:<10} {}",
+                        deps_str, milestone_str, mem_str
+                    )),
+                ]
+            }
+        };
+
+        let widget =
+            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("Detail"));
+        f.render_widget(widget, area);
+    }
+
+    /// Mode 1 keybindings footer per §8.3.2.
+    fn render_keys_footer(&self, f: &mut Frame, area: Rect) {
+        let lines = vec![
+            Line::from(
+                "<- -> level    ^v item    Enter drill    e edit    c checkout    i checkin",
+            ),
+            Line::from(
+                "n new          f form     a artifact     m memory  r rename       / filter",
+            ),
+            Line::from("Tab / 1 / 2 / 3 mode    ? help    q back"),
         ];
-
-        let table = Table::new(rows, widths)
-            .header(header)
-            .block(Block::default().borders(Borders::ALL).title(format!(
-                "Tasks ({}/{}) - Press 'h' for help",
-                self.filtered_tasks.len(),
-                self.db.tasks.len()
-            )))
-            .row_highlight_style(Style::default().bg(Color::Gray).fg(Color::Black))
-            .highlight_symbol(">> ");
-
-        f.render_stateful_widget(table, chunks[1], &mut self.task_list_state);
+        let widget = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title("Keys"))
+            .style(Style::default().fg(Color::Gray));
+        f.render_widget(widget, area);
     }
 
     /// Render the task creation or editing form.
@@ -2852,5 +2936,47 @@ fn memory_ref_label(reference: &MemoryRef) -> String {
         MemoryRef::User(name) => format!("@{name}  [user]"),
         MemoryRef::Project(name) => format!("@{name}  [project]"),
         MemoryRef::Ticket(name) => format!("@{name}  [ticket]"),
+    }
+}
+
+/// Three-letter kind prefix for a leaf id, used in the breadcrumb header.
+fn kind_prefix_for(db: &Database, id: LeafId) -> &'static str {
+    match db.get(id).map(|t| t.kind) {
+        Some(Kind::Project) => "PRJ",
+        Some(Kind::Product) => "PRD",
+        Some(Kind::Epic) => "EPC",
+        Some(Kind::Task) => "TSK",
+        Some(Kind::Subtask) => "SBT",
+        Some(Kind::Milestone) => "MLS",
+        None => "?",
+    }
+}
+
+/// Items at a given hierarchy level, filtered by the parent that opened the
+/// column. `None` parent for the Project level lists all top-level tickets.
+fn items_at_level(db: &Database, level: HierarchyLevel, parent: Option<LeafId>) -> Vec<&Task> {
+    let kind = match level {
+        HierarchyLevel::Project => Kind::Project,
+        HierarchyLevel::Product => Kind::Product,
+        HierarchyLevel::Epic => Kind::Epic,
+        HierarchyLevel::Task => Kind::Task,
+        HierarchyLevel::Subtask => Kind::Subtask,
+        HierarchyLevel::Milestone => Kind::Milestone,
+    };
+    db.tasks
+        .iter()
+        .filter(|t| t.kind == kind && t.parent == parent)
+        .collect()
+}
+
+/// Plural label for a column header in the Miller view.
+fn level_label(level: HierarchyLevel) -> &'static str {
+    match level {
+        HierarchyLevel::Project => "Projects",
+        HierarchyLevel::Product => "Products",
+        HierarchyLevel::Epic => "Epics",
+        HierarchyLevel::Task => "Tasks",
+        HierarchyLevel::Subtask => "Subtasks",
+        HierarchyLevel::Milestone => "Milestones",
     }
 }
