@@ -8,6 +8,7 @@
 pub mod cli;
 pub mod cmd;
 pub mod db;
+pub mod editor;
 pub mod fields;
 pub mod mcp;
 pub mod memory;

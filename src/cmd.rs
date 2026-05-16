@@ -1642,7 +1642,7 @@ pub fn cmd_template_edit(pm_dir: &Path, kind: &str) {
         }
     }
 
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+    let editor = crate::editor::resolve_editor();
     match std::process::Command::new(&editor).arg(&target).status() {
         Ok(st) if st.success() => println!("Saved template at {}", target.display()),
         Ok(st) => {
@@ -2631,7 +2631,7 @@ pub fn cmd_edit(pm_dir: &Path, id: &str, section: Option<&str>) {
         std::process::exit(1);
     }
 
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+    let editor = crate::editor::resolve_editor();
     let mut cmd = std::process::Command::new(&editor);
     if let Some(name) = section {
         let bin = std::path::Path::new(&editor)

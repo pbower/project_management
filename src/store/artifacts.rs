@@ -105,7 +105,8 @@ impl ArtifactsIndex {
     /// Parse the contents of an `ARTIFACTS.md` file.
     pub fn parse(raw: &str) -> Result<Self, ArtifactError> {
         let (yaml, body) = split_front_matter(raw).map_err(ArtifactError::FrontMatter)?;
-        let fm: ArtifactsFrontMatter = serde_yaml_ng::from_str(yaml).map_err(ArtifactError::Yaml)?;
+        let fm: ArtifactsFrontMatter =
+            serde_yaml_ng::from_str(yaml).map_err(ArtifactError::Yaml)?;
         let entries = parse_entries(body)?;
         Ok(ArtifactsIndex {
             node: fm.node,
@@ -140,7 +141,8 @@ impl ArtifactsIndex {
             // Leave the heading section empty rather than emit an empty YAML
             // sequence (`[]`) which reads as noise.
         } else {
-            let entries_yaml = serde_yaml_ng::to_string(&self.entries).map_err(ArtifactError::Yaml)?;
+            let entries_yaml =
+                serde_yaml_ng::to_string(&self.entries).map_err(ArtifactError::Yaml)?;
             out.push_str(entries_yaml.trim_end_matches('\n'));
             out.push('\n');
         }

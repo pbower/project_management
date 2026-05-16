@@ -2740,12 +2740,7 @@ struct EditorInvocation {
 fn editor_invocation_for(path: &std::path::Path, section: Option<&str>) -> EditorInvocation {
     use std::ffi::OsString;
 
-    let editor_env = std::env::var("EDITOR").unwrap_or_default();
-    let program = if editor_env.trim().is_empty() {
-        "nano".to_string()
-    } else {
-        editor_env
-    };
+    let program = crate::editor::resolve_editor();
     let stem = std::path::Path::new(&program)
         .file_name()
         .and_then(|s| s.to_str())
