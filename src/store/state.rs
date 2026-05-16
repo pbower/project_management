@@ -62,7 +62,12 @@ impl State {
             next.insert(*prefix, 1);
             tombstones.insert(*prefix, BTreeSet::new());
         }
-        State { next, tombstones, items: BTreeMap::new(), templates: Vec::new() }
+        State {
+            next,
+            tombstones,
+            items: BTreeMap::new(),
+            templates: Vec::new(),
+        }
     }
 
     /// Load from a `.pm/state.json` path. If the file does not exist, returns
@@ -80,7 +85,10 @@ impl State {
         // counters and tombstone sets without checking.
         for prefix in TypePrefix::all() {
             state.next.entry(*prefix).or_insert(1);
-            state.tombstones.entry(*prefix).or_insert_with(BTreeSet::new);
+            state
+                .tombstones
+                .entry(*prefix)
+                .or_insert_with(BTreeSet::new);
         }
         Ok(state)
     }
@@ -180,10 +188,14 @@ mod tests {
     use std::path::PathBuf;
 
     fn tmp_dir() -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("pm-store-state-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let dir = std::env::temp_dir().join(format!(
+            "pm-store-state-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -235,7 +247,12 @@ mod tests {
     fn tombstone_removes_from_items() {
         let mut s = State::fresh();
         let leaf = s.allocate(TypePrefix::Task);
-        s.insert(leaf, ItemEntry { path: PathBuf::from("tasks/x/") });
+        s.insert(
+            leaf,
+            ItemEntry {
+                path: PathBuf::from("tasks/x/"),
+            },
+        );
         assert!(s.lookup(leaf).is_some());
         s.tombstone(leaf);
         assert!(s.lookup(leaf).is_none());
@@ -249,7 +266,12 @@ mod tests {
 
         let mut s = State::fresh();
         let leaf = s.allocate(TypePrefix::Task);
-        s.insert(leaf, ItemEntry { path: PathBuf::from("tasks/lock-protocol/") });
+        s.insert(
+            leaf,
+            ItemEntry {
+                path: PathBuf::from("tasks/lock-protocol/"),
+            },
+        );
         let dropped = s.allocate(TypePrefix::Subtask);
         s.tombstone(dropped);
 
@@ -257,7 +279,10 @@ mod tests {
         let loaded = State::load(&path).unwrap();
 
         assert_eq!(loaded.next[&TypePrefix::Task], s.next[&TypePrefix::Task]);
-        assert_eq!(loaded.next[&TypePrefix::Subtask], s.next[&TypePrefix::Subtask]);
+        assert_eq!(
+            loaded.next[&TypePrefix::Subtask],
+            s.next[&TypePrefix::Subtask]
+        );
         assert!(loaded.is_tombstoned(dropped));
         assert_eq!(loaded.lookup(leaf), s.lookup(leaf));
 
@@ -354,7 +379,10 @@ mod tests {
         // A state.json from before the templates field existed.
         fs::write(&path, r#"{ "next": { "TSK": 3 } }"#).unwrap();
         let s = State::load(&path).unwrap();
-        assert!(s.templates.is_empty(), "missing field must backfill to empty Vec");
+        assert!(
+            s.templates.is_empty(),
+            "missing field must backfill to empty Vec"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 }

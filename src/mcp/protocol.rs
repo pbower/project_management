@@ -65,19 +65,39 @@ pub struct ResponseError {
 
 impl ResponseError {
     pub fn parse_error(message: impl Into<String>) -> Self {
-        ResponseError { code: -32700, message: message.into(), data: None }
+        ResponseError {
+            code: -32700,
+            message: message.into(),
+            data: None,
+        }
     }
     pub fn invalid_request(message: impl Into<String>) -> Self {
-        ResponseError { code: -32600, message: message.into(), data: None }
+        ResponseError {
+            code: -32600,
+            message: message.into(),
+            data: None,
+        }
     }
     pub fn method_not_found(message: impl Into<String>) -> Self {
-        ResponseError { code: -32601, message: message.into(), data: None }
+        ResponseError {
+            code: -32601,
+            message: message.into(),
+            data: None,
+        }
     }
     pub fn invalid_params(message: impl Into<String>) -> Self {
-        ResponseError { code: -32602, message: message.into(), data: None }
+        ResponseError {
+            code: -32602,
+            message: message.into(),
+            data: None,
+        }
     }
     pub fn internal(message: impl Into<String>) -> Self {
-        ResponseError { code: -32603, message: message.into(), data: None }
+        ResponseError {
+            code: -32603,
+            message: message.into(),
+            data: None,
+        }
     }
 }
 
@@ -123,7 +143,10 @@ mod tests {
 
     #[test]
     fn response_err_serialises_without_result_field() {
-        let resp = Response::err(serde_json::json!(2), ResponseError::method_not_found("nope"));
+        let resp = Response::err(
+            serde_json::json!(2),
+            ResponseError::method_not_found("nope"),
+        );
         let s = serde_json::to_string(&resp).unwrap();
         assert!(s.contains("nope"));
         assert!(s.contains(r#""code":-32601"#));

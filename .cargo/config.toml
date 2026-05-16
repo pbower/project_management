@@ -1,0 +1,19 @@
+# Windows-specific link flags.
+#
+# clap-derive generates a sizeable state machine for the `Commands` enum (~40
+# subcommands plus three nested `Subcommand`s for templates, artifacts, and
+# memory). The default Windows thread stack is 1 MB, which the generated
+# parser blows past on subprocess invocations under `cargo test`. Boost the
+# stack to 8 MB so behaviour lines up with the POSIX default.
+#
+# Applies to the MSVC and GNU x86_64 Windows targets; ARM64 Windows uses the
+# same MSVC behaviour. Linux and macOS are untouched.
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:8388608"]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-args=-Wl,--stack,8388608"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:8388608"]

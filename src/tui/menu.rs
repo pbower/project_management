@@ -16,7 +16,7 @@ use ratatui::{
     Frame, Terminal,
 };
 
-use crate::project::{discover_projects, create_project, get_legacy_project, Project};
+use crate::project::{create_project, discover_projects, get_legacy_project, Project};
 use crate::tui::utils::centered_rect;
 
 /// Main menu application state.
@@ -32,14 +32,14 @@ pub struct MenuApp {
     should_exit: bool,
     selected_project: Option<Project>,
     project_to_delete: Option<Project>,
-    open_workflow: bool,  // Flag to indicate workflow should be opened
+    open_workflow: bool, // Flag to indicate workflow should be opened
 }
 
 #[derive(Debug, Clone)]
 enum MenuState {
     MainMenu,
     ProjectList,
-    ProjectActionMenu,  // New state for choosing TUI or Workflow
+    ProjectActionMenu, // New state for choosing TUI or Workflow
     NewProject,
     DeleteProjectList,
     DeleteConfirmation,
@@ -121,7 +121,9 @@ impl MenuApp {
                     MenuState::ProjectActionMenu => self.handle_project_action_menu_input(key.code),
                     MenuState::NewProject => self.handle_new_project_input(key.code),
                     MenuState::DeleteProjectList => self.handle_delete_project_list_input(key.code),
-                    MenuState::DeleteConfirmation => self.handle_delete_confirmation_input(key.code),
+                    MenuState::DeleteConfirmation => {
+                        self.handle_delete_confirmation_input(key.code)
+                    }
                     MenuState::About => self.handle_about_input(key.code),
                 }
             }
@@ -138,14 +140,14 @@ impl MenuApp {
                         self.list_state.select(Some(selected - 1));
                     }
                 }
-            },
+            }
             KeyCode::Down => {
                 if let Some(selected) = self.list_state.selected() {
                     if selected < self.menu_items.len() - 1 {
                         self.list_state.select(Some(selected + 1));
                     }
                 }
-            },
+            }
             KeyCode::Enter => {
                 if let Some(selected) = self.list_state.selected() {
                     match selected {
@@ -160,18 +162,19 @@ impl MenuApp {
                             }
 
                             if self.projects.is_empty() {
-                                self.status_message = "No projects found. Create a new project first.".to_string();
+                                self.status_message =
+                                    "No projects found. Create a new project first.".to_string();
                             } else {
                                 self.state = MenuState::ProjectList;
                                 self.list_state.select(Some(0));
                             }
-                        },
+                        }
                         1 => {
                             // New Project
                             self.state = MenuState::NewProject;
                             self.input_mode = InputMode::TextInput;
                             self.input_buffer.clear();
-                        },
+                        }
                         2 => {
                             // Delete Project
                             self.refresh_projects();
@@ -188,7 +191,7 @@ impl MenuApp {
                                 self.state = MenuState::DeleteProjectList;
                                 self.list_state.select(Some(0));
                             }
-                        },
+                        }
                         3 => {
                             // Workflow
                             self.refresh_projects();
@@ -200,27 +203,28 @@ impl MenuApp {
                             }
 
                             if self.projects.is_empty() {
-                                self.status_message = "No projects found. Create a new project first.".to_string();
+                                self.status_message =
+                                    "No projects found. Create a new project first.".to_string();
                             } else {
                                 self.state = MenuState::ProjectActionMenu;
                                 self.list_state.select(Some(0));
                             }
-                        },
+                        }
                         4 => {
                             // About
                             self.state = MenuState::About;
-                        },
+                        }
                         5 => {
                             // Exit
                             self.should_exit = true;
-                        },
+                        }
                         _ => {}
                     }
                 }
-            },
+            }
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.should_exit = true;
-            },
+            }
             _ => {}
         }
     }
@@ -234,14 +238,14 @@ impl MenuApp {
                         self.list_state.select(Some(selected - 1));
                     }
                 }
-            },
+            }
             KeyCode::Down => {
                 if let Some(selected) = self.list_state.selected() {
                     if selected < self.projects.len() - 1 {
                         self.list_state.select(Some(selected + 1));
                     }
                 }
-            },
+            }
             KeyCode::Enter => {
                 if let Some(selected) = self.list_state.selected() {
                     if let Some(project) = self.projects.get(selected) {
@@ -250,11 +254,11 @@ impl MenuApp {
                         self.should_exit = true;
                     }
                 }
-            },
+            }
             KeyCode::Esc => {
                 self.state = MenuState::MainMenu;
                 self.list_state.select(Some(0));
-            },
+            }
             _ => {}
         }
     }
@@ -268,14 +272,14 @@ impl MenuApp {
                         self.list_state.select(Some(selected - 1));
                     }
                 }
-            },
+            }
             KeyCode::Down => {
                 if let Some(selected) = self.list_state.selected() {
                     if selected < self.projects.len() - 1 {
                         self.list_state.select(Some(selected + 1));
                     }
                 }
-            },
+            }
             KeyCode::Enter => {
                 if let Some(selected) = self.list_state.selected() {
                     if let Some(project) = self.projects.get(selected) {
@@ -283,11 +287,11 @@ impl MenuApp {
                         self.should_exit = true;
                     }
                 }
-            },
+            }
             KeyCode::Esc => {
                 self.state = MenuState::MainMenu;
                 self.list_state.select(Some(0));
-            },
+            }
             _ => {}
         }
     }
@@ -300,26 +304,26 @@ impl MenuApp {
                 self.input_mode = InputMode::None;
                 self.input_buffer.clear();
                 self.list_state.select(Some(0));
-            },
+            }
             KeyCode::Enter => {
                 if !self.input_buffer.trim().is_empty() {
                     match create_project(&self.input_buffer, &self.pm_dir) {
                         Ok(project) => {
                             self.selected_project = Some(project);
                             self.should_exit = true;
-                        },
+                        }
                         Err(e) => {
                             self.status_message = format!("Error: {}", e);
                         }
                     }
                 }
-            },
+            }
             KeyCode::Backspace => {
                 self.input_buffer.pop();
-            },
+            }
             KeyCode::Char(c) => {
                 self.input_buffer.push(c);
-            },
+            }
             _ => {}
         }
     }
@@ -333,14 +337,14 @@ impl MenuApp {
                         self.list_state.select(Some(selected - 1));
                     }
                 }
-            },
+            }
             KeyCode::Down => {
                 if let Some(selected) = self.list_state.selected() {
                     if selected < self.projects.len() - 1 {
                         self.list_state.select(Some(selected + 1));
                     }
                 }
-            },
+            }
             KeyCode::Enter => {
                 if let Some(selected) = self.list_state.selected() {
                     if let Some(project) = self.projects.get(selected) {
@@ -348,11 +352,11 @@ impl MenuApp {
                         self.state = MenuState::DeleteConfirmation;
                     }
                 }
-            },
+            }
             KeyCode::Esc => {
                 self.state = MenuState::MainMenu;
                 self.list_state.select(Some(0));
-            },
+            }
             _ => {}
         }
     }
@@ -366,20 +370,21 @@ impl MenuApp {
                     if let Err(e) = std::fs::remove_file(&project.file_path) {
                         self.status_message = format!("Failed to delete project: {}", e);
                     } else {
-                        self.status_message = format!("Project '{}' deleted successfully.", project.display_name);
+                        self.status_message =
+                            format!("Project '{}' deleted successfully.", project.display_name);
                         self.refresh_projects();
                     }
                 }
                 self.project_to_delete = None;
                 self.state = MenuState::MainMenu;
                 self.list_state.select(Some(0));
-            },
+            }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                 // Cancel deletion
                 self.project_to_delete = None;
                 self.state = MenuState::MainMenu;
                 self.list_state.select(Some(0));
-            },
+            }
             _ => {}
         }
     }
@@ -390,7 +395,7 @@ impl MenuApp {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
                 self.state = MenuState::MainMenu;
                 self.list_state.select(Some(0));
-            },
+            }
             _ => {}
         }
     }
@@ -405,7 +410,7 @@ impl MenuApp {
         match self.state {
             MenuState::MainMenu => self.render_main_menu(f, chunks[0]),
             MenuState::ProjectList => self.render_project_list(f, chunks[0]),
-            MenuState::ProjectActionMenu => self.render_project_list(f, chunks[0]),  // Reuse project list for workflow selection
+            MenuState::ProjectActionMenu => self.render_project_list(f, chunks[0]), // Reuse project list for workflow selection
             MenuState::NewProject => self.render_new_project(f, chunks[0]),
             MenuState::DeleteProjectList => self.render_delete_project_list(f, chunks[0]),
             MenuState::DeleteConfirmation => self.render_delete_confirmation(f, chunks[0]),
@@ -420,20 +425,16 @@ impl MenuApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Standard header
-                Constraint::Min(0),     // Menu items
+                Constraint::Length(3), // Standard header
+                Constraint::Min(0),    // Menu items
             ])
             .split(area);
 
         // Standard header text matching the task view
-        let header_text = vec![
-            Line::from(vec![
-                Span::styled(
-                    "PROJECT MANAGEMENT",
-                    Style::default().add_modifier(Modifier::BOLD)
-                )
-            ])
-        ];
+        let header_text = vec![Line::from(vec![Span::styled(
+            "PROJECT MANAGEMENT",
+            Style::default().add_modifier(Modifier::BOLD),
+        )])];
 
         let header = Paragraph::new(header_text)
             .block(Block::default().borders(Borders::ALL))
@@ -443,15 +444,18 @@ impl MenuApp {
         f.render_widget(header, chunks[0]);
 
         // Menu items
-        let menu_items: Vec<ListItem> = self.menu_items
+        let menu_items: Vec<ListItem> = self
+            .menu_items
             .iter()
             .map(|item| ListItem::new(Line::from(format!("  {}", item))))
             .collect();
 
         let menu = List::new(menu_items)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Project Management Menu"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Project Management Menu"),
+            )
             .highlight_style(Style::default().bg(Color::Gray).fg(Color::Black))
             .highlight_symbol("► ");
 
@@ -460,7 +464,8 @@ impl MenuApp {
 
     /// Render the project selection list.
     fn render_project_list(&mut self, f: &mut Frame, area: Rect) {
-        let project_items: Vec<ListItem> = self.projects
+        let project_items: Vec<ListItem> = self
+            .projects
             .iter()
             .map(|project| {
                 let line = if project.name == "default" {
@@ -473,9 +478,11 @@ impl MenuApp {
             .collect();
 
         let projects_list = List::new(project_items)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Select Project"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Select Project"),
+            )
             .highlight_style(Style::default().bg(Color::Gray).fg(Color::Black))
             .highlight_symbol("► ");
 
@@ -490,24 +497,23 @@ impl MenuApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Instructions
-                Constraint::Length(3),  // Input field
-                Constraint::Min(0),     // Spacer
+                Constraint::Length(3), // Instructions
+                Constraint::Length(3), // Input field
+                Constraint::Min(0),    // Spacer
             ])
             .split(area);
 
         let instructions = Paragraph::new("Enter project name:")
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("New Project"))
+            .block(Block::default().borders(Borders::ALL).title("New Project"))
             .alignment(Alignment::Left);
 
         f.render_widget(instructions, chunks[0]);
 
-        let input = Paragraph::new(self.input_buffer.as_str())
-            .block(Block::default()
+        let input = Paragraph::new(self.input_buffer.as_str()).block(
+            Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)));
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
 
         f.render_widget(input, chunks[1]);
 
@@ -522,10 +528,10 @@ impl MenuApp {
     fn render_about(&mut self, f: &mut Frame, area: Rect) {
         let about_text = vec![
             Line::from(""),
-            Line::from(vec![
-                Span::styled("PM - Project Management CLI",
-                    Style::default().add_modifier(Modifier::BOLD)),
-            ]),
+            Line::from(vec![Span::styled(
+                "PM - Project Management CLI",
+                Style::default().add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
             Line::from("A hierarchical task management system with"),
             Line::from("support for multiple projects and workflows."),
@@ -534,17 +540,14 @@ impl MenuApp {
             Line::from(""),
             Line::from(vec![
                 Span::raw("© Peter Garfield Bower "),
-                Span::styled("github.com/pbower",
-                    Style::default().fg(Color::Cyan)),
+                Span::styled("github.com/pbower", Style::default().fg(Color::Cyan)),
             ]),
             Line::from(""),
             Line::from("Press any key to return to main menu"),
         ];
 
         let about = Paragraph::new(about_text)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("About"))
+            .block(Block::default().borders(Borders::ALL).title("About"))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true });
 
@@ -553,7 +556,8 @@ impl MenuApp {
 
     /// Render the project selection list for deletion.
     fn render_delete_project_list(&mut self, f: &mut Frame, area: Rect) {
-        let project_items: Vec<ListItem> = self.projects
+        let project_items: Vec<ListItem> = self
+            .projects
             .iter()
             .map(|project| {
                 let line = if project.name == "default" {
@@ -566,9 +570,11 @@ impl MenuApp {
             .collect();
 
         let projects_list = List::new(project_items)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Select Project to Delete"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Select Project to Delete"),
+            )
             .highlight_style(Style::default().bg(Color::Red).fg(Color::White))
             .highlight_symbol("► ");
 
@@ -580,24 +586,28 @@ impl MenuApp {
         let area = centered_rect(70, 40, area);
         f.render_widget(Clear, area);
 
-        let project_name = self.project_to_delete
+        let project_name = self
+            .project_to_delete
             .as_ref()
             .map(|p| p.display_name.clone())
             .unwrap_or_else(|| "Unknown".to_string());
 
         let confirmation_text = vec![
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Are you sure?",
-                    Style::default().add_modifier(Modifier::BOLD).fg(Color::Red)),
-            ]),
+            Line::from(vec![Span::styled(
+                "Are you sure?",
+                Style::default().add_modifier(Modifier::BOLD).fg(Color::Red),
+            )]),
             Line::from(""),
-            Line::from(format!("This will permanently delete project: {}", project_name)),
+            Line::from(format!(
+                "This will permanently delete project: {}",
+                project_name
+            )),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("This action is unrecoverable.",
-                    Style::default().add_modifier(Modifier::BOLD)),
-            ]),
+            Line::from(vec![Span::styled(
+                "This action is unrecoverable.",
+                Style::default().add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
             Line::from("Note: We recommend you apply git source control"),
             Line::from("to ~/.pm for backup purposes."),
@@ -607,10 +617,12 @@ impl MenuApp {
         ];
 
         let confirmation = Paragraph::new(confirmation_text)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Delete Project")
-                .border_style(Style::default().fg(Color::Red)))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Delete Project")
+                    .border_style(Style::default().fg(Color::Red)),
+            )
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true });
 

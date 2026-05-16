@@ -42,11 +42,7 @@ impl Ticket {
     /// The template is applied to an empty body via [`templates::apply`] so
     /// the section headings appear in template order with empty bodies, plus
     /// the trailing `@artifacts/ARTIFACTS.md` line.
-    pub fn scaffold(
-        leaf: LeafId,
-        title: impl Into<String>,
-        template: &str,
-    ) -> Self {
+    pub fn scaffold(leaf: LeafId, title: impl Into<String>, template: &str) -> Self {
         let front_matter = FrontMatter::new(leaf, title);
         let body = templates::scaffold(template);
         Ticket { front_matter, body }
@@ -56,7 +52,10 @@ impl Ticket {
     pub fn read(path: &Path) -> Result<Self, TicketError> {
         let doc = Document::read(path).map_err(TicketError::FrontMatter)?;
         let body = ParsedBody::parse(strip_trailer(&doc.body).0);
-        Ok(Ticket { front_matter: doc.front_matter, body })
+        Ok(Ticket {
+            front_matter: doc.front_matter,
+            body,
+        })
     }
 
     /// Render this ticket to a complete CLAUDE.md-shaped string with the
@@ -74,7 +73,10 @@ impl Ticket {
         body.push_str(ARTIFACTS_IMPORT);
         body.push('\n');
 
-        let doc = Document { front_matter: self.front_matter.clone(), body };
+        let doc = Document {
+            front_matter: self.front_matter.clone(),
+            body,
+        };
         doc.render().map_err(TicketError::FrontMatter)
     }
 
@@ -151,46 +153,63 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "pm-store-claude-md-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    fn task_leaf() -> LeafId { LeafId::new(TypePrefix::Task, 7) }
+    fn task_leaf() -> LeafId {
+        LeafId::new(TypePrefix::Task, 7)
+    }
 
     #[test]
     fn scaffold_produces_template_sections_with_empty_bodies() {
-        let t = Ticket::scaffold(task_leaf(), "Lock protocol",
-            builtin(TypePrefix::Task));
+        let t = Ticket::scaffold(task_leaf(), "Lock protocol", builtin(TypePrefix::Task));
         assert_eq!(t.front_matter.title, "Lock protocol");
         assert_eq!(
             t.body.names(),
-            vec!["Description", "User Story", "Requirements", "Acceptance Criteria", "Notes"],
+            vec![
+                "Description",
+                "User Story",
+                "Requirements",
+                "Acceptance Criteria",
+                "Notes"
+            ],
         );
         for s in &t.body.sections {
-            assert!(s.body.is_empty(), "fresh scaffold section {} has unexpected content", s.name);
+            assert!(
+                s.body.is_empty(),
+                "fresh scaffold section {} has unexpected content",
+                s.name
+            );
         }
     }
 
     #[test]
     fn render_includes_artifacts_import_trailer() {
-        let t = Ticket::scaffold(task_leaf(), "Lock protocol",
-            builtin(TypePrefix::Task));
+        let t = Ticket::scaffold(task_leaf(), "Lock protocol", builtin(TypePrefix::Task));
         let rendered = t.render().unwrap();
-        assert!(rendered.starts_with("---\n"), "must start with YAML delimiter");
+        assert!(
+            rendered.starts_with("---\n"),
+            "must start with YAML delimiter"
+        );
         assert!(rendered.contains("\n---\n"), "must close YAML delimiter");
         assert!(rendered.contains("# Description"));
-        assert!(rendered.ends_with("@artifacts/ARTIFACTS.md\n"),
-                "must end with the artifacts @-import");
+        assert!(
+            rendered.ends_with("@artifacts/ARTIFACTS.md\n"),
+            "must end with the artifacts @-import"
+        );
     }
 
     #[test]
     fn write_then_read_round_trip() {
         let dir = tmp_dir();
         let ticket_dir = dir.join("ticket");
-        let mut t = Ticket::scaffold(task_leaf(), "Lock protocol",
-            builtin(TypePrefix::Task));
+        let mut t = Ticket::scaffold(task_leaf(), "Lock protocol", builtin(TypePrefix::Task));
         t.upsert_section("Description", "We need a heartbeat lock.\n");
 
         let path = t.write_to(&ticket_dir).unwrap();
@@ -226,9 +245,18 @@ mod tests {
         reloaded.write_to(&ticket_dir).unwrap();
 
         let final_state = Ticket::read(&ticket_dir.join(CLAUDE_MD)).unwrap();
-        assert_eq!(final_state.body.find("Description").unwrap().body, "Initial.\n");
-        assert_eq!(final_state.body.find("Requirements").unwrap().body, "Must support TTL.\n");
-        assert_eq!(final_state.body.find("User Story").unwrap().body, "As an agent...\n");
+        assert_eq!(
+            final_state.body.find("Description").unwrap().body,
+            "Initial.\n"
+        );
+        assert_eq!(
+            final_state.body.find("Requirements").unwrap().body,
+            "Must support TTL.\n"
+        );
+        assert_eq!(
+            final_state.body.find("User Story").unwrap().body,
+            "As an agent...\n"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -246,12 +274,21 @@ mod tests {
         // Task template sections come first.
         assert_eq!(
             &t.body.names()[..5],
-            &["Description", "User Story", "Requirements", "Acceptance Criteria", "Notes"],
+            &[
+                "Description",
+                "User Story",
+                "Requirements",
+                "Acceptance Criteria",
+                "Notes"
+            ],
         );
         // The user-added section survives at the tail.
         assert!(t.body.names().contains(&"Field Notes"));
         // Description content preserved.
-        assert_eq!(t.body.find("Description").unwrap().body, "Subtask content.\n");
+        assert_eq!(
+            t.body.find("Description").unwrap().body,
+            "Subtask content.\n"
+        );
         // New template sections start empty.
         assert!(t.body.find("User Story").unwrap().body.is_empty());
     }
@@ -261,7 +298,13 @@ mod tests {
         let t = Ticket::scaffold(task_leaf(), "T", builtin(TypePrefix::Task));
         let rendered = t.render().unwrap();
         // No section contains any body content other than headings.
-        for name in ["Description", "User Story", "Requirements", "Acceptance Criteria", "Notes"] {
+        for name in [
+            "Description",
+            "User Story",
+            "Requirements",
+            "Acceptance Criteria",
+            "Notes",
+        ] {
             let pat = format!("# {name}\n");
             assert!(rendered.contains(&pat), "missing heading {name}");
         }
@@ -279,8 +322,17 @@ mod tests {
         t.upsert_section("Notes", "N.\n");
         let path = t.write_to(&ticket_dir).unwrap();
         let back = Ticket::read(&path).unwrap();
-        for name in ["Description", "User Story", "Requirements", "Acceptance Criteria", "Notes"] {
-            assert!(!back.body.find(name).unwrap().body.is_empty(), "{name} body missing");
+        for name in [
+            "Description",
+            "User Story",
+            "Requirements",
+            "Acceptance Criteria",
+            "Notes",
+        ] {
+            assert!(
+                !back.body.find(name).unwrap().body.is_empty(),
+                "{name} body missing"
+            );
         }
         fs::remove_dir_all(&dir).ok();
     }
@@ -293,7 +345,10 @@ mod tests {
         t.upsert_section("Performance Notes", "Hand-written.\n");
         t.write_to(&ticket_dir).unwrap();
         let back = Ticket::read(&ticket_dir.join(CLAUDE_MD)).unwrap();
-        assert_eq!(back.body.find("Performance Notes").unwrap().body, "Hand-written.\n");
+        assert_eq!(
+            back.body.find("Performance Notes").unwrap().body,
+            "Hand-written.\n"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -303,15 +358,23 @@ mod tests {
         let ticket_dir = dir.join("ticket");
         let mut t = Ticket::scaffold(task_leaf(), "T", builtin(TypePrefix::Task));
         // Simulate a hand-edit that reordered sections: Notes first.
-        let original_order = t.body.names().iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let original_order = t
+            .body
+            .names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
         let notes = t.body.remove("Notes").unwrap();
         t.body.sections.insert(0, notes);
         assert_ne!(t.body.names(), original_order, "reorder sanity check");
 
         t.write_to(&ticket_dir).unwrap();
         let back = Ticket::read(&ticket_dir.join(CLAUDE_MD)).unwrap();
-        assert_eq!(back.body.names()[0], "Notes",
-                   "reordered Notes-first must survive a round-trip");
+        assert_eq!(
+            back.body.names()[0],
+            "Notes",
+            "reordered Notes-first must survive a round-trip"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -323,8 +386,10 @@ mod tests {
         t.body.remove("Acceptance Criteria");
         t.write_to(&ticket_dir).unwrap();
         let back = Ticket::read(&ticket_dir.join(CLAUDE_MD)).unwrap();
-        assert!(back.body.find("Acceptance Criteria").is_none(),
-                "deleted section must not reappear without an explicit apply_template");
+        assert!(
+            back.body.find("Acceptance Criteria").is_none(),
+            "deleted section must not reappear without an explicit apply_template"
+        );
     }
 
     #[test]

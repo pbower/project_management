@@ -15,8 +15,8 @@ use crate::store::id::LeafId;
 
 use super::file::{MemoryFile, MemoryFileError, MemoryFrontMatter, MemoryMetadata};
 use super::scope::{
-    project_dir, project_file, ticket_dir, ticket_file, user_dir, user_file,
-    MemoryLocation, MemoryType, Scope,
+    project_dir, project_file, ticket_dir, ticket_file, user_dir, user_file, MemoryLocation,
+    MemoryType, Scope,
 };
 
 /// One hit during a tiered lookup: the resolved file location and the
@@ -95,7 +95,10 @@ pub fn list_all(ctx: &MemoryContext) -> Result<Vec<MemoryHit>, StoreError> {
     let mut all: Vec<MemoryHit> = Vec::new();
     all.extend(list_files_in(&ctx.user_directory(), Scope::User)?);
     if let Some(prj) = ctx.active_project {
-        all.extend(list_files_in(&project_dir(&ctx.pm_root, prj), Scope::Project)?);
+        all.extend(list_files_in(
+            &project_dir(&ctx.pm_root, prj),
+            Scope::Project,
+        )?);
     }
     if let Some(dir) = &ctx.active_ticket_dir {
         all.extend(list_files_in(&ticket_dir(dir), Scope::Ticket)?);
@@ -158,10 +161,7 @@ pub fn write_memory(
 /// [`promote_memory`] for the canonical/back-reference writes that the
 /// promote contract permits at the user tier. External callers go through
 /// [`write_memory`] instead.
-fn write_memory_unchecked(
-    location: &MemoryLocation,
-    mf: &MemoryFile,
-) -> Result<(), StoreError> {
+fn write_memory_unchecked(location: &MemoryLocation, mf: &MemoryFile) -> Result<(), StoreError> {
     mf.write(&location.file).map_err(StoreError::File)
 }
 
@@ -183,7 +183,9 @@ pub fn promote_memory(
     match target {
         Scope::Project => promote_user_to_project(ctx, name),
         Scope::User => promote_project_to_user(ctx, name),
-        Scope::Ticket => Err(StoreError::UnsupportedPromotion("ticket-tier promotion is not supported".to_string())),
+        Scope::Ticket => Err(StoreError::UnsupportedPromotion(
+            "ticket-tier promotion is not supported".to_string(),
+        )),
     }
 }
 
@@ -230,8 +232,13 @@ fn promote_user_to_project(
     let backref = MemoryFile {
         front_matter: MemoryFrontMatter {
             name: original.front_matter.name.clone(),
-            description: Some(format!("Promoted to project tier at {}.", target_loc.file.display())),
-            metadata: MemoryMetadata { kind: MemoryType::Reference },
+            description: Some(format!(
+                "Promoted to project tier at {}.",
+                target_loc.file.display()
+            )),
+            metadata: MemoryMetadata {
+                kind: MemoryType::Reference,
+            },
         },
         body: backref_body,
     };
@@ -288,7 +295,11 @@ fn list_files_in(dir: &Path, scope: Scope) -> Result<Vec<MemoryHit>, StoreError>
     }
     entries.sort();
     for path in entries {
-        let location = MemoryLocation { scope, directory: dir.to_path_buf(), file: path };
+        let location = MemoryLocation {
+            scope,
+            directory: dir.to_path_buf(),
+            file: path,
+        };
         out.push(read_hit(location)?);
     }
     Ok(out)
@@ -321,7 +332,10 @@ impl std::fmt::Display for StoreError {
             StoreError::Io(e) => write!(f, "memory store io: {e}"),
             StoreError::File(e) => write!(f, "memory store file: {e}"),
             StoreError::NoActiveProject => {
-                write!(f, "no active project; pass --project <PRJ> or run inside one")
+                write!(
+                    f,
+                    "no active project; pass --project <PRJ> or run inside one"
+                )
             }
             StoreError::NoActiveTicket => write!(f, "no active ticket; pass --ticket <ID>"),
             StoreError::NotFound(s) => write!(f, "{s}"),
@@ -372,15 +386,23 @@ mod tests {
         let root = tmp_dir("user-write");
         let ctx = ctx(root.join("home"), root.join("work"), root.join(".pm"), None);
         let err = write_memory(
-            &ctx, Scope::User, "feedback-testing",
+            &ctx,
+            Scope::User,
+            "feedback-testing",
             MemoryType::Feedback,
             Some("Real DB in tests".into()),
             "Integration tests must hit a real DB.\n",
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(matches!(err, StoreError::UserTierWriteForbidden));
         // Nothing was written.
         let dir = ctx.user_directory();
-        assert!(!dir.exists() || std::fs::read_dir(&dir).map(|d| d.count() == 0).unwrap_or(true));
+        assert!(
+            !dir.exists()
+                || std::fs::read_dir(&dir)
+                    .map(|d| d.count() == 0)
+                    .unwrap_or(true)
+        );
         fs::remove_dir_all(&root).ok();
     }
 
@@ -394,11 +416,14 @@ mod tests {
         let ctx = ctx(home, cwd, pm_root, Some(prj));
 
         let loc = write_memory(
-            &ctx, Scope::Project, "auth-stack",
+            &ctx,
+            Scope::Project,
+            "auth-stack",
             MemoryType::Project,
             Some("Auth conventions".into()),
             "Bearer JWTs.\n",
-        ).unwrap();
+        )
+        .unwrap();
         assert!(loc.file.is_file());
 
         let hits = list_at_scope(&ctx, Scope::Project).unwrap();
@@ -413,8 +438,8 @@ mod tests {
     fn project_tier_requires_active_project() {
         let root = tmp_dir("no-prj");
         let ctx = ctx(root.join("home"), root.join("work"), root.join(".pm"), None);
-        let err = write_memory(&ctx, Scope::Project, "x", MemoryType::Project, None, "")
-            .unwrap_err();
+        let err =
+            write_memory(&ctx, Scope::Project, "x", MemoryType::Project, None, "").unwrap_err();
         assert!(matches!(err, StoreError::NoActiveProject));
         fs::remove_dir_all(&root).ok();
     }
@@ -434,13 +459,24 @@ mod tests {
         let user_loc = ctx.user_path("shared");
         fs::create_dir_all(&user_loc.directory).unwrap();
         MemoryFile::new("shared", MemoryType::User, "USER content\n")
-            .write(&user_loc.file).unwrap();
-        write_memory(&ctx, Scope::Project, "shared", MemoryType::Project, None,
-            "PROJECT content\n").unwrap();
+            .write(&user_loc.file)
+            .unwrap();
+        write_memory(
+            &ctx,
+            Scope::Project,
+            "shared",
+            MemoryType::Project,
+            None,
+            "PROJECT content\n",
+        )
+        .unwrap();
 
         let hit = lookup_by_name(&ctx, "shared").unwrap().expect("hit");
-        assert_eq!(hit.location.scope, Scope::Project,
-            "project tier must win on collision");
+        assert_eq!(
+            hit.location.scope,
+            Scope::Project,
+            "project tier must win on collision"
+        );
         assert!(hit.file.body.contains("PROJECT content"));
 
         fs::remove_dir_all(&root).ok();
@@ -458,7 +494,8 @@ mod tests {
         let user_loc = ctx.user_path("solo");
         fs::create_dir_all(&user_loc.directory).unwrap();
         MemoryFile::new("solo", MemoryType::User, "user body\n")
-            .write(&user_loc.file).unwrap();
+            .write(&user_loc.file)
+            .unwrap();
         let hit = lookup_by_name(&ctx, "solo").unwrap().expect("hit");
         assert_eq!(hit.location.scope, Scope::User);
         fs::remove_dir_all(&root).ok();
@@ -493,7 +530,9 @@ mod tests {
         let project_mf = MemoryFile::read(&outcome.target.file).unwrap();
         assert!(project_mf.body.contains("Use bearer JWTs"));
         // Back-reference at the user tier.
-        let backref = outcome.backref.expect("user-to-project leaves a back-reference");
+        let backref = outcome
+            .backref
+            .expect("user-to-project leaves a back-reference");
         assert!(backref.file.is_file());
         let backref_mf = MemoryFile::read(&backref.file).unwrap();
         assert_eq!(backref_mf.front_matter.metadata.kind, MemoryType::Reference);
@@ -511,13 +550,26 @@ mod tests {
         let prj = LeafId::new(TypePrefix::Project, 1);
         let ctx = ctx(home.clone(), cwd.clone(), pm_root.clone(), Some(prj));
 
-        write_memory(&ctx, Scope::Project, "auth-stack", MemoryType::Project,
-            None, "Project body\n").unwrap();
+        write_memory(
+            &ctx,
+            Scope::Project,
+            "auth-stack",
+            MemoryType::Project,
+            None,
+            "Project body\n",
+        )
+        .unwrap();
 
         let outcome = promote_memory(&ctx, "auth-stack", Scope::User).unwrap();
-        assert!(outcome.target.file.is_file(), "user-tier canonical exists after demotion");
+        assert!(
+            outcome.target.file.is_file(),
+            "user-tier canonical exists after demotion"
+        );
         assert!(!outcome.source.file.exists(), "project-tier file removed");
-        assert!(outcome.backref.is_none(), "demotion does not write a back-reference");
+        assert!(
+            outcome.backref.is_none(),
+            "demotion does not write a back-reference"
+        );
 
         fs::remove_dir_all(&root).ok();
     }
@@ -562,7 +614,8 @@ mod tests {
         let user_loc = ctx.user_path("u");
         fs::create_dir_all(&user_loc.directory).unwrap();
         MemoryFile::new("u", MemoryType::User, "")
-            .write(&user_loc.file).unwrap();
+            .write(&user_loc.file)
+            .unwrap();
         write_memory(&ctx, Scope::Project, "p", MemoryType::Project, None, "").unwrap();
         write_memory(&ctx, Scope::Ticket, "t", MemoryType::Reference, None, "").unwrap();
 

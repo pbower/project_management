@@ -16,8 +16,8 @@ pub mod store;
 pub mod task;
 pub mod views;
 pub mod tui {
-    pub mod colors;
     pub mod app;
+    pub mod colors;
     pub mod enums;
     pub mod input;
     pub mod menu;

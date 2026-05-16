@@ -29,15 +29,17 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 
-use crate::{fields::*, tui::colors::{DARK_GREEN, DARK_PURPLE, DARK_RED, GOLD}};
-use crate::store::{IdInput, LeafId, MemoryRef};
-use crate::store::locks::{self, LockFile, LockMode, AcquireOutcome, DEFAULT_TTL_SECONDS};
 use crate::store::events;
 use crate::store::git;
+use crate::store::locks::{self, AcquireOutcome, LockFile, LockMode, DEFAULT_TTL_SECONDS};
+use crate::store::{IdInput, LeafId, MemoryRef};
 use crate::task::Task;
 use crate::views::events_view::{ActivityAction, ActivityView};
 use crate::{
-    db::{*, format_kind, format_status, format_priority, format_urgency, format_process_stage, format_due_relative, project_label, kind_to_prefix},
+    db::{
+        format_due_relative, format_kind, format_priority, format_process_stage, format_status,
+        format_urgency, kind_to_prefix, project_label, *,
+    },
     tui::{
         enums::{
             AppState, DocumentsState, InputMode, MemoryLinkRow, MemoryLinkState, Mode,
@@ -52,6 +54,10 @@ use crate::{
         },
         utils::centered_rect,
     },
+};
+use crate::{
+    fields::*,
+    tui::colors::{DARK_GREEN, DARK_PURPLE, DARK_RED, GOLD},
 };
 
 /// State snapshot for navigation history. `pub(super)` so the navigation
@@ -129,7 +135,10 @@ impl App {
     pub fn new(db_path: &Path) -> io::Result<Self> {
         let db = Database::load(db_path);
         let navigation_context = NavigationContext::new_all_projects();
-        let pm_dir = db_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let pm_dir = db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
         let activity = ActivityView::new(pm_dir.clone());
 
         let mut app = App {
@@ -162,15 +171,15 @@ impl App {
             activity,
             prev_mode: Mode::Tickets,
         };
-        
+
         app.update_filtered_tasks();
         Ok(app)
     }
-    
+
     /// Get the current project name from the database path.
     fn get_current_project_name(&self) -> String {
         use crate::project::Project;
-        
+
         if let Some(project) = Project::from_file(self.db_path.clone()) {
             project.display_name
         } else {
@@ -178,7 +187,7 @@ impl App {
             "Default (Legacy)".to_string()
         }
     }
-    
+
     /// Open a specific task for editing.
     pub fn open_task_for_edit(&mut self, task_id: LeafId) {
         if let Some(task) = self.db.get(task_id) {
@@ -189,7 +198,7 @@ impl App {
             self.input_mode = InputMode::Text;
         }
     }
-    
+
     /// Check if the user wants to return to the main menu.
 
     /// Save the database to disk and refresh the task list.
@@ -220,7 +229,13 @@ impl App {
             return;
         };
         let base_commit = git::head_commit(&self.pm_dir).ok().flatten();
-        let lock = LockFile::new(task_id, None, DEFAULT_TTL_SECONDS, LockMode::Soft, base_commit);
+        let lock = LockFile::new(
+            task_id,
+            None,
+            DEFAULT_TTL_SECONDS,
+            LockMode::Soft,
+            base_commit,
+        );
         match locks::acquire(&self.pm_dir, &lock, Utc::now()) {
             Ok(AcquireOutcome::Acquired) => {
                 let _ = events::emit_event(&self.pm_dir, "checkout", Some(task_id), None);
@@ -270,9 +285,9 @@ impl App {
     fn clear_status_message(&mut self) {
         self.status_message.clear();
     }
-    
+
     /// Handle keyboard input when in the task list view.
-    /// 
+    ///
     /// Returns true if the application should quit.
     fn handle_task_list_input(
         &mut self,
@@ -325,7 +340,7 @@ impl App {
                 } else {
                     self.set_status_message("No navigation history".to_string());
                 }
-            },
+            }
             KeyCode::Esc => {
                 if self.filter_active || !self.filter_text.is_empty() {
                     self.filter_active = false;
@@ -384,7 +399,8 @@ impl App {
             }
             // `n` opens the quick-entry form for a new child ticket.
             KeyCode::Char('n') => {
-                self.task_form = TaskForm::new_with_context_and_pm_dir(&self.navigation_context, &self.pm_dir);
+                self.task_form =
+                    TaskForm::new_with_context_and_pm_dir(&self.navigation_context, &self.pm_dir);
                 self.task_form.update_active_field();
                 self.push_state(AppState::AddTask, None);
                 self.input_mode = InputMode::Text;
@@ -454,7 +470,10 @@ impl App {
                             if let Err(e) = self.save_db() {
                                 self.set_status_message(format!("Error saving: {}", e));
                             } else {
-                                self.set_status_message(format!("Task status updated to {}", format_status(new_status)));
+                                self.set_status_message(format!(
+                                    "Task status updated to {}",
+                                    format_status(new_status)
+                                ));
                             }
                         }
                     }
@@ -472,7 +491,9 @@ impl App {
                                 Some(ProcessStage::Ideation) => ProcessStage::Design,
                                 Some(ProcessStage::Design) => ProcessStage::Prototyping,
                                 Some(ProcessStage::Prototyping) => ProcessStage::ReadyToImplement,
-                                Some(ProcessStage::ReadyToImplement) => ProcessStage::Implementation,
+                                Some(ProcessStage::ReadyToImplement) => {
+                                    ProcessStage::Implementation
+                                }
                                 Some(ProcessStage::Implementation) => ProcessStage::Testing,
                                 Some(ProcessStage::Testing) => ProcessStage::Refinement,
                                 Some(ProcessStage::Refinement) => ProcessStage::Release,
@@ -483,7 +504,10 @@ impl App {
                             if let Err(e) = self.save_db() {
                                 self.set_status_message(format!("Error saving: {}", e));
                             } else {
-                                self.set_status_message(format!("Process stage updated to {}", format_process_stage(Some(new_stage))));
+                                self.set_status_message(format!(
+                                    "Process stage updated to {}",
+                                    format_process_stage(Some(new_stage))
+                                ));
                             }
                         }
                     }
@@ -522,9 +546,14 @@ impl App {
     }
 
     /// Handle keyboard input when in task creation or editing forms.
-    /// 
+    ///
     /// Returns true if the application should quit.
-    fn handle_form_input(&mut self, key: KeyCode, _modifiers: KeyModifiers, is_edit: bool) -> io::Result<bool> {
+    fn handle_form_input(
+        &mut self,
+        key: KeyCode,
+        _modifiers: KeyModifiers,
+        is_edit: bool,
+    ) -> io::Result<bool> {
         match key {
             KeyCode::Esc => {
                 self.state = AppState::TaskList;
@@ -555,7 +584,7 @@ impl App {
                 TITLE_GLOBAL_ORDER => self.task_form.title.handle_delete(),
                 SUMMARY_GLOBAL_ORDER => self.task_form.summary.handle_delete(),
                 DESCRIPTION_GLOBAL_ORDER => self.task_form.description.handle_delete(),
-                PROJECT_SELECTOR_GLOBAL_ORDER => {}, // Project selector doesn't support delete
+                PROJECT_SELECTOR_GLOBAL_ORDER => {} // Project selector doesn't support delete
                 TAGS_GLOBAL_ORDER => self.task_form.tags.handle_delete(),
                 DUE_GLOBAL_ORDER => self.task_form.due.handle_delete(),
                 PARENT_GLOBAL_ORDER => self.task_form.parent.handle_delete(),
@@ -743,7 +772,7 @@ impl App {
     }
 
     /// Update the selected task with data from the current form.
-    /// 
+    ///
     /// Validates input and saves changes to the database.
     fn update_task(&mut self) -> io::Result<()> {
         let task_id = self
@@ -843,7 +872,7 @@ impl App {
     }
 
     /// Handle keyboard input when viewing the help screen.
-    /// 
+    ///
     /// Returns true if the application should quit.
     /// True when a keystroke should be treated as literal text rather than a
     /// navigation command - inside a form field, an active filter, or an
@@ -877,8 +906,7 @@ impl App {
                 // shows the "pick a ticket via Mode 1" hint.
                 if let Some(leaf) = self.selected_task {
                     self.documents.crumb = self.build_doc_crumb(leaf);
-                    self.documents.active_level =
-                        self.documents.crumb.len().saturating_sub(1);
+                    self.documents.active_level = self.documents.crumb.len().saturating_sub(1);
                     self.documents.doc_cursor = 0;
                 }
             }
@@ -944,12 +972,24 @@ impl App {
 
                 let should_quit = match self.mode {
                     Mode::Tickets => match self.state {
-                        AppState::TaskList => self.handle_task_list_input(key.code, key.modifiers)?,
-                        AppState::TaskDetail => self.handle_detail_input(key.code, key.modifiers)?,
-                        AppState::AddTask => self.handle_form_input(key.code, key.modifiers, false)?,
-                        AppState::EditTask => self.handle_form_input(key.code, key.modifiers, true)?,
-                        AppState::UserStoryDialog => self.handle_dialog_input(key.code, key.modifiers, true)?,
-                        AppState::RequirementsDialog => self.handle_dialog_input(key.code, key.modifiers, false)?,
+                        AppState::TaskList => {
+                            self.handle_task_list_input(key.code, key.modifiers)?
+                        }
+                        AppState::TaskDetail => {
+                            self.handle_detail_input(key.code, key.modifiers)?
+                        }
+                        AppState::AddTask => {
+                            self.handle_form_input(key.code, key.modifiers, false)?
+                        }
+                        AppState::EditTask => {
+                            self.handle_form_input(key.code, key.modifiers, true)?
+                        }
+                        AppState::UserStoryDialog => {
+                            self.handle_dialog_input(key.code, key.modifiers, true)?
+                        }
+                        AppState::RequirementsDialog => {
+                            self.handle_dialog_input(key.code, key.modifiers, false)?
+                        }
                         AppState::Confirm => self.handle_confirm_input(key.code, key.modifiers)?,
                     },
                     Mode::Documents => self.handle_documents_input(key.code, key.modifiers)?,
@@ -967,11 +1007,7 @@ impl App {
     /// `ActivityAction::ExitView` (either `q` or `Esc`) Mode 3 returns to the
     /// previous mode rather than exiting the TUI, matching PM_DESIGN.md
     /// Section 8.3.4.
-    fn handle_activity_input(
-        &mut self,
-        key: KeyCode,
-        mods: KeyModifiers,
-    ) -> io::Result<bool> {
+    fn handle_activity_input(&mut self, key: KeyCode, mods: KeyModifiers) -> io::Result<bool> {
         match self.activity.handle_key(key, mods) {
             ActivityAction::Continue => Ok(false),
             ActivityAction::ExitView => {
@@ -985,7 +1021,7 @@ impl App {
     fn render_task_list(&mut self, f: &mut Frame, area: Rect) {
         let today = Local::now().date_naive();
         let hierarchy_color = self.get_hierarchy_color();
-        
+
         // Split the area to accommodate the ASCII header
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -994,52 +1030,58 @@ impl App {
                 Constraint::Min(0),    // Rest for the table
             ])
             .split(area);
-        
+
         // Render ASCII header with consistent app styling and context
         let project_name = self.get_current_project_name();
-        let context_display = format!("Current Project: {}  Current View: {}",
-            project_name, self.navigation_context.get_display_name());
-        let header_text = vec![
-            Line::from(vec![
-                Span::styled(
-                    format!("[ {} ]", self.mode.label()),
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    "PROJECT MANAGEMENT",
-                    Style::default().add_modifier(Modifier::BOLD)
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    context_display,
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC)
-                )
-            ])
-        ];
-        
+        let context_display = format!(
+            "Current Project: {}  Current View: {}",
+            project_name,
+            self.navigation_context.get_display_name()
+        );
+        let header_text = vec![Line::from(vec![
+            Span::styled(
+                format!("[ {} ]", self.mode.label()),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                "PROJECT MANAGEMENT",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                context_display,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ])];
+
         let header_block = Paragraph::new(header_text)
             .block(Block::default().borders(Borders::ALL))
             .alignment(Alignment::Center);
         f.render_widget(header_block, chunks[0]);
-    
+
         let header_cells = [
-            "ID", "Kind", "Status", "Priority", "Urgency", "Stage", "Due", "Project", "Lock", "Title",
+            "ID", "Kind", "Status", "Priority", "Urgency", "Stage", "Due", "Project", "Lock",
+            "Title",
         ]
         .iter()
         .map(|h| {
             ratatui::widgets::Cell::from(*h).style(Style::default().add_modifier(Modifier::BOLD))
         });
-    
+
         let text_color = match hierarchy_color {
             GOLD => Color::Rgb(20, 20, 20),
-            _ => Color::White
+            _ => Color::White,
         };
-        
+
         let header = Row::new(header_cells)
             .style(Style::default().bg(hierarchy_color).fg(text_color))
             .height(1);
-    
+
         // Calculate depth map for tree view
         let mut depth_map: HashMap<LeafId, usize> = HashMap::new();
         for task in &self.db.tasks {
@@ -1081,23 +1123,25 @@ impl App {
                 } else {
                     format!(" [{}]", task.tags.join(","))
                 };
-    
+
                 // Determine hierarchy color
                 let hierarchy_color = match task.kind {
-                    Kind::Project => Color::Cyan,        // Cyan for the top-level Project tickets
-                    Kind::Product => Color::Blue,        // Dark Blue (keeping existing)
-                    Kind::Epic => DARK_GREEN,          // Forest Green
-                    Kind::Task => GOLD,         // Gold
-                    Kind::Subtask => DARK_RED,         // Crimson Red
-                    Kind::Milestone => DARK_PURPLE,   // Magenta for milestones
+                    Kind::Project => Color::Cyan, // Cyan for the top-level Project tickets
+                    Kind::Product => Color::Blue, // Dark Blue (keeping existing)
+                    Kind::Epic => DARK_GREEN,     // Forest Green
+                    Kind::Task => GOLD,           // Gold
+                    Kind::Subtask => DARK_RED,    // Crimson Red
+                    Kind::Milestone => DARK_PURPLE, // Magenta for milestones
                 };
-                
+
                 let style = match task.status {
                     Status::Done => Style::default().fg(Color::DarkGray),
-                    Status::InProgress => Style::default().fg(hierarchy_color).add_modifier(Modifier::BOLD),
+                    Status::InProgress => Style::default()
+                        .fg(hierarchy_color)
+                        .add_modifier(Modifier::BOLD),
                     _ => Style::default().fg(Color::White),
                 };
-    
+
                 let depth = depth_map.get(&task.id).copied().unwrap_or(0);
                 let indent_str = " ".repeat(depth);
                 // M:n badge for tickets with linked memories. The count comes
@@ -1139,7 +1183,7 @@ impl App {
                 .style(style)
             })
             .collect();
-    
+
         let widths = [
             Constraint::Length(4),  // ID
             Constraint::Length(10), // Kind
@@ -1152,7 +1196,7 @@ impl App {
             Constraint::Length(16), // Lock
             Constraint::Min(25),    // Title
         ];
-    
+
         let table = Table::new(rows, widths)
             .header(header)
             .block(Block::default().borders(Borders::ALL).title(format!(
@@ -1162,10 +1206,9 @@ impl App {
             )))
             .row_highlight_style(Style::default().bg(Color::Gray).fg(Color::Black))
             .highlight_symbol(">> ");
-    
+
         f.render_stateful_widget(table, chunks[1], &mut self.task_list_state);
     }
-
 
     /// Render the task creation or editing form.
     fn render_task_form(&mut self, f: &mut Frame, area: Rect, is_edit: bool) {
@@ -1263,7 +1306,10 @@ impl App {
         } else {
             Style::default()
         };
-        let selected_project = self.task_form.get_selected_project().unwrap_or("None".to_string());
+        let selected_project = self
+            .task_form
+            .get_selected_project()
+            .unwrap_or("None".to_string());
         let project_selector = Paragraph::new(format!("< {} >", selected_project)).block(
             Block::default()
                 .borders(Borders::ALL)
@@ -1564,7 +1610,10 @@ impl App {
         } else {
             match self.mode {
                 Mode::Documents | Mode::Activity => {
-                    format!("{}   Tab / 1 / 2 / 3 switch mode   ? help   q exit", self.mode.label())
+                    format!(
+                        "{}   Tab / 1 / 2 / 3 switch mode   ? help   q exit",
+                        self.mode.label()
+                    )
                 }
                 Mode::Tickets => match self.state {
                     AppState::TaskList => {
@@ -1573,8 +1622,11 @@ impl App {
                         } else {
                             ""
                         };
-                        format!("Tasks: {} | ? for help | Tab / 1 / 2 / 3 mode{}",
-                            self.filtered_tasks.len(), back_tip)
+                        format!(
+                            "Tasks: {} | ? for help | Tab / 1 / 2 / 3 mode{}",
+                            self.filtered_tasks.len(),
+                            back_tip
+                        )
                     }
                     AppState::TaskDetail => "Task Details".to_string(),
                     AppState::AddTask => "Add New Task".to_string(),
@@ -1593,7 +1645,7 @@ impl App {
         let hierarchy_color = self.get_hierarchy_color();
         let text_color = match hierarchy_color {
             GOLD => Color::Rgb(20, 20, 20),
-            _ => Color::White
+            _ => Color::White,
         };
         let status = Paragraph::new(status_text)
             .style(Style::default().bg(hierarchy_color).fg(text_color))
@@ -1611,11 +1663,14 @@ impl App {
                 // Three-band layout: content / activity-footer tail / status.
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Min(0),
-                        Constraint::Length(5),
-                        Constraint::Length(1),
-                    ].as_ref())
+                    .constraints(
+                        [
+                            Constraint::Min(0),
+                            Constraint::Length(5),
+                            Constraint::Length(1),
+                        ]
+                        .as_ref(),
+                    )
                     .split(f.area());
 
                 match self.state {
@@ -1624,14 +1679,17 @@ impl App {
                     AppState::AddTask => self.render_task_form(f, chunks[0], false),
                     AppState::EditTask => self.render_task_form(f, chunks[0], true),
                     AppState::UserStoryDialog => self.render_dialog(f, chunks[0], "User Story"),
-                    AppState::RequirementsDialog => self.render_dialog(f, chunks[0], "Requirements"),
+                    AppState::RequirementsDialog => {
+                        self.render_dialog(f, chunks[0], "Requirements")
+                    }
                     AppState::Confirm => {
                         self.render_task_list(f, chunks[0]);
                         self.render_confirm(f, chunks[0]);
                     }
                 }
                 // The memory side-panel overlays the right edge of the list.
-                if matches!(self.overlay, Overlay::MemoryPanel) && self.state == AppState::TaskList {
+                if matches!(self.overlay, Overlay::MemoryPanel) && self.state == AppState::TaskList
+                {
                     self.render_memory_panel(f, chunks[0]);
                 }
 
@@ -1643,11 +1701,14 @@ impl App {
                 // benefits from the activity tail being visible underneath.
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Min(0),
-                        Constraint::Length(5),
-                        Constraint::Length(1),
-                    ].as_ref())
+                    .constraints(
+                        [
+                            Constraint::Min(0),
+                            Constraint::Length(5),
+                            Constraint::Length(1),
+                        ]
+                        .as_ref(),
+                    )
                     .split(f.area());
 
                 self.render_documents(f, chunks[0]);
@@ -1660,10 +1721,7 @@ impl App {
                 // duplicate content. Status bar still shown beneath.
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Min(0),
-                        Constraint::Length(1),
-                    ].as_ref())
+                    .constraints([Constraint::Min(0), Constraint::Length(1)].as_ref())
                     .split(f.area());
 
                 self.activity.render(f, chunks[0]);
@@ -1710,7 +1768,9 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
         if state.rows.is_empty() {
             lines.push(Line::from("No project- or ticket-scope memories on disk."));
-            lines.push(Line::from("Drop a file into memories/ and reopen this modal."));
+            lines.push(Line::from(
+                "Drop a file into memories/ and reopen this modal.",
+            ));
         } else {
             for (idx, row) in state.rows.iter().enumerate() {
                 let marker = if row.linked { "[x]" } else { "[ ]" };
@@ -1730,7 +1790,8 @@ impl App {
             Style::default().fg(Color::DarkGray),
         )));
 
-        let title = format!("Memories - link / unlink ({}, {} rows)",
+        let title = format!(
+            "Memories - link / unlink ({}, {} rows)",
             state.ticket,
             state.rows.len(),
         );
@@ -1751,7 +1812,10 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
         for ev in tail {
             let time = ev.ts.format("%H:%M:%S");
-            let id = ev.id.map(|i| i.to_string()).unwrap_or_else(|| "-".to_string());
+            let id = ev
+                .id
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| "-".to_string());
             let detail = ev
                 .detail
                 .as_deref()
@@ -1767,8 +1831,8 @@ impl App {
             lines.push(Line::from("  (no activity yet)"));
         }
 
-        let widget = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title("Activity"));
+        let widget =
+            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("Activity"));
         f.render_widget(widget, area);
     }
 
@@ -1802,7 +1866,11 @@ impl App {
         }
 
         let widget = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title("Memories  (m to close)"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Memories  (m to close)"),
+            )
             .wrap(Wrap { trim: false });
         f.render_widget(widget, panel);
     }
@@ -1874,8 +1942,13 @@ impl App {
             return;
         }
         let focus = self.documents.crumb[level];
-        let focus_chain: Vec<LeafId> =
-            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let focus_chain: Vec<LeafId> = self
+            .documents
+            .crumb
+            .iter()
+            .take(level + 1)
+            .copied()
+            .collect();
         let layout = crate::store::Layout::at(&self.pm_dir);
         let focus_dir = match crate::store::AddressId::new(focus_chain.clone()) {
             Ok(a) => layout.root.join(layout.directory_for(&a)),
@@ -1943,7 +2016,9 @@ impl App {
     /// Route input to the open memory link modal. Up/Down moves the cursor,
     /// Space/Enter toggles the highlighted row, Esc/m closes and persists.
     fn handle_memory_link_input(&mut self, key: KeyCode) {
-        let Overlay::MemoryLink(state) = &mut self.overlay else { return };
+        let Overlay::MemoryLink(state) = &mut self.overlay else {
+            return;
+        };
         let rows_len = state.rows.len();
         match key {
             KeyCode::Up => {
@@ -1984,8 +2059,13 @@ impl App {
         if level >= self.documents.crumb.len() {
             return;
         }
-        let focus_chain: Vec<LeafId> =
-            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let focus_chain: Vec<LeafId> = self
+            .documents
+            .crumb
+            .iter()
+            .take(level + 1)
+            .copied()
+            .collect();
         let layout = crate::store::Layout::at(&self.pm_dir);
         let address = match crate::store::AddressId::new(focus_chain) {
             Ok(a) => a,
@@ -2062,9 +2142,16 @@ impl App {
         }
         let focus = self.documents.crumb[level];
         let items = self.documents_pane_items();
-        let Some(item) = items.get(self.documents.doc_cursor) else { return };
-        let focus_chain: Vec<LeafId> =
-            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let Some(item) = items.get(self.documents.doc_cursor) else {
+            return;
+        };
+        let focus_chain: Vec<LeafId> = self
+            .documents
+            .crumb
+            .iter()
+            .take(level + 1)
+            .copied()
+            .collect();
         let address = match crate::store::AddressId::new(focus_chain) {
             Ok(a) => a,
             Err(_) => return,
@@ -2135,9 +2222,7 @@ impl App {
                 let project_dir = layout.root.join(layout.directory_for(&address));
                 Some(project_dir.join("memories").join(format!("{name}.md")))
             }
-            MemoryRef::Ticket(name) => {
-                Some(focus_dir.join("memories").join(format!("{name}.md")))
-            }
+            MemoryRef::Ticket(name) => Some(focus_dir.join("memories").join(format!("{name}.md"))),
         }
     }
 
@@ -2224,8 +2309,8 @@ impl App {
             .wrap(Wrap { trim: true });
             f.render_widget(lhs, panes[0]);
 
-            let rhs = Paragraph::new("")
-                .block(Block::default().borders(Borders::ALL).title("Preview"));
+            let rhs =
+                Paragraph::new("").block(Block::default().borders(Borders::ALL).title("Preview"));
             f.render_widget(rhs, panes[1]);
             return;
         }
@@ -2278,8 +2363,13 @@ impl App {
         // The address for the focused level is the crumb truncated to that
         // depth; the deeper segments are visible in the breadcrumb but not
         // part of the focused ticket's path.
-        let focus_chain: Vec<LeafId> =
-            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let focus_chain: Vec<LeafId> = self
+            .documents
+            .crumb
+            .iter()
+            .take(level + 1)
+            .copied()
+            .collect();
         let focus = focus_chain[level];
         let address = match crate::store::AddressId::new(focus_chain) {
             Ok(a) => a,
@@ -2364,8 +2454,13 @@ impl App {
         if level >= self.documents.crumb.len() {
             return String::new();
         }
-        let focus_chain: Vec<LeafId> =
-            self.documents.crumb.iter().take(level + 1).copied().collect();
+        let focus_chain: Vec<LeafId> = self
+            .documents
+            .crumb
+            .iter()
+            .take(level + 1)
+            .copied()
+            .collect();
         let Ok(address) = crate::store::AddressId::new(focus_chain) else {
             return String::new();
         };
@@ -2421,11 +2516,13 @@ impl App {
         Line::from(spans)
     }
 
-
     /// Main event loop for the TUI application.
-    /// 
+    ///
     /// Handles rendering and input processing until the user exits.
-    pub fn run<B: Backend + std::io::Write>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
+    pub fn run<B: Backend + std::io::Write>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> io::Result<()> {
         loop {
             // Keep the activity view's buffer in sync with the on-disk feed
             // while we are showing it. refresh() is incremental and cheap so
@@ -2471,12 +2568,13 @@ impl App {
                 let invocation = editor_invocation_for(&claude_path, None);
                 self.run_editor(terminal, leaf, &claude_path, &invocation)?;
             }
-            PendingAction::EditDoc { ticket, path, section } => {
+            PendingAction::EditDoc {
+                ticket,
+                path,
+                section,
+            } => {
                 if !path.exists() {
-                    self.set_status_message(format!(
-                        "{}: does not exist on disk",
-                        path.display()
-                    ));
+                    self.set_status_message(format!("{}: does not exist on disk", path.display()));
                     return Ok(());
                 }
                 let invocation = editor_invocation_for(&path, section.as_deref());
@@ -2497,14 +2595,22 @@ impl App {
         invocation: &EditorInvocation,
     ) -> io::Result<()> {
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
         let mut command = std::process::Command::new(&invocation.program);
         for arg in &invocation.args {
             command.arg(arg);
         }
         let status = command.status();
         enable_raw_mode()?;
-        execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(
+            terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableMouseCapture
+        )?;
         terminal.clear()?;
 
         match status {
@@ -2547,10 +2653,7 @@ struct EditorInvocation {
 /// | emacs    | `+<line>`               |
 /// | helix/hx | `+<line>`               |
 /// | other    | no jump (opens at top)  |
-fn editor_invocation_for(
-    path: &std::path::Path,
-    section: Option<&str>,
-) -> EditorInvocation {
+fn editor_invocation_for(path: &std::path::Path, section: Option<&str>) -> EditorInvocation {
     use std::ffi::OsString;
 
     let editor_env = std::env::var("EDITOR").unwrap_or_default();
@@ -2620,7 +2723,10 @@ enum DocsPaneItem {
     /// has no preview content.
     Note(String),
     /// A file inside the focused ticket's directory.
-    Doc { label: String, path: std::path::PathBuf },
+    Doc {
+        label: String,
+        path: std::path::PathBuf,
+    },
     /// A linked memory reference from the ticket's front-matter.
     Memory(MemoryRef),
     /// A section heading found in the ticket's CLAUDE.md body.
@@ -2628,13 +2734,24 @@ enum DocsPaneItem {
 }
 
 impl DocsPaneItem {
-    fn header(s: impl Into<String>) -> Self { DocsPaneItem::Header(s.into()) }
-    fn note(s: impl Into<String>) -> Self { DocsPaneItem::Note(s.into()) }
-    fn doc(label: impl Into<String>, path: std::path::PathBuf) -> Self {
-        DocsPaneItem::Doc { label: label.into(), path }
+    fn header(s: impl Into<String>) -> Self {
+        DocsPaneItem::Header(s.into())
     }
-    fn memory(reference: MemoryRef) -> Self { DocsPaneItem::Memory(reference) }
-    fn section(name: String) -> Self { DocsPaneItem::Section { name } }
+    fn note(s: impl Into<String>) -> Self {
+        DocsPaneItem::Note(s.into())
+    }
+    fn doc(label: impl Into<String>, path: std::path::PathBuf) -> Self {
+        DocsPaneItem::Doc {
+            label: label.into(),
+            path,
+        }
+    }
+    fn memory(reference: MemoryRef) -> Self {
+        DocsPaneItem::Memory(reference)
+    }
+    fn section(name: String) -> Self {
+        DocsPaneItem::Section { name }
+    }
 
     fn is_header(&self) -> bool {
         matches!(self, DocsPaneItem::Header(_))
@@ -2644,7 +2761,9 @@ impl DocsPaneItem {
         let (text, style) = match self {
             DocsPaneItem::Header(s) => (
                 s.clone(),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             DocsPaneItem::Note(s) => (s.clone(), Style::default().fg(Color::DarkGray)),
             DocsPaneItem::Doc { label, .. } => (format!("  {label}"), Style::default()),
@@ -2678,10 +2797,7 @@ fn documents_preview_file(path: &std::path::Path) -> String {
     let _ = std::io::Read::take(&mut file, 4096).read_to_end(&mut buf);
     match std::str::from_utf8(&buf) {
         Ok(s) => s.to_string(),
-        Err(_) => format!(
-            "(binary file, {} bytes preview suppressed)",
-            buf.len(),
-        ),
+        Err(_) => format!("(binary file, {} bytes preview suppressed)", buf.len(),),
     }
 }
 

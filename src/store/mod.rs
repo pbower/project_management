@@ -7,46 +7,48 @@
 //! This module is additive to the existing `task.rs` / `db.rs` data model and
 //! will replace it over subsequent phases (see PM_BUILD_PLAN.md).
 
-pub mod id;
-pub mod state;
 pub mod aliases;
-pub mod layout;
-pub mod resolver;
-pub mod migrate;
-pub mod front_matter;
-pub mod sections;
-pub mod templates;
-pub mod claude_md;
 pub mod artifacts;
-pub mod watcher;
-pub mod task_bridge;
-pub mod git;
+pub mod claude_md;
 pub mod events;
+pub mod front_matter;
+pub mod git;
+pub mod id;
+pub mod layout;
 pub mod locks;
+pub mod migrate;
+pub mod resolver;
+pub mod sections;
+pub mod state;
+pub mod task_bridge;
+pub mod templates;
+pub mod watcher;
 
-pub use id::{TypePrefix, LeafId, AddressId, IdInput, IdParseError};
-pub use state::{State, ItemEntry, StateError};
 pub use aliases::Aliases;
-pub use layout::{Layout, LayoutError, TYPE_FOLDER_ROOTS};
-pub use resolver::{Resolver, Resolved, ResolveError};
-pub use migrate::{MigrationPlan, MigrationStep, MigrateError};
-pub use front_matter::{FrontMatter, Document, MemoryRef, FrontMatterError, split_front_matter};
-pub use sections::{Section, ParsedBody};
-pub use templates::{ResolvedTemplate, TemplateSource};
-pub use claude_md::{Ticket, TicketError, CLAUDE_MD, ARTIFACTS_IMPORT};
 pub use artifacts::{
-    ArtifactsIndex, ArtifactEntry, SweepReport, ArtifactError, ARTIFACTS_MD,
-    sweep_dir, rename_artifact,
+    rename_artifact, sweep_dir, ArtifactEntry, ArtifactError, ArtifactsIndex, SweepReport,
+    ARTIFACTS_MD,
 };
-pub use watcher::{ArtifactsWatcher, DEFAULT_DEBOUNCE};
-pub use task_bridge::{
-    task_to_document, task_from_document, project_ancestor,
-    SECTION_DESCRIPTION, SECTION_REQUIREMENTS, SECTION_SUMMARY, SECTION_USER_STORY,
+pub use claude_md::{Ticket, TicketError, ARTIFACTS_IMPORT, CLAUDE_MD};
+pub use events::{actor, emit_event, read_events, Event, EventError, EventResult};
+pub use front_matter::{split_front_matter, Document, FrontMatter, FrontMatterError, MemoryRef};
+pub use git::{
+    commit_workspace, ensure_repo, head_commit, squash_since, subject as commit_subject, GitError,
+    GitResult,
 };
-pub use git::{commit_workspace, ensure_repo, head_commit, squash_since, subject as commit_subject, GitError, GitResult};
-pub use events::{Event, EventError, EventResult, actor, emit_event, read_events};
+pub use id::{AddressId, IdInput, IdParseError, LeafId, TypePrefix};
+pub use layout::{Layout, LayoutError, TYPE_FOLDER_ROOTS};
 pub use locks::{
-    LockFile, LockMode, AcquireOutcome, LockError, LockResult, DEFAULT_TTL_SECONDS,
-    acquire, release, list as list_locks, reap_stale, refresh_heartbeat, read as read_lock,
+    acquire, list as list_locks, read as read_lock, reap_stale, refresh_heartbeat, release,
+    AcquireOutcome, LockError, LockFile, LockMode, LockResult, DEFAULT_TTL_SECONDS,
 };
-
+pub use migrate::{MigrateError, MigrationPlan, MigrationStep};
+pub use resolver::{ResolveError, Resolved, Resolver};
+pub use sections::{ParsedBody, Section};
+pub use state::{ItemEntry, State, StateError};
+pub use task_bridge::{
+    project_ancestor, task_from_document, task_to_document, SECTION_DESCRIPTION,
+    SECTION_REQUIREMENTS, SECTION_SUMMARY, SECTION_USER_STORY,
+};
+pub use templates::{ResolvedTemplate, TemplateSource};
+pub use watcher::{ArtifactsWatcher, DEFAULT_DEBOUNCE};
