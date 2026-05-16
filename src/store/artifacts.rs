@@ -105,7 +105,7 @@ impl ArtifactsIndex {
     /// Parse the contents of an `ARTIFACTS.md` file.
     pub fn parse(raw: &str) -> Result<Self, ArtifactError> {
         let (yaml, body) = split_front_matter(raw).map_err(ArtifactError::FrontMatter)?;
-        let fm: ArtifactsFrontMatter = serde_yml::from_str(yaml).map_err(ArtifactError::Yaml)?;
+        let fm: ArtifactsFrontMatter = serde_yaml_ng::from_str(yaml).map_err(ArtifactError::Yaml)?;
         let entries = parse_entries(body)?;
         Ok(ArtifactsIndex {
             node: fm.node,
@@ -128,7 +128,7 @@ impl ArtifactsIndex {
             last_swept: self.last_swept,
             node: self.node,
         };
-        let yaml = serde_yml::to_string(&fm).map_err(ArtifactError::Yaml)?;
+        let yaml = serde_yaml_ng::to_string(&fm).map_err(ArtifactError::Yaml)?;
         let heading = format!("# Artifacts ({})", self.node);
         let mut out = String::new();
         out.push_str("---\n");
@@ -140,7 +140,7 @@ impl ArtifactsIndex {
             // Leave the heading section empty rather than emit an empty YAML
             // sequence (`[]`) which reads as noise.
         } else {
-            let entries_yaml = serde_yml::to_string(&self.entries).map_err(ArtifactError::Yaml)?;
+            let entries_yaml = serde_yaml_ng::to_string(&self.entries).map_err(ArtifactError::Yaml)?;
             out.push_str(entries_yaml.trim_end_matches('\n'));
             out.push('\n');
         }
@@ -321,7 +321,7 @@ fn parse_entries(body: &str) -> Result<Vec<ArtifactEntry>, ArtifactError> {
     if yaml.is_empty() {
         return Ok(Vec::new());
     }
-    let entries: Vec<ArtifactEntry> = serde_yml::from_str(yaml).map_err(ArtifactError::Yaml)?;
+    let entries: Vec<ArtifactEntry> = serde_yaml_ng::from_str(yaml).map_err(ArtifactError::Yaml)?;
     Ok(entries)
 }
 
@@ -329,7 +329,7 @@ fn parse_entries(body: &str) -> Result<Vec<ArtifactEntry>, ArtifactError> {
 #[derive(Debug)]
 pub enum ArtifactError {
     Io(io::Error),
-    Yaml(serde_yml::Error),
+    Yaml(serde_yaml_ng::Error),
     FrontMatter(FrontMatterError),
     NotFound(String),
     TargetExists(String),

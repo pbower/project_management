@@ -57,7 +57,7 @@ impl MemoryFile {
     /// Parse the contents of a memory `.md` file.
     pub fn parse(raw: &str) -> Result<Self, MemoryFileError> {
         let (yaml, body) = split_front_matter(raw).map_err(MemoryFileError::FrontMatter)?;
-        let fm: MemoryFrontMatter = serde_yml::from_str(yaml).map_err(MemoryFileError::Yaml)?;
+        let fm: MemoryFrontMatter = serde_yaml_ng::from_str(yaml).map_err(MemoryFileError::Yaml)?;
         Ok(MemoryFile {
             front_matter: fm,
             body: body.to_string(),
@@ -72,7 +72,7 @@ impl MemoryFile {
 
     /// Render to a complete markdown string with the YAML delimiter lines.
     pub fn render(&self) -> Result<String, MemoryFileError> {
-        let yaml = serde_yml::to_string(&self.front_matter).map_err(MemoryFileError::Yaml)?;
+        let yaml = serde_yaml_ng::to_string(&self.front_matter).map_err(MemoryFileError::Yaml)?;
         let mut out = String::with_capacity(yaml.len() + self.body.len() + 8);
         out.push_str("---\n");
         out.push_str(yaml.trim_end_matches('\n'));
@@ -105,7 +105,7 @@ impl MemoryFile {
 #[derive(Debug)]
 pub enum MemoryFileError {
     Io(io::Error),
-    Yaml(serde_yml::Error),
+    Yaml(serde_yaml_ng::Error),
     FrontMatter(FrontMatterError),
 }
 

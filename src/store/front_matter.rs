@@ -130,12 +130,12 @@ impl FrontMatter {
     /// Serialise to a YAML fragment without delimiter lines. Callers wrap in
     /// `---\n...\n---\n` when writing to disk.
     pub fn to_yaml(&self) -> Result<String, FrontMatterError> {
-        serde_yml::to_string(self).map_err(FrontMatterError::Yaml)
+        serde_yaml_ng::to_string(self).map_err(FrontMatterError::Yaml)
     }
 
     /// Parse a YAML fragment (no delimiters).
     pub fn from_yaml(yaml: &str) -> Result<Self, FrontMatterError> {
-        let fm: FrontMatter = serde_yml::from_str(yaml).map_err(FrontMatterError::Yaml)?;
+        let fm: FrontMatter = serde_yaml_ng::from_str(yaml).map_err(FrontMatterError::Yaml)?;
         Ok(fm)
     }
 }
@@ -236,7 +236,7 @@ pub fn split_front_matter(raw: &str) -> Result<(&str, &str), FrontMatterError> {
 #[derive(Debug)]
 pub enum FrontMatterError {
     Io(std::io::Error),
-    Yaml(serde_yml::Error),
+    Yaml(serde_yaml_ng::Error),
     MissingOpenDelimiter,
     MissingCloseDelimiter,
 }

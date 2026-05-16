@@ -19,9 +19,9 @@ chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ratatui = "0.29"
-crossterm = "0.29"
-serde_yml = "0.0.12"
+crossterm = "0.28"
 notify-debouncer-mini = "0.7.0"
+serde_yaml_ng = "0.10.0"
 
 [[bin]]
 name = "pm"
