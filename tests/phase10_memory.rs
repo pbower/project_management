@@ -20,7 +20,14 @@ fn tmp_dir(label: &str) -> PathBuf {
             .as_nanos(),
     ));
     fs::create_dir_all(&dir).unwrap();
-    dir
+    // Canonicalize so the path matches what std::env::current_dir() returns
+    // inside the spawned `pm` subprocess. On macOS, `std::env::temp_dir()`
+    // hands back `/var/folders/...` but the kernel resolves that to
+    // `/private/var/folders/...` for the running process; if the test side
+    // encoded the un-canonical form and the binary side encoded the
+    // canonical form, the user-tier `~/.claude/projects/<encoded-cwd>/`
+    // namespaces drift apart and lookups miss.
+    fs::canonicalize(&dir).unwrap_or(dir)
 }
 
 /// Run `pm --db <pm_dir> <args>` with a controlled `HOME` and `cwd`. The
