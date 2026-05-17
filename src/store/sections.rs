@@ -63,7 +63,10 @@ impl ParsedBody {
                     if let Some(prev) = current.take() {
                         sections.push(close_section(prev));
                     }
-                    current = Some(Section { name: name.to_string(), body: String::new() });
+                    current = Some(Section {
+                        name: name.to_string(),
+                        body: String::new(),
+                    });
                     continue;
                 }
             }
@@ -89,8 +92,12 @@ impl ParsedBody {
             let need_gap = idx > 0 || !self.preamble.is_empty();
             if need_gap {
                 // Exactly one blank line before the heading.
-                if !out.ends_with('\n') { out.push('\n'); }
-                if !out.ends_with("\n\n") { out.push('\n'); }
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                if !out.ends_with("\n\n") {
+                    out.push('\n');
+                }
             }
             out.push_str("# ");
             out.push_str(&section.name);
@@ -124,7 +131,10 @@ impl ParsedBody {
             existing.body = body;
             true
         } else {
-            self.sections.push(Section { name: name.to_string(), body });
+            self.sections.push(Section {
+                name: name.to_string(),
+                body,
+            });
             false
         }
     }
@@ -193,7 +203,9 @@ fn h1_heading_name(line: &str) -> Option<&str> {
     if rest.starts_with('#') {
         return None;
     }
-    let name = rest.strip_prefix(' ').or_else(|| if rest.is_empty() { Some("") } else { None })?;
+    let name = rest
+        .strip_prefix(' ')
+        .or_else(|| if rest.is_empty() { Some("") } else { None })?;
     if name.is_empty() {
         return None;
     }

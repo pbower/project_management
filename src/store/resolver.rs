@@ -36,7 +36,11 @@ pub struct Resolver<'a> {
 
 impl<'a> Resolver<'a> {
     pub fn new(layout: &'a Layout, state: &'a State, aliases: &'a Aliases) -> Self {
-        Resolver { layout, state, aliases }
+        Resolver {
+            layout,
+            state,
+            aliases,
+        }
     }
 
     /// Resolve a free-form input string (`"TSK7"`, `"PRJ1-PRD1-EPC3-TSK7"`,
@@ -96,7 +100,12 @@ impl<'a> Resolver<'a> {
         Err(ResolveError::Unknown(raw.to_string()))
     }
 
-    fn build_resolved(&self, leaf: LeafId, entry: &ItemEntry, via_alias_from: Option<String>) -> Resolved {
+    fn build_resolved(
+        &self,
+        leaf: LeafId,
+        entry: &ItemEntry,
+        via_alias_from: Option<String>,
+    ) -> Resolved {
         let abs = self.layout.root.join(&entry.path);
         Resolved {
             leaf,
@@ -128,7 +137,10 @@ impl std::fmt::Display for ResolveError {
             ResolveError::Parse(e) => write!(f, "id parse error: {e}"),
             ResolveError::Tombstoned(s) => write!(f, "id {s} has been deleted"),
             ResolveError::AliasTargetMissing { from, target } => {
-                write!(f, "alias {from:?} -> {target:?} but target is not in state.json")
+                write!(
+                    f,
+                    "alias {from:?} -> {target:?} but target is not in state.json"
+                )
             }
             ResolveError::Retired(s) => write!(f, "id {s} was retired"),
             ResolveError::Unknown(s) => write!(f, "id {s:?} not found"),
@@ -148,7 +160,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "pm-store-resolver-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let layout = Layout::under(&root);
@@ -242,7 +257,12 @@ mod tests {
         let tsk = state.allocate(TypePrefix::Task);
         let new_rel = PathBuf::from("projects/pm/products/core/epics/locking/tasks/lock-protocol");
         std::fs::create_dir_all(layout.root.join(&new_rel)).unwrap();
-        state.insert(tsk, ItemEntry { path: new_rel.clone() });
+        state.insert(
+            tsk,
+            ItemEntry {
+                path: new_rel.clone(),
+            },
+        );
 
         let resolver = Resolver::new(&layout, &state, &aliases);
         // Old address PRJ1-PRD1-EPC3-TSK1 still resolves because TSK1 is the
@@ -250,7 +270,10 @@ mod tests {
         let got = resolver.resolve("PRJ1-PRD1-EPC3-TSK1").unwrap();
         assert_eq!(got.leaf, tsk);
         assert_eq!(got.relative_path, new_rel);
-        assert!(got.via_alias_from.is_none(), "no alias needed when leaf is live");
+        assert!(
+            got.via_alias_from.is_none(),
+            "no alias needed when leaf is live"
+        );
         std::fs::remove_dir_all(layout.root.parent().unwrap()).ok();
     }
 

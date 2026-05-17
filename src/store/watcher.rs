@@ -86,16 +86,16 @@ impl ArtifactsWatcher {
         })
         .map_err(map_notify_error)?;
 
-        Ok(ArtifactsWatcher { debouncer, targets, reports })
+        Ok(ArtifactsWatcher {
+            debouncer,
+            targets,
+            reports,
+        })
     }
 
     /// Start watching `artifacts_dir`. New or changed files trigger a sweep
     /// against `node`.
-    pub fn watch(
-        &mut self,
-        artifacts_dir: &Path,
-        node: LeafId,
-    ) -> Result<(), ArtifactError> {
+    pub fn watch(&mut self, artifacts_dir: &Path, node: LeafId) -> Result<(), ArtifactError> {
         self.debouncer
             .watcher()
             .watch(artifacts_dir, RecursiveMode::NonRecursive)
@@ -127,10 +127,16 @@ impl ArtifactsWatcher {
 /// notify backend usually delivers absolute paths but on Linux can deliver
 /// paths relative to the watched root; treat both as a match.
 fn event_belongs_to(event_path: &Path, watched: &Path) -> bool {
-    if event_path == watched { return true; }
-    if event_path.starts_with(watched) { return true; }
+    if event_path == watched {
+        return true;
+    }
+    if event_path.starts_with(watched) {
+        return true;
+    }
     // A relative event path is interpreted as living inside the watched root.
-    if event_path.is_relative() { return true; }
+    if event_path.is_relative() {
+        return true;
+    }
     false
 }
 
@@ -153,13 +159,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "pm-store-watcher-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    fn task_leaf() -> LeafId { LeafId::new(TypePrefix::Task, 7) }
+    fn task_leaf() -> LeafId {
+        LeafId::new(TypePrefix::Task, 7)
+    }
 
     /// Poll the index file until either the predicate matches or the deadline
     /// passes. Returns the time it took for the predicate to match, or None
@@ -189,8 +200,8 @@ mod tests {
         // Pre-create the index so the watcher has a baseline.
         let (_, _) = sweep_dir(&artifacts, task_leaf()).unwrap();
 
-        let mut watcher = ArtifactsWatcher::with_debounce(Duration::from_millis(80))
-            .expect("create watcher");
+        let mut watcher =
+            ArtifactsWatcher::with_debounce(Duration::from_millis(80)).expect("create watcher");
         watcher.watch(&artifacts, task_leaf()).expect("watch dir");
 
         // Small grace period so the OS watcher is fully wired.
@@ -201,7 +212,10 @@ mod tests {
         let elapsed = wait_for(&index_path, Duration::from_millis(500), |idx| {
             idx.find("schema.png").is_some()
         });
-        assert!(elapsed.is_some(), "watcher did not register schema.png within 500ms");
+        assert!(
+            elapsed.is_some(),
+            "watcher did not register schema.png within 500ms"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -214,8 +228,8 @@ mod tests {
         fs::write(artifacts.join("bench.csv"), b"a,b").unwrap();
         let (_, _) = sweep_dir(&artifacts, task_leaf()).unwrap();
 
-        let mut watcher = ArtifactsWatcher::with_debounce(Duration::from_millis(80))
-            .expect("create watcher");
+        let mut watcher =
+            ArtifactsWatcher::with_debounce(Duration::from_millis(80)).expect("create watcher");
         watcher.watch(&artifacts, task_leaf()).expect("watch dir");
         std::thread::sleep(Duration::from_millis(40));
 
@@ -224,7 +238,10 @@ mod tests {
         let elapsed = wait_for(&index_path, Duration::from_millis(500), |idx| {
             idx.find("bench.csv").is_none()
         });
-        assert!(elapsed.is_some(), "watcher did not remove bench.csv within 500ms");
+        assert!(
+            elapsed.is_some(),
+            "watcher did not remove bench.csv within 500ms"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -235,8 +252,8 @@ mod tests {
         fs::create_dir_all(&artifacts).unwrap();
         let (_, _) = sweep_dir(&artifacts, task_leaf()).unwrap();
 
-        let mut watcher = ArtifactsWatcher::with_debounce(Duration::from_millis(80))
-            .expect("create watcher");
+        let mut watcher =
+            ArtifactsWatcher::with_debounce(Duration::from_millis(80)).expect("create watcher");
         watcher.watch(&artifacts, task_leaf()).expect("watch dir");
         std::thread::sleep(Duration::from_millis(40));
         watcher.unwatch(&artifacts).expect("unwatch dir");
@@ -246,8 +263,10 @@ mod tests {
         fs::write(artifacts.join("late.txt"), b"x").unwrap();
         std::thread::sleep(Duration::from_millis(300));
         let idx = ArtifactsIndex::load(&artifacts.join(ARTIFACTS_MD)).unwrap();
-        assert!(idx.find("late.txt").is_none(),
-                "unwatched directory should not auto-sweep");
+        assert!(
+            idx.find("late.txt").is_none(),
+            "unwatched directory should not auto-sweep"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -259,8 +278,8 @@ mod tests {
         let (_, _) = sweep_dir(&artifacts, task_leaf()).unwrap();
 
         {
-            let mut watcher = ArtifactsWatcher::with_debounce(Duration::from_millis(80))
-                .expect("create watcher");
+            let mut watcher =
+                ArtifactsWatcher::with_debounce(Duration::from_millis(80)).expect("create watcher");
             watcher.watch(&artifacts, task_leaf()).expect("watch dir");
             // Drop the watcher when this block exits.
         }
@@ -269,8 +288,10 @@ mod tests {
         fs::write(artifacts.join("post-drop.txt"), b"x").unwrap();
         std::thread::sleep(Duration::from_millis(300));
         let idx = ArtifactsIndex::load(&artifacts.join(ARTIFACTS_MD)).unwrap();
-        assert!(idx.find("post-drop.txt").is_none(),
-                "dropped watcher must not continue sweeping");
+        assert!(
+            idx.find("post-drop.txt").is_none(),
+            "dropped watcher must not continue sweeping"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 }

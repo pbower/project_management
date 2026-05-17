@@ -18,7 +18,9 @@ use project_management::db::{kind_to_prefix, Database};
 use project_management::fields::{Kind, Priority, ProcessStage, Status, Urgency};
 use project_management::store::front_matter::Document;
 use project_management::store::sections::ParsedBody;
-use project_management::store::task_bridge::{project_ancestor, task_from_document, task_to_document};
+use project_management::store::task_bridge::{
+    project_ancestor, task_from_document, task_to_document,
+};
 use project_management::store::{LeafId, State, Ticket, TypePrefix};
 use project_management::task::Task;
 
@@ -33,11 +35,16 @@ fn main() -> ExitCode {
     let tsk = state.allocate(TypePrefix::Task);
     let sbt = state.allocate(TypePrefix::Subtask);
 
-    let mut db = Database { tasks: Vec::new(), state };
+    let mut db = Database {
+        tasks: Vec::new(),
+        state,
+    };
 
     db.tasks.push(make_task(prj, "pm", None, Kind::Project));
-    db.tasks.push(make_task(prd, "Core", Some(prj), Kind::Product));
-    db.tasks.push(make_task(epc, "Checkout protocol", Some(prd), Kind::Epic));
+    db.tasks
+        .push(make_task(prd, "Core", Some(prj), Kind::Product));
+    db.tasks
+        .push(make_task(epc, "Checkout protocol", Some(prd), Kind::Epic));
     db.tasks.push(make_task_with_prose(
         tsk,
         "Lock protocol with TTL and heartbeat",
@@ -48,12 +55,23 @@ fn main() -> ExitCode {
         Some("As an agent, I want my lock to auto-release on crash."),
         Some("- TTL: 60s after last heartbeat\n- Cleanup runs on `pm doctor`"),
     ));
-    db.tasks.push(make_task(sbt, "Stale-lock cleanup", Some(tsk), Kind::Subtask));
+    db.tasks.push(make_task(
+        sbt,
+        "Stale-lock cleanup",
+        Some(tsk),
+        Kind::Subtask,
+    ));
 
     println!("--- Source Database ---");
     for t in &db.tasks {
-        let parent = t.parent.map(|p| p.to_string()).unwrap_or_else(|| "-".into());
-        println!("  {}  kind={:?}  parent={}  title={}", t.id, t.kind, parent, t.title);
+        let parent = t
+            .parent
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "-".into());
+        println!(
+            "  {}  kind={:?}  parent={}  title={}",
+            t.id, t.kind, parent, t.title
+        );
     }
 
     // Run each task through the bridge to CLAUDE.md text and back. Confirm
@@ -65,7 +83,10 @@ fn main() -> ExitCode {
         // Render through Ticket so the output matches what would actually land
         // on disk in Phase 4: front-matter delimiters, body, trailing
         // @artifacts import.
-        let ticket = Ticket { front_matter: fm.clone(), body };
+        let ticket = Ticket {
+            front_matter: fm.clone(),
+            body,
+        };
         let rendered = match ticket.render() {
             Ok(s) => s,
             Err(e) => {
@@ -98,26 +119,39 @@ fn main() -> ExitCode {
     }
 
     for t in &after {
-        let parent = t.parent.map(|p| p.to_string()).unwrap_or_else(|| "-".into());
-        println!("  {}  kind={:?}  parent={}  title={}", t.id, t.kind, parent, t.title);
+        let parent = t
+            .parent
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "-".into());
+        println!(
+            "  {}  kind={:?}  parent={}  title={}",
+            t.id, t.kind, parent, t.title
+        );
     }
 
     // project_ancestor: every non-Project task should resolve back to PRJ1.
     println!("\n--- project_ancestor derivation ---");
     for task in &db.tasks {
-        if matches!(task.kind, Kind::Project) { continue; }
+        if matches!(task.kind, Kind::Project) {
+            continue;
+        }
         let prj_owner = project_ancestor(&db, task);
         println!(
             "  {}  -> project {}",
             task.id,
-            prj_owner.map(|l| l.to_string()).unwrap_or_else(|| "-".into()),
+            prj_owner
+                .map(|l| l.to_string())
+                .unwrap_or_else(|| "-".into()),
         );
     }
 
     // Render one sample to show the wire format produced by the bridge.
     println!("\n--- Sample CLAUDE.md for TSK1 (rendered by Ticket) ---");
     let (fm, body) = task_to_document(&db.tasks[3]);
-    let ticket = Ticket { front_matter: fm, body };
+    let ticket = Ticket {
+        front_matter: fm,
+        body,
+    };
     match ticket.render() {
         Ok(s) => println!("{s}"),
         Err(e) => eprintln!("render failed: {e}"),

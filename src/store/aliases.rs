@@ -30,7 +30,9 @@ pub struct Aliases {
 impl Aliases {
     /// Empty alias table.
     pub fn empty() -> Self {
-        Aliases { map: BTreeMap::new() }
+        Aliases {
+            map: BTreeMap::new(),
+        }
     }
 
     /// Load from a `.pm/aliases.json` path. Missing or empty file returns
@@ -68,7 +70,7 @@ impl Aliases {
         for _ in 0..max_hops {
             match self.resolve_one(&current) {
                 Some(Some(next)) => current = next.to_string(),
-                Some(None) => return None, // retired
+                Some(None) => return None,    // retired
                 None => return Some(current), // no further redirect
             }
         }
@@ -96,7 +98,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "pm-store-aliases-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -105,7 +110,10 @@ mod tests {
     #[test]
     fn empty_aliases_resolves_to_self() {
         let a = Aliases::empty();
-        assert_eq!(a.resolve("PRJ1-PRD1-EPC3-TSK7", 5).as_deref(), Some("PRJ1-PRD1-EPC3-TSK7"));
+        assert_eq!(
+            a.resolve("PRJ1-PRD1-EPC3-TSK7", 5).as_deref(),
+            Some("PRJ1-PRD1-EPC3-TSK7")
+        );
     }
 
     #[test]

@@ -58,7 +58,10 @@ impl MemoryFile {
     pub fn parse(raw: &str) -> Result<Self, MemoryFileError> {
         let (yaml, body) = split_front_matter(raw).map_err(MemoryFileError::FrontMatter)?;
         let fm: MemoryFrontMatter = serde_yml::from_str(yaml).map_err(MemoryFileError::Yaml)?;
-        Ok(MemoryFile { front_matter: fm, body: body.to_string() })
+        Ok(MemoryFile {
+            front_matter: fm,
+            body: body.to_string(),
+        })
     }
 
     /// Load and parse a memory file from disk.

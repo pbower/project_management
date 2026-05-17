@@ -53,8 +53,14 @@ fn tv_help_lists_the_optional_path_argument() {
     let out = pm_no_db(&["help", "tv"]);
     assert!(out.status.success(), "pm help tv exit: {out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.to_lowercase().contains("tv"), "help mentions tv: {stdout}");
-    assert!(stdout.to_uppercase().contains("PATH"), "help mentions PATH arg: {stdout}");
+    assert!(
+        stdout.to_lowercase().contains("tv"),
+        "help mentions tv: {stdout}"
+    );
+    assert!(
+        stdout.to_uppercase().contains("PATH"),
+        "help mentions PATH arg: {stdout}"
+    );
 }
 
 #[test]
@@ -81,7 +87,11 @@ fn activity_view_ingests_events_from_a_real_workspace() {
         view.events.len()
     );
 
-    let verbs: Vec<&str> = view.events.iter().map(|e: &Event| e.verb.as_str()).collect();
+    let verbs: Vec<&str> = view
+        .events
+        .iter()
+        .map(|e: &Event| e.verb.as_str())
+        .collect();
     assert!(verbs.contains(&"checkout"), "checkout present: {verbs:?}");
     assert!(verbs.contains(&"edit"), "edit present: {verbs:?}");
     assert!(verbs.contains(&"checkin"), "checkin present: {verbs:?}");
@@ -151,7 +161,8 @@ fn activity_view_handles_missing_events_log_gracefully() {
     // buffer rather than erroring.
     let pm_dir = tmp_dir("missing-log");
     let mut view = ActivityView::new(pm_dir.clone());
-    view.refresh().expect("refresh tolerates a missing events.log");
+    view.refresh()
+        .expect("refresh tolerates a missing events.log");
     assert!(view.events.is_empty());
     assert!(view.filtered().is_empty());
 }

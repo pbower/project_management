@@ -72,12 +72,12 @@ impl App {
     /// Get the theme color for the current hierarchy level.
     pub(super) fn get_hierarchy_color(&self) -> Color {
         match self.navigation_context.level {
-            HierarchyLevel::Project => Color::Cyan,      // Cyan for the top-level Project tickets
-            HierarchyLevel::Product => Color::Blue,      // Dark Blue (keeping existing)
-            HierarchyLevel::Epic => DARK_GREEN,          // Forest Green
-            HierarchyLevel::Task => GOLD,                // Gold
-            HierarchyLevel::Subtask => DARK_RED,         // Crimson Red
-            HierarchyLevel::Milestone => DARK_PURPLE,    // Magenta for milestones
+            HierarchyLevel::Project => Color::Cyan, // Cyan for the top-level Project tickets
+            HierarchyLevel::Product => Color::Blue, // Dark Blue (keeping existing)
+            HierarchyLevel::Epic => DARK_GREEN,     // Forest Green
+            HierarchyLevel::Task => GOLD,           // Gold
+            HierarchyLevel::Subtask => DARK_RED,    // Crimson Red
+            HierarchyLevel::Milestone => DARK_PURPLE, // Magenta for milestones
         }
     }
 

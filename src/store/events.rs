@@ -75,7 +75,11 @@ fn actor_from(env_value: Option<&str>, host: &str, pid: u32) -> String {
             return trimmed.to_string();
         }
     }
-    let host = if host.trim().is_empty() { "host" } else { host.trim() };
+    let host = if host.trim().is_empty() {
+        "host"
+    } else {
+        host.trim()
+    };
     format!("claude-{host}-{pid}")
 }
 
@@ -100,7 +104,11 @@ pub(crate) fn system_hostname() -> Option<String> {
     }
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     let name = String::from_utf8_lossy(&buf[..end]).into_owned();
-    if name.trim().is_empty() { None } else { Some(name) }
+    if name.trim().is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 /// Non-Unix fallback: best-effort via the environment. Windows sets
@@ -108,7 +116,9 @@ pub(crate) fn system_hostname() -> Option<String> {
 /// cross-platform pass (PM_BUILD_PLAN.md Phase 12).
 #[cfg(not(unix))]
 pub(crate) fn system_hostname() -> Option<String> {
-    std::env::var("COMPUTERNAME").ok().filter(|s| !s.trim().is_empty())
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
 }
 
 /// Record one event in `pm_dir`'s activity feed. The actor and timestamp are
@@ -179,7 +189,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "pm-store-events-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         // events.log lives at the `.pm/` root; the layout's events_log_path
         // joins `events.log` onto `pm_dir`, so the dir itself is the root.
@@ -189,9 +202,15 @@ mod tests {
 
     #[test]
     fn actor_prefers_pm_agent_id() {
-        assert_eq!(actor_from(Some("claude-be"), "workstation", 42), "claude-be");
+        assert_eq!(
+            actor_from(Some("claude-be"), "workstation", 42),
+            "claude-be"
+        );
         // Whitespace is trimmed.
-        assert_eq!(actor_from(Some("  claude-fe  "), "workstation", 42), "claude-fe");
+        assert_eq!(
+            actor_from(Some("  claude-fe  "), "workstation", 42),
+            "claude-fe"
+        );
     }
 
     #[test]
@@ -199,15 +218,24 @@ mod tests {
         // The value is environment-specific, so the contract is only: it does
         // not panic, and a Some is never empty.
         if let Some(name) = system_hostname() {
-            assert!(!name.trim().is_empty(), "a resolved hostname must be non-empty");
+            assert!(
+                !name.trim().is_empty(),
+                "a resolved hostname must be non-empty"
+            );
         }
     }
 
     #[test]
     fn actor_falls_back_to_host_pid() {
-        assert_eq!(actor_from(None, "workstation", 12482), "claude-workstation-12482");
+        assert_eq!(
+            actor_from(None, "workstation", 12482),
+            "claude-workstation-12482"
+        );
         // Empty env value is ignored.
-        assert_eq!(actor_from(Some("   "), "workstation", 7), "claude-workstation-7");
+        assert_eq!(
+            actor_from(Some("   "), "workstation", 7),
+            "claude-workstation-7"
+        );
         // Empty host degrades to a literal.
         assert_eq!(actor_from(None, "", 7), "claude-host-7");
     }

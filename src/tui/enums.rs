@@ -205,12 +205,14 @@ impl NavigationContext {
                     HierarchyLevel::Milestone => "Parent", // Special case
                     HierarchyLevel::Project => "Parent",   // Top of the hierarchy
                 };
-                format!("All {}s for {} {} {}",
+                format!(
+                    "All {}s for {} {} {}",
                     format!("{:?}", self.level),
                     parent_type,
                     id,
-                    title)
-            },
+                    title
+                )
+            }
             _ => format!("All {}s", format!("{:?}", self.level)),
         }
     }
