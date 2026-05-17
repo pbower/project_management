@@ -28,7 +28,7 @@ fn tmp_dir(label: &str) -> PathBuf {
 /// Run `pm --db <pm_dir> <args...>` and return the raw `Output` so callers
 /// can assert on streams as well as exit status.
 fn pm(pm_dir: &Path, args: &[&str]) -> Output {
-    let bin = env!("CARGO_BIN_EXE_pm");
+    let bin = env!("CARGO_BIN_EXE_spacecell");
     let mut cmd = Command::new(bin);
     cmd.arg("--db").arg(pm_dir).args(args);
     cmd.output().expect("invoke pm binary")

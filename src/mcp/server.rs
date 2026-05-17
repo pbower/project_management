@@ -101,7 +101,7 @@ impl Server {
                 json!({
                     "protocolVersion": "2024-11-05",
                     "serverInfo": {
-                        "name": "pm",
+                        "name": "spacecell-thunder",
                         "version": env!("CARGO_PKG_VERSION"),
                     },
                     "capabilities": {
@@ -203,7 +203,10 @@ mod tests {
         );
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0]["id"], json!(1));
-        assert_eq!(responses[0]["result"]["serverInfo"]["name"], json!("pm"));
+        assert_eq!(
+            responses[0]["result"]["serverInfo"]["name"],
+            json!("spacecell-thunder")
+        );
         assert!(responses[0]["result"]["protocolVersion"].is_string());
     }
 

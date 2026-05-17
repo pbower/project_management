@@ -1,15 +1,63 @@
-# PM - Project Management CLI
+# SpaceCell Thunder
 
-Command-line project management tool with hierarchical task organisation and an optional terminal user interface (TUI).
+> *Crate `spacecell-thunder` · binary `spacecell` · shell alias `sc`*
 
-The key use case is rapid low-effort personal project planning for an individual, avoiding web-tool overhead.
+Hierarchical project management cockpit for solo developers working with AI
+coding agents. Local-first, file-based, git-native, MCP-native, single
+binary, no database, no server, no cloud.
 
-It creates a simple local file ~/.pm/tasks.json which it uses as the database, with basic CSV export,
-and no external integrations, so you retain complete control.
+The v0.2.0 release renames the crate and binary; the full Thunder cockpit
+(LHP + Workbench + Activity composition with the SpaceCell aesthetic,
+embedded board, configured-launcher agent terminals, three-tier memory
+integration) lands across the v0.3.x release line.
 
-**Change Log**:
-V0.9.3: *Added Workflow Ticket Manager*
-V0.9.0-2: Initial Public Release
+## Install
+
+```sh
+cargo install spacecell-thunder
+```
+
+This installs two binaries: `spacecell` (the primary entry point) and `pm`
+(a deprecation shim that forwards to `spacecell`; removed in v0.3.0).
+
+Optional shell alias:
+
+```sh
+alias sc=spacecell
+```
+
+## Status
+
+- **v0.2.0 (current)**: crate renamed, composed-view artifact blocks
+  shipped, v0.9 TUI preserved as `spacecell legacy-tui`.
+- **v0.3.x (in progress)**: Thunder cockpit rewrite. The v0.9 TUI stays
+  reachable via `spacecell legacy-tui` until v0.3.7 ships.
+
+## v0.9 TUI (legacy)
+
+The v0.9 TUI is still available during the v0.3 rewrite:
+
+```sh
+spacecell legacy-tui    # main menu
+spacecell ui            # workspace
+spacecell wf            # workflow kanban
+```
+
+These are removed in v0.3.7 once the new cockpit ships.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for v0.2.0 onwards.
+
+Prior versions (v0.9.x as `project_management`):
+- V0.9.3: Workflow Ticket Manager
+- V0.9.0-2: Initial public release
+
+---
+
+The remainder of this README documents the v0.9 surface and remains
+accurate for the CLI verbs and storage model. Sections describing the v0.9
+TUI navigation get replaced when v0.3.7 ships.
 
 ## Features
 

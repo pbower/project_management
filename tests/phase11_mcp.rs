@@ -27,7 +27,7 @@ fn tmp_dir(label: &str) -> PathBuf {
 /// Run `pm --db <pm_dir> <args>` non-interactively for setup. Used to
 /// seed the workspace before driving `pm mcp`.
 fn pm(pm_dir: &Path, args: &[&str]) -> std::process::Output {
-    let bin = env!("CARGO_BIN_EXE_pm");
+    let bin = env!("CARGO_BIN_EXE_spacecell");
     let mut cmd = Command::new(bin);
     cmd.arg("--db").arg(pm_dir).args(args);
     cmd.output().expect("invoke pm")
@@ -47,7 +47,7 @@ fn assert_ok(out: &std::process::Output, what: &str) {
 /// per line), close stdin, and parse the responses from stdout. Each
 /// response is one JSON value on its own line.
 fn drive_mcp(pm_dir: &Path, lines: &[&str]) -> Vec<Value> {
-    let bin = env!("CARGO_BIN_EXE_pm");
+    let bin = env!("CARGO_BIN_EXE_spacecell");
     let mut child = Command::new(bin)
         .arg("--db")
         .arg(pm_dir)
@@ -125,7 +125,7 @@ fn initialize_returns_protocol_version_and_server_info() {
     assert_eq!(resp[0]["id"], json!(1));
     let result = &resp[0]["result"];
     assert!(result["protocolVersion"].is_string());
-    assert_eq!(result["serverInfo"]["name"], json!("pm"));
+    assert_eq!(result["serverInfo"]["name"], json!("spacecell-thunder"));
     assert!(result["capabilities"]["tools"].is_object());
 }
 

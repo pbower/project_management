@@ -22,7 +22,7 @@ fn tmp_dir(label: &str) -> PathBuf {
 /// Run `pm --db <pm_dir> <args...>` with optional `PM_AGENT_ID`. Returns the
 /// raw `Output` so callers can assert on exit status as well as streams.
 fn pm_raw(pm_dir: &Path, agent: Option<&str>, args: &[&str]) -> Output {
-    let bin = env!("CARGO_BIN_EXE_pm");
+    let bin = env!("CARGO_BIN_EXE_spacecell");
     let mut cmd = Command::new(bin);
     cmd.arg("--db").arg(pm_dir).args(args);
     if let Some(a) = agent {

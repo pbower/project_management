@@ -97,7 +97,7 @@ fn main() {
 
     // Handle commands that don't need a loaded Database.
     match &cli.command {
-        Commands::Menu => {
+        Commands::Menu | Commands::LegacyTui => {
             cmd_menu(&pm_dir);
             return;
         }
@@ -138,6 +138,7 @@ fn main() {
     match cli.command {
         Commands::Ui => unreachable!("UI command handled above"),
         Commands::Wf => unreachable!("Workflow command handled above"),
+        Commands::LegacyTui => unreachable!("LegacyTui command handled above"),
         Commands::Add {
             title,
             template,

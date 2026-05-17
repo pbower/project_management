@@ -32,14 +32,14 @@ fn tmp_dir(label: &str) -> PathBuf {
 }
 
 fn pm(pm_dir: &Path, args: &[&str]) -> Output {
-    let bin = env!("CARGO_BIN_EXE_pm");
+    let bin = env!("CARGO_BIN_EXE_spacecell");
     let mut cmd = Command::new(bin);
     cmd.arg("--db").arg(pm_dir).args(args);
     cmd.output().expect("invoke pm binary")
 }
 
 fn pm_no_db(args: &[&str]) -> Output {
-    let bin = env!("CARGO_BIN_EXE_pm");
+    let bin = env!("CARGO_BIN_EXE_spacecell");
     Command::new(bin)
         .args(args)
         .output()

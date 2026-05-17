@@ -262,6 +262,13 @@ pub enum Commands {
     /// Open project main menu (interactive mode).
     Menu,
 
+    /// Open the v0.9 TUI (Menu launcher + Ui workspace + Workflow board).
+    /// Same surface as `menu`; the new name is the stable entry point
+    /// users should adopt now. In v0.3.0 the default `spacecell` invocation
+    /// stops launching this TUI and `legacy-tui` becomes the only path to
+    /// the v1 surface, until the new cockpit ships.
+    LegacyTui,
+
     // ----- v2 lifecycle verbs -----
     /// Initialise a `.pm/` workspace in the current directory.
     Init,

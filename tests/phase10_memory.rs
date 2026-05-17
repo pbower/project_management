@@ -26,7 +26,7 @@ fn tmp_dir(label: &str) -> PathBuf {
 /// Run `pm --db <pm_dir> <args>` with a controlled `HOME` and `cwd`. The
 /// user-tier path then resolves to a predictable subtree under `home_dir`.
 fn pm(pm_dir: &Path, home: &Path, args: &[&str]) -> Output {
-    let bin = env!("CARGO_BIN_EXE_pm");
+    let bin = env!("CARGO_BIN_EXE_spacecell");
     let mut cmd = Command::new(bin);
     cmd.arg("--db")
         .arg(pm_dir)

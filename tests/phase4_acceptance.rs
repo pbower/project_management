@@ -194,7 +194,7 @@ fn doctor_rebuilds_state_json_from_disk_truth() {
     // re-save, which currently rewrites state.items only from in-memory
     // tasks. So we exercise the actual doctor handler via the binary path
     // instead.
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pm"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_spacecell"))
         .arg("--db")
         .arg(&pm_dir)
         .arg("doctor")
@@ -227,7 +227,7 @@ fn pm_init_scaffolds_the_workspace() {
     let pm_dir_inside = pm_dir.join("workspace");
     fs::create_dir_all(&pm_dir_inside).unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pm"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_spacecell"))
         .arg("--db")
         .arg(&pm_dir_inside)
         .arg("init")

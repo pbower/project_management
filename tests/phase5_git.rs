@@ -19,7 +19,7 @@ fn tmp_dir(label: &str) -> PathBuf {
 }
 
 fn pm(pm_dir: &Path, args: &[&str]) -> std::process::Output {
-    let bin = env!("CARGO_BIN_EXE_pm");
+    let bin = env!("CARGO_BIN_EXE_spacecell");
     let output = Command::new(bin)
         .arg("--db")
         .arg(pm_dir)
