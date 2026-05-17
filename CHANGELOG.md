@@ -4,6 +4,52 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-05-16
+
+Lightning palette refresh. The cockpit canvas drops navy in favour of
+true black and adopts the SpaceCell Lightning logo's cyan-blue as the
+primary accent for eyebrows, ticket ids, section labels, and the bolt
+glyph. Gold is retained for active rows, focused selections, and the
+THUNDER half of the wordmark so both brand accents are present.
+
+Note: the program name stays SpaceCell Thunder. The Lightning palette
+is borrowed from the sibling SpaceCell Lightning product because the
+black + cyan + gold combination reads better in a terminal than the
+navy + gold did.
+
+### Added
+
+- `LIGHTNING_BLUE`, `LIGHTNING_BLUE_BRIGHT`, `LIGHTNING_BLUE_DEEP`
+  palette constants in `src/style/mod.rs`.
+- `wordmark_accent()` and `bolt()` style helpers so the wordmark renders
+  in three coordinated colours (bolt in Lightning blue, "SPACECELL" in
+  paper white, "THUNDER" in gold).
+- `SURFACE_RAISED` / `SURFACE_RAISED_2` neutrals for nested-pane fills
+  when a panel needs to read as slightly raised above the canvas.
+
+### Changed
+
+- Canvas (`body()`, all backgrounds) now `BLACK` instead of
+  `NAVY_DEEP`. Every existing helper composes the new black canvas
+  automatically.
+- `eyebrow()` and `id_code()` switched from gold3 ochre to Lightning
+  blue. The board's column headers, the LHP's section labels, every
+  ticket id and timestamp now reads in cyan-blue.
+- `border()` switched to `LIGHTNING_BLUE_DEEP` so panel rules sit
+  behind content rather than competing for attention.
+- Semantic green / crimson tokens brightened so they pop on the new
+  black canvas without losing their meaning.
+- `src/tui/shell/header.rs` renders the wordmark as three styled spans
+  to mirror the SpaceCell Lightning logo treatment.
+- `src/tui/shell/help.rs` and `src/tui/lhp/mod.rs` align with the new
+  wordmark treatment.
+
+### Renumbered
+
+- The next live-refresh phase moves from v0.3.2 to v0.3.3 to make room
+  for this palette refresh. PM_BUILD_PLAN.md will renumber subsequent
+  phases when v0.3.3 lands.
+
 ## [0.3.1] - 2026-05-16
 
 The main shell composition. Wraps the v0.3.0 kept-pieces (workflow

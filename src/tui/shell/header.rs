@@ -30,11 +30,15 @@ pub fn render(f: &mut Frame, area: Rect, mode: Mode, lhp: &LhpState, db: &Databa
         ])
         .split(inner);
 
+    // Wordmark mirrors the SpaceCell Lightning logo treatment: bolt in
+    // Lightning blue, "SPACECELL" in paper, and the product name half
+    // ("THUNDER") in gold so the brand's two accent colours both read.
     f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            "  ⚡ SPACECELL THUNDER",
-            style::wordmark(),
-        )]))
+        Paragraph::new(Line::from(vec![
+            Span::styled("  ⚡ ", style::bolt()),
+            Span::styled("SPACECELL ", style::wordmark()),
+            Span::styled("THUNDER", style::wordmark_accent()),
+        ]))
         .style(style::body()),
         split[0],
     );

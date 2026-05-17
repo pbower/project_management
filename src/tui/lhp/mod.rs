@@ -146,7 +146,7 @@ impl LhpState {
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(style::border())
-            .title(Line::styled(" THUNDER ", style::wordmark()))
+            .title(Line::styled(" THUNDER ", style::wordmark_accent()))
             .style(style::body());
         let inner = outer.inner(area);
         f.render_widget(outer, area);

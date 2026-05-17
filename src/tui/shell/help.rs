@@ -28,10 +28,11 @@ pub fn render(f: &mut Frame, area: Rect, mode: Mode) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    lines.push(Line::styled(
-        "  SPACECELL THUNDER · v0.3.1",
-        style::wordmark(),
-    ));
+    lines.push(Line::from(vec![
+        Span::styled("  SPACECELL ", style::wordmark()),
+        Span::styled("THUNDER", style::wordmark_accent()),
+        Span::styled(" · v0.3.2", style::muted()),
+    ]));
     lines.push(Line::raw(""));
     lines.push(Line::styled("  GLOBAL", style::eyebrow()));
     lines.push(row("Tab / Shift-Tab", "Cycle modes"));
