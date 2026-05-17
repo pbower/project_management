@@ -52,19 +52,31 @@ pub struct Layout {
 impl Layout {
     /// Build a layout rooted at `<base>/.pm/`.
     pub fn under(base: impl AsRef<Path>) -> Self {
-        Layout { root: base.as_ref().join(PM_DIR_NAME) }
+        Layout {
+            root: base.as_ref().join(PM_DIR_NAME),
+        }
     }
 
     /// Build a layout rooted at an explicit `.pm/` directory (the directory
     /// itself, not its parent).
     pub fn at(root: impl AsRef<Path>) -> Self {
-        Layout { root: root.as_ref().to_path_buf() }
+        Layout {
+            root: root.as_ref().to_path_buf(),
+        }
     }
 
-    pub fn state_path(&self) -> PathBuf { self.root.join("state.json") }
-    pub fn aliases_path(&self) -> PathBuf { self.root.join("aliases.json") }
-    pub fn events_log_path(&self) -> PathBuf { self.root.join("events.log") }
-    pub fn locks_dir(&self) -> PathBuf { self.root.join("locks") }
+    pub fn state_path(&self) -> PathBuf {
+        self.root.join("state.json")
+    }
+    pub fn aliases_path(&self) -> PathBuf {
+        self.root.join("aliases.json")
+    }
+    pub fn events_log_path(&self) -> PathBuf {
+        self.root.join("events.log")
+    }
+    pub fn locks_dir(&self) -> PathBuf {
+        self.root.join("locks")
+    }
 
     /// Path to a top-level type folder (e.g. `tasks/` for orphan tasks).
     pub fn type_folder_root(&self, prefix: TypePrefix) -> PathBuf {
@@ -170,7 +182,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "pm-store-layout-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -189,7 +204,10 @@ mod tests {
         assert!(layout.locks_dir().is_dir());
 
         for (_prefix, folder) in TYPE_FOLDER_ROOTS {
-            assert!(layout.root.join(folder).is_dir(), "missing type folder: {folder}");
+            assert!(
+                layout.root.join(folder).is_dir(),
+                "missing type folder: {folder}"
+            );
         }
         fs::remove_dir_all(&base).ok();
     }
@@ -200,10 +218,17 @@ mod tests {
         let layout = Layout::under(&base);
         layout.init().unwrap();
         // Plant a sentinel inside state.json to verify init does not clobber.
-        fs::write(layout.state_path(), r#"{"sentinel":true,"next":{"TSK":99}}"#).unwrap();
+        fs::write(
+            layout.state_path(),
+            r#"{"sentinel":true,"next":{"TSK":99}}"#,
+        )
+        .unwrap();
         layout.init().unwrap();
         let after = fs::read_to_string(layout.state_path()).unwrap();
-        assert!(after.contains("sentinel"), "init clobbered existing state.json");
+        assert!(
+            after.contains("sentinel"),
+            "init clobbered existing state.json"
+        );
         fs::remove_dir_all(&base).ok();
     }
 

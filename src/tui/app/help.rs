@@ -46,7 +46,9 @@ impl App {
         let heading = |text: &str| {
             Line::from(vec![Span::styled(
                 text.to_string(),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             )])
         };
 
@@ -57,16 +59,26 @@ impl App {
                 lines.push(Line::from("  <- ->        Traverse hierarchy levels"));
                 lines.push(Line::from("  ^ v          Move within the list"));
                 lines.push(Line::from("  Enter        Drill into the selected ticket"));
-                lines.push(Line::from("  e            Open the ticket's CLAUDE.md in $EDITOR"));
+                lines.push(Line::from(
+                    "  e            Open the ticket's CLAUDE.md in $EDITOR",
+                ));
                 lines.push(Line::from("  f            Open the quick-entry form"));
                 lines.push(Line::from("  n            Add a child ticket"));
-                lines.push(Line::from("  c / i        Checkout / checkin the selected ticket"));
+                lines.push(Line::from(
+                    "  c / i        Checkout / checkin the selected ticket",
+                ));
                 lines.push(Line::from("  a            Add an artifact"));
                 lines.push(Line::from("  m            Toggle the memory side-panel"));
                 lines.push(Line::from("  d            Delete the selected ticket"));
-                lines.push(Line::from("  s            Cycle status   p   cycle process stage"));
-                lines.push(Line::from("  t            Toggle show/hide completed   r refresh"));
-                lines.push(Line::from("  /            Filter by title / tags / project"));
+                lines.push(Line::from(
+                    "  s            Cycle status   p   cycle process stage",
+                ));
+                lines.push(Line::from(
+                    "  t            Toggle show/hide completed   r refresh",
+                ));
+                lines.push(Line::from(
+                    "  /            Filter by title / tags / project",
+                ));
             }
             Mode::Documents => {
                 lines.push(Line::from("  Document Workspace arrives in Phase 8."));
@@ -77,25 +89,51 @@ impl App {
                 lines.push(Line::from("  q            Exit to the launcher"));
             }
         }
-        lines.push(Line::from("  Tab / S-Tab  Cycle modes      1 / 2 / 3  jump to a mode"));
-        lines.push(Line::from("  ? / F1       Toggle this help   q  back to launcher"));
+        lines.push(Line::from(
+            "  Tab / S-Tab  Cycle modes      1 / 2 / 3  jump to a mode",
+        ));
+        lines.push(Line::from(
+            "  ? / F1       Toggle this help   q  back to launcher",
+        ));
         lines.push(Line::from(""));
 
         lines.push(heading("Concepts"));
-        lines.push(Line::from("  Hierarchy    PRJ Project > PRD Product > EPC Epic > TSK Task > SBT Subtask"));
-        lines.push(Line::from("  MLS          Milestone - a cross-cutting marker, project-scoped by default"));
-        lines.push(Line::from("  Locks        A checkout claims a ticket; the Lock column shows the holder,"));
-        lines.push(Line::from("               or STALE once the heartbeat TTL has passed"));
-        lines.push(Line::from("  Memories     Three tiers - user, project, ticket. M:n counts linked refs"));
-        lines.push(Line::from("  Composition  A ticket's CLAUDE.md carries front-matter plus prose sections"));
-        lines.push(Line::from("  Git          Every state change commits; checkin squashes the checkout span"));
+        lines.push(Line::from(
+            "  Hierarchy    PRJ Project > PRD Product > EPC Epic > TSK Task > SBT Subtask",
+        ));
+        lines.push(Line::from(
+            "  MLS          Milestone - a cross-cutting marker, project-scoped by default",
+        ));
+        lines.push(Line::from(
+            "  Locks        A checkout claims a ticket; the Lock column shows the holder,",
+        ));
+        lines.push(Line::from(
+            "               or STALE once the heartbeat TTL has passed",
+        ));
+        lines.push(Line::from(
+            "  Memories     Three tiers - user, project, ticket. M:n counts linked refs",
+        ));
+        lines.push(Line::from(
+            "  Composition  A ticket's CLAUDE.md carries front-matter plus prose sections",
+        ));
+        lines.push(Line::from(
+            "  Git          Every state change commits; checkin squashes the checkout span",
+        ));
         lines.push(Line::from(""));
 
         lines.push(heading("Workflows"));
-        lines.push(Line::from("  File a task            n, fill the quick-entry form, save"));
-        lines.push(Line::from("  Hand off to an agent   c to checkout, share the ticket id, i to checkin"));
-        lines.push(Line::from("  Monitor parallel work  Mode 3 (Phase 9) or `pm tv` on a second screen"));
-        lines.push(Line::from("  Write a project memory `pm memory write --scope project ...` (Phase 10)"));
+        lines.push(Line::from(
+            "  File a task            n, fill the quick-entry form, save",
+        ));
+        lines.push(Line::from(
+            "  Hand off to an agent   c to checkout, share the ticket id, i to checkin",
+        ));
+        lines.push(Line::from(
+            "  Monitor parallel work  Mode 3 (Phase 9) or `pm tv` on a second screen",
+        ));
+        lines.push(Line::from(
+            "  Write a project memory `pm memory write --scope project ...` (Phase 10)",
+        ));
 
         let overlay = centered_rect(80, 80, area);
         f.render_widget(Clear, overlay);

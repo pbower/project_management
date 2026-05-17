@@ -15,13 +15,12 @@
 //! All three share one on-disk format (front-matter + body) compatible with
 //! Claude Code's auto-memory schema.
 
-pub mod scope;
 pub mod file;
+pub mod scope;
 pub mod store;
 
-pub use scope::{Scope, MemoryType, MemoryLocation};
-pub use file::{MemoryFile, MemoryFrontMatter, MemoryFileError};
+pub use file::{MemoryFile, MemoryFileError, MemoryFrontMatter};
+pub use scope::{MemoryLocation, MemoryType, Scope};
 pub use store::{
-    list_at_scope, list_all, lookup_by_name, write_memory, promote_memory,
-    StoreError, MemoryHit,
+    list_all, list_at_scope, lookup_by_name, promote_memory, write_memory, MemoryHit, StoreError,
 };

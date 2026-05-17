@@ -35,7 +35,9 @@ pub enum LockMode {
 }
 
 impl Default for LockMode {
-    fn default() -> Self { LockMode::Soft }
+    fn default() -> Self {
+        LockMode::Soft
+    }
 }
 
 /// One lock file's contents.
@@ -259,16 +261,27 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "pm-store-locks-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    fn tsk(n: u64) -> LeafId { LeafId::new(TypePrefix::Task, n) }
+    fn tsk(n: u64) -> LeafId {
+        LeafId::new(TypePrefix::Task, n)
+    }
 
     /// Build a lock with explicit agent and timestamps for deterministic tests.
-    fn lock_for(id: LeafId, agent: &str, started: DateTime<Utc>, heartbeat: DateTime<Utc>, mode: LockMode) -> LockFile {
+    fn lock_for(
+        id: LeafId,
+        agent: &str,
+        started: DateTime<Utc>,
+        heartbeat: DateTime<Utc>,
+        mode: LockMode,
+    ) -> LockFile {
         LockFile {
             id,
             agent: agent.to_string(),
@@ -339,7 +352,10 @@ mod tests {
 
         let fresh = lock_for(tsk(7), "claude-fe", now, now, LockMode::Soft);
         // Even a hard stale lock does not block - it is reaped by the overwrite.
-        assert_eq!(acquire(&dir, &fresh, now).unwrap(), AcquireOutcome::Acquired);
+        assert_eq!(
+            acquire(&dir, &fresh, now).unwrap(),
+            AcquireOutcome::Acquired
+        );
         assert_eq!(read(&dir, tsk(7)).unwrap().unwrap().agent, "claude-fe");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -351,7 +367,10 @@ mod tests {
         let first = lock_for(tsk(7), "claude-be", now, now, LockMode::Soft);
         acquire(&dir, &first, now).unwrap();
         let again = lock_for(tsk(7), "claude-be", now, now, LockMode::Soft);
-        assert_eq!(acquire(&dir, &again, now).unwrap(), AcquireOutcome::Acquired);
+        assert_eq!(
+            acquire(&dir, &again, now).unwrap(),
+            AcquireOutcome::Acquired
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -359,7 +378,12 @@ mod tests {
     fn release_removes_lock() {
         let dir = tmp_dir();
         let now = Utc::now();
-        acquire(&dir, &lock_for(tsk(7), "claude-be", now, now, LockMode::Soft), now).unwrap();
+        acquire(
+            &dir,
+            &lock_for(tsk(7), "claude-be", now, now, LockMode::Soft),
+            now,
+        )
+        .unwrap();
         assert!(release(&dir, tsk(7)).unwrap());
         assert!(read(&dir, tsk(7)).unwrap().is_none());
         // Releasing again is a no-op that reports "not present".
@@ -371,8 +395,18 @@ mod tests {
     fn list_returns_all_locks_sorted() {
         let dir = tmp_dir();
         let now = Utc::now();
-        acquire(&dir, &lock_for(tsk(44), "claude-fe", now, now, LockMode::Soft), now).unwrap();
-        acquire(&dir, &lock_for(tsk(7), "claude-be", now, now, LockMode::Soft), now).unwrap();
+        acquire(
+            &dir,
+            &lock_for(tsk(44), "claude-fe", now, now, LockMode::Soft),
+            now,
+        )
+        .unwrap();
+        acquire(
+            &dir,
+            &lock_for(tsk(7), "claude-be", now, now, LockMode::Soft),
+            now,
+        )
+        .unwrap();
         let locks = list(&dir).unwrap();
         let ids: Vec<String> = locks.iter().map(|l| l.id.to_string()).collect();
         assert_eq!(ids, vec!["TSK7", "TSK44"]);
@@ -385,8 +419,18 @@ mod tests {
         let now = Utc::now();
         let stale_hb = now - Duration::seconds((DEFAULT_TTL_SECONDS + 60) as i64);
         // One fresh, one stale.
-        acquire(&dir, &lock_for(tsk(7), "claude-be", now, now, LockMode::Soft), now).unwrap();
-        acquire(&dir, &lock_for(tsk(44), "claude-fe", stale_hb, stale_hb, LockMode::Soft), now).unwrap();
+        acquire(
+            &dir,
+            &lock_for(tsk(7), "claude-be", now, now, LockMode::Soft),
+            now,
+        )
+        .unwrap();
+        acquire(
+            &dir,
+            &lock_for(tsk(44), "claude-fe", stale_hb, stale_hb, LockMode::Soft),
+            now,
+        )
+        .unwrap();
 
         let reaped = reap_stale(&dir, now).unwrap();
         assert_eq!(reaped, vec![tsk(44)]);
@@ -401,7 +445,12 @@ mod tests {
         let dir = tmp_dir();
         let now = Utc::now();
         let old_hb = now - Duration::seconds(120);
-        acquire(&dir, &lock_for(tsk(7), "claude-be", old_hb, old_hb, LockMode::Soft), now).unwrap();
+        acquire(
+            &dir,
+            &lock_for(tsk(7), "claude-be", old_hb, old_hb, LockMode::Soft),
+            now,
+        )
+        .unwrap();
 
         assert!(refresh_heartbeat(&dir, tsk(7), now).unwrap());
         assert_eq!(read(&dir, tsk(7)).unwrap().unwrap().last_heartbeat, now);

@@ -105,7 +105,11 @@ impl MigrationPlan {
         let _ = writeln!(out, "Migration plan for {}", self.source.display());
         let _ = writeln!(out, "  {} tickets total", self.steps.len());
         if !self.dangling_parents.is_empty() {
-            let names: Vec<String> = self.dangling_parents.iter().map(|l| l.to_string()).collect();
+            let names: Vec<String> = self
+                .dangling_parents
+                .iter()
+                .map(|l| l.to_string())
+                .collect();
             let _ = writeln!(
                 out,
                 "  {} dangling parent references (demoted to orphan): {}",
@@ -114,8 +118,11 @@ impl MigrationPlan {
             );
         }
         let _ = writeln!(out);
-        let _ = writeln!(out, "  {:<5}  {:<9}  {:<32}  {}",
-            "LEAF", "KIND", "ADDRESS", "TARGET");
+        let _ = writeln!(
+            out,
+            "  {:<5}  {:<9}  {:<32}  {}",
+            "LEAF", "KIND", "ADDRESS", "TARGET"
+        );
         for s in &self.steps {
             let _ = writeln!(
                 out,
@@ -145,20 +152,19 @@ pub(crate) fn kind_to_prefix(k: Kind) -> TypePrefix {
 /// Walk a ticket's parent chain to the root, returning leaf ids root-first.
 /// Parents that are missing from the source stop the chain at the first
 /// known ancestor or at the starting leaf if no ancestor resolves.
-fn walk_chain(
-    start: LeafId,
-    tasks: &[Task],
-    known: &BTreeSet<LeafId>,
-) -> Vec<LeafId> {
+fn walk_chain(start: LeafId, tasks: &[Task], known: &BTreeSet<LeafId>) -> Vec<LeafId> {
     let by_id: BTreeMap<LeafId, &Task> = tasks.iter().map(|t| (t.id, t)).collect();
     let mut chain = Vec::new();
     let mut cursor = Some(start);
     let mut guard = 0usize;
     while let Some(id) = cursor {
-        if guard > 16 { break; } // defensive cap against malformed source cycles
+        if guard > 16 {
+            break;
+        } // defensive cap against malformed source cycles
         guard += 1;
         chain.push(id);
-        cursor = by_id.get(&id)
+        cursor = by_id
+            .get(&id)
             .and_then(|t| t.parent)
             .filter(|p| known.contains(p));
     }
@@ -174,7 +180,9 @@ pub enum MigrateError {
 impl std::fmt::Display for MigrateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MigrateError::SourceMissing(p) => write!(f, "migration source not found: {}", p.display()),
+            MigrateError::SourceMissing(p) => {
+                write!(f, "migration source not found: {}", p.display())
+            }
         }
     }
 }
@@ -195,7 +203,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "pm-store-migrate-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -236,7 +247,10 @@ mod tests {
 
     fn write_db(dir: &Path, name: &str, tasks: Vec<Task>) -> PathBuf {
         let p = dir.join(name);
-        let mut db = Database { tasks, state: State::fresh() };
+        let mut db = Database {
+            tasks,
+            state: State::fresh(),
+        };
         db.save(&p).unwrap();
         p
     }
@@ -262,12 +276,16 @@ mod tests {
         let tsk1 = leaf(TypePrefix::Task, 1);
         let sbt1 = leaf(TypePrefix::Subtask, 1);
 
-        let src = write_db(&dir, "tasks.json", vec![
-            task(prd1, "E-commerce Platform", None, Kind::Product),
-            task(epc1, "User Management System", Some(prd1), Kind::Epic),
-            task(tsk1, "User Registration", Some(epc1), Kind::Task),
-            task(sbt1, "Email Validation", Some(tsk1), Kind::Subtask),
-        ]);
+        let src = write_db(
+            &dir,
+            "tasks.json",
+            vec![
+                task(prd1, "E-commerce Platform", None, Kind::Product),
+                task(epc1, "User Management System", Some(prd1), Kind::Epic),
+                task(tsk1, "User Registration", Some(epc1), Kind::Task),
+                task(sbt1, "Email Validation", Some(tsk1), Kind::Subtask),
+            ],
+        );
 
         let plan = MigrationPlan::plan(&layout, &src).unwrap();
         assert_eq!(plan.steps.len(), 4);
@@ -288,7 +306,10 @@ mod tests {
 
         let tsk = by_leaf[&tsk1];
         assert_eq!(tsk.address.to_string(), "PRD1-EPC1-TSK1");
-        assert_eq!(tsk.target_dir, PathBuf::from("products/PRD1/epics/EPC1/tasks/TSK1"));
+        assert_eq!(
+            tsk.target_dir,
+            PathBuf::from("products/PRD1/epics/EPC1/tasks/TSK1")
+        );
 
         let sub = by_leaf[&sbt1];
         assert_eq!(sub.address.to_string(), "PRD1-EPC1-TSK1-SBT1");
@@ -309,15 +330,20 @@ mod tests {
         let tsk7 = leaf(TypePrefix::Task, 7);
         let ghost = leaf(TypePrefix::Task, 999);
 
-        let src = write_db(&dir, "tasks.json", vec![
-            task(tsk7, "Orphan Task", Some(ghost), Kind::Task),
-        ]);
+        let src = write_db(
+            &dir,
+            "tasks.json",
+            vec![task(tsk7, "Orphan Task", Some(ghost), Kind::Task)],
+        );
 
         let plan = MigrationPlan::plan(&layout, &src).unwrap();
         assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.dangling_parents, vec![ghost]);
         let step = &plan.steps[0];
-        assert!(step.parent.is_none(), "ticket pointing at missing parent demoted");
+        assert!(
+            step.parent.is_none(),
+            "ticket pointing at missing parent demoted"
+        );
         assert_eq!(step.address.depth(), 1);
         assert_eq!(step.target_dir, PathBuf::from("tasks/TSK7"));
 
@@ -331,9 +357,11 @@ mod tests {
         layout.init().unwrap();
 
         let mls1 = leaf(TypePrefix::Milestone, 1);
-        let src = write_db(&dir, "tasks.json", vec![
-            task(mls1, "Solo Milestone", None, Kind::Milestone),
-        ]);
+        let src = write_db(
+            &dir,
+            "tasks.json",
+            vec![task(mls1, "Solo Milestone", None, Kind::Milestone)],
+        );
 
         let plan = MigrationPlan::plan(&layout, &src).unwrap();
         assert_eq!(plan.steps.len(), 1);
@@ -361,10 +389,14 @@ mod tests {
 
         let prd1 = leaf(TypePrefix::Product, 1);
         let epc1 = leaf(TypePrefix::Epic, 1);
-        let src = write_db(&dir, "tasks.json", vec![
-            task(prd1, "P", None, Kind::Product),
-            task(epc1, "E", Some(prd1), Kind::Epic),
-        ]);
+        let src = write_db(
+            &dir,
+            "tasks.json",
+            vec![
+                task(prd1, "P", None, Kind::Product),
+                task(epc1, "E", Some(prd1), Kind::Epic),
+            ],
+        );
 
         let plan = MigrationPlan::plan(&layout, &src).unwrap();
         let rendered = plan.render();
@@ -384,10 +416,14 @@ mod tests {
 
         let prj1 = leaf(TypePrefix::Project, 1);
         let prd1 = leaf(TypePrefix::Product, 1);
-        let src = write_db(&dir, "tasks.json", vec![
-            task(prj1, "Top project", None, Kind::Project),
-            task(prd1, "First product", Some(prj1), Kind::Product),
-        ]);
+        let src = write_db(
+            &dir,
+            "tasks.json",
+            vec![
+                task(prj1, "Top project", None, Kind::Project),
+                task(prd1, "First product", Some(prj1), Kind::Product),
+            ],
+        );
 
         let plan = MigrationPlan::plan(&layout, &src).unwrap();
         let by_leaf: BTreeMap<LeafId, &MigrationStep> =
@@ -396,7 +432,10 @@ mod tests {
         assert_eq!(by_leaf[&prj1].address.to_string(), "PRJ1");
         assert_eq!(by_leaf[&prj1].target_dir, PathBuf::from("projects/PRJ1"));
         assert_eq!(by_leaf[&prd1].address.to_string(), "PRJ1-PRD1");
-        assert_eq!(by_leaf[&prd1].target_dir, PathBuf::from("projects/PRJ1/products/PRD1"));
+        assert_eq!(
+            by_leaf[&prd1].target_dir,
+            PathBuf::from("projects/PRJ1/products/PRD1")
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

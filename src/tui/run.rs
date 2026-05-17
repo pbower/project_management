@@ -81,9 +81,7 @@ fn drive_activity_view<B: ratatui::backend::Backend>(
             if let Event::Key(key) = event::read()? {
                 // Ctrl+C exits the standalone binary regardless of the view's
                 // own bindings (which use bare `c` for clear-filter).
-                if key.code == KeyCode::Char('c')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     return Ok(());
                 }
                 if view.handle_key(key.code, key.modifiers) == ActivityAction::ExitView {
