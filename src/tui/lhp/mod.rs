@@ -100,72 +100,80 @@ impl LhpState {
 
     /// Handle a keystroke routed to the LHP.
     ///
-    /// `Up`/`Down` navigate vertically within the LHP. The LHP renders
-    /// five stacked level sections, so within-cursor movement and
-    /// across-level movement are both vertical; pressing `Down` at the
-    /// bottom of a level rolls the focus down to the first item of the
-    /// next level, and `Up` at the top rolls back up.
+    /// File-manager column model. `Up` / `Down` move the cursor within
+    /// the focused level only - one keystroke, one item, no skipping
+    /// across sections. To change level the user drills in or out:
     ///
-    /// `Left` and `Right` always overflow out of the LHP. The shell
-    /// turns `OverflowRight` into a focus flip into the Workbench so a
-    /// single arrow-key cursor flows across the whole cockpit.
+    /// - `Right` / `Enter`: drill into the selected item's children
+    ///   (focused level becomes the child level, cursor resets to 0).
+    ///   At the deepest level (Subtask), or when the selected item has
+    ///   no children, Right overflows to the Workbench so the cursor
+    ///   keeps flowing rightward across the cockpit.
+    /// - `Left`: drill back to the parent level, keeping the parent's
+    ///   cursor where it was. At the top level (Project), Left is a
+    ///   no-op until v0.3.4 adds a left-of-LHP surface.
     pub fn handle_key(&mut self, key: KeyCode, _mods: KeyModifiers, db: &Database) -> Disposition {
         match key {
             KeyCode::Up => {
-                self.move_up(db);
+                self.move_cursor_within(db, -1);
                 Disposition::Consumed
             }
             KeyCode::Down => {
-                self.move_down(db);
+                self.move_cursor_within(db, 1);
                 Disposition::Consumed
             }
-            KeyCode::Left => Disposition::OverflowLeft,
-            KeyCode::Right | KeyCode::Enter => Disposition::OverflowRight,
+            KeyCode::Right | KeyCode::Enter => {
+                if let Some(child) = self.focused_level.child() {
+                    let child_items = self.items_at(db, child);
+                    if !child_items.is_empty() {
+                        self.focused_level = child;
+                        // Drill in starts at the first child; the
+                        // descendant chain below stays at 0 so the
+                        // cascade filter re-anchors cleanly.
+                        self.cursors.insert(child, 0);
+                        self.reset_descendant_cursors(child);
+                        return Disposition::Consumed;
+                    }
+                }
+                // No child level, or the selected item has no children:
+                // hand focus to the Workbench.
+                Disposition::OverflowRight
+            }
+            KeyCode::Left => {
+                if let Some(parent) = self.focused_level.parent() {
+                    self.focused_level = parent;
+                    // Parent's cursor is preserved so the user lands
+                    // back where they were before drilling in.
+                    Disposition::Consumed
+                } else {
+                    // Already at the top level; nothing to drill out
+                    // into until v0.3.4 adds a left-of-LHP surface.
+                    Disposition::OverflowLeft
+                }
+            }
             _ => Disposition::Consumed,
         }
     }
 
-    /// Move the cursor up one item. If already at the top of the
-    /// current level, jump to the last item of the parent level.
-    fn move_up(&mut self, db: &Database) {
-        let cursor = self.cursors.get(&self.focused_level).copied().unwrap_or(0);
-        if cursor > 0 {
-            self.cursors.insert(self.focused_level, cursor - 1);
-            self.reset_descendant_cursors(self.focused_level);
-            return;
-        }
-        // At the top of this level. Roll up into the parent level's
-        // last item if a parent level exists.
-        if let Some(parent_level) = self.focused_level.parent() {
-            let parent_items = self.items_at(db, parent_level);
-            if !parent_items.is_empty() {
-                self.focused_level = parent_level;
-                self.cursors.insert(parent_level, parent_items.len() - 1);
-                self.reset_descendant_cursors(parent_level);
-            }
-        }
-    }
-
-    /// Move the cursor down one item. If already at the bottom of the
-    /// current level, jump to the first item of the child level.
-    fn move_down(&mut self, db: &Database) {
+    /// Move the cursor within the focused level by `delta`. Clamps to
+    /// the level's item bounds; a `Down` at the end of a list is a
+    /// no-op rather than rolling to the next level (the user uses
+    /// `Right` / `Enter` to drill explicitly).
+    fn move_cursor_within(&mut self, db: &Database, delta: i32) {
         let items = self.items_at(db, self.focused_level);
-        let cursor = self.cursors.get(&self.focused_level).copied().unwrap_or(0);
-        if cursor + 1 < items.len() {
-            self.cursors.insert(self.focused_level, cursor + 1);
-            self.reset_descendant_cursors(self.focused_level);
+        if items.is_empty() {
             return;
         }
-        // At the bottom of this level. Roll down into the child level
-        // if a child level exists and has items.
-        if let Some(child_level) = self.focused_level.child() {
-            let child_items = self.items_at(db, child_level);
-            if !child_items.is_empty() {
-                self.focused_level = child_level;
-                self.cursors.insert(child_level, 0);
-                self.reset_descendant_cursors(child_level);
-            }
+        let cursor = self.cursors.get(&self.focused_level).copied().unwrap_or(0);
+        let next = (cursor as i32 + delta).clamp(0, items.len() as i32 - 1) as usize;
+        if next == cursor {
+            return;
         }
+        self.cursors.insert(self.focused_level, next);
+        // Changing the selection at this level invalidates the cascade
+        // for descendant levels; reset their cursors so the next drill
+        // starts at item 0 of the new child list.
+        self.reset_descendant_cursors(self.focused_level);
     }
 
     /// Reset cursors below `level` to 0. Called whenever the cursor at

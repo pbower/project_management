@@ -42,12 +42,10 @@ pub fn render(f: &mut Frame, area: Rect, mode: Mode) {
     lines.push(Line::raw(""));
 
     lines.push(Line::styled("  NAVIGATION · LHP", style::eyebrow()));
-    lines.push(row(
-        "↑ / ↓",
-        "Move through items; rolls across level boundaries",
-    ));
-    lines.push(row("→ / Enter", "Hand focus to the board"));
-    lines.push(row("←", "Hand focus left (no-op until v0.3.4)"));
+    lines.push(row("↑ / ↓", "Move within the focused level (no skipping)"));
+    lines.push(row("→ / Enter", "Drill into the selected item's children"));
+    lines.push(row("←", "Drill back to the parent level"));
+    lines.push(row("→  at Subtask", "Hand focus to the board"));
     lines.push(Line::raw(""));
 
     lines.push(Line::styled("  NAVIGATION · BOARD", style::eyebrow()));
