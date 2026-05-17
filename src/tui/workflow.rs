@@ -18,16 +18,24 @@ use ratatui::{
     Frame, Terminal,
 };
 
+use crate::fields::*;
 use crate::store::LeafId;
+use crate::style;
 use crate::task::Task;
 use crate::{
     db::{format_status, project_label, Database},
     tui::enums::{HierarchyLevel, NavigationContext},
 };
-use crate::{
-    fields::*,
-    tui::colors::{DARK_GREEN, DARK_PURPLE, DARK_RED, GOLD},
-};
+
+// Local aliases for the colour tokens this file used to import from the
+// deleted `tui::colors` module. Mapped to the SpaceCell palette so the
+// kanban board adopts the brand without restructuring its renderer; the
+// deeper reskin lands in v0.3.1 when the board is hosted inside the
+// LHP + Workbench composition.
+const DARK_GREEN: Color = style::GREEN_MID;
+const DARK_PURPLE: Color = style::GOLD5;
+const DARK_RED: Color = style::CRIMSON_MID;
+const GOLD: Color = style::GOLD;
 
 /// Return value for workflow app to indicate what should happen next
 #[derive(Debug)]

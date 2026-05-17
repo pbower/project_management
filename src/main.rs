@@ -97,10 +97,6 @@ fn main() {
 
     // Handle commands that don't need a loaded Database.
     match &cli.command {
-        Commands::Menu | Commands::LegacyTui => {
-            cmd_menu(&pm_dir);
-            return;
-        }
         Commands::Backup { all: true } => {
             cmd_backup_all(&pm_dir);
             return;
@@ -118,27 +114,18 @@ fn main() {
         _ => {}
     }
 
-    // UI and Workflow open the workspace directly. The legacy
-    // pick-a-project-file flow collapses into "open the workspace"; project
-    // selection happens inside the TUI now via PRJ tickets.
-    match &cli.command {
-        Commands::Ui => {
-            cmd_ui(&pm_dir);
-            return;
-        }
-        Commands::Wf => {
-            cmd_wf(&pm_dir);
-            return;
-        }
-        _ => {}
+    // The workflow board opens the workspace directly. v0.3.x will wrap it
+    // with the LHP + Workbench + Activity composition; for now it is the
+    // headline TUI surface.
+    if let Commands::Wf = &cli.command {
+        cmd_wf(&pm_dir);
+        return;
     }
 
     let mut db = Database::load(&pm_dir);
 
     match cli.command {
-        Commands::Ui => unreachable!("UI command handled above"),
         Commands::Wf => unreachable!("Workflow command handled above"),
-        Commands::LegacyTui => unreachable!("LegacyTui command handled above"),
         Commands::Add {
             title,
             template,
@@ -268,8 +255,6 @@ fn main() {
         Commands::Import { input, no_backup } => cmd_import(&mut db, &pm_dir, input, no_backup),
 
         Commands::Backup { all } => cmd_backup(&pm_dir, all),
-
-        Commands::Menu => cmd_menu(&pm_dir),
 
         // v2 lifecycle
         Commands::Init => cmd_init(&pm_dir),

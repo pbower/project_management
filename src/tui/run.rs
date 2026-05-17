@@ -1,4 +1,9 @@
-//! Terminal user interface entry point and setup.
+//! TUI entry-point setup.
+//!
+//! v0.3.0 demolition removed the per-project `App` and its launcher
+//! (`MenuApp`). The remaining entry point is the standalone activity
+//! view driven by `spacecell tv`; the workflow board has its own setup
+//! in [`crate::tui::workflow_run`].
 
 use std::{io, path::Path, time::Duration};
 
@@ -9,40 +14,16 @@ use crossterm::{
 };
 use ratatui::{prelude::CrosstermBackend, Terminal};
 
-use crate::store::LeafId;
-use crate::tui::app::App;
 use crate::views::events_view::{ActivityAction, ActivityView};
 
-/// Initialise and run the terminal user interface.
-pub fn run_tui(db_path: &Path) -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let mut app = App::new(db_path)?;
-    let result = app.run(&mut terminal);
-
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
-    result
-}
-
-/// Drive the full-screen activity view standalone, the way `pm tv` does. The
-/// renderer is the same one Mode 3 uses inside the main TUI; only the host
-/// loop differs.
+/// Drive the full-screen activity view standalone, the way `spacecell tv`
+/// does. The same renderer will back the v0.3.x cockpit's activity mode
+/// once that lands; only the host loop differs.
 ///
 /// The loop tick is 200ms: input is polled with that timeout, and each tick
 /// also refreshes the activity view's buffer from `events.log` so a quiet
-/// terminal still picks up new events within the same window. Ctrl+C exits
-/// alongside `q` / `Esc`.
+/// terminal still picks up new events within the same window. `Ctrl+C`
+/// exits alongside `q` / `Esc`.
 pub fn run_activity_view(pm_dir: &Path) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -79,8 +60,8 @@ fn drive_activity_view<B: ratatui::backend::Backend>(
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
-                // Ctrl+C exits the standalone binary regardless of the view's
-                // own bindings (which use bare `c` for clear-filter).
+                // Ctrl+C exits the standalone binary regardless of the
+                // view's own bindings (which use bare `c` for clear-filter).
                 if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     return Ok(());
                 }
@@ -90,27 +71,4 @@ fn drive_activity_view<B: ratatui::backend::Backend>(
             }
         }
     }
-}
-
-/// Run the TUI with a specific task pre-selected for editing.
-pub fn run_tui_with_edit(db_path: &Path, task_id: LeafId) -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let mut app = App::new(db_path)?;
-    app.open_task_for_edit(task_id);
-    let result = app.run(&mut terminal);
-
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
-    result
 }

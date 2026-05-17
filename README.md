@@ -2,23 +2,15 @@
 
 > *Crate `spacecell-thunder` · binary `spacecell` · shell alias `sc`*
 
-Hierarchical project management cockpit for solo developers working with AI
-coding agents. Local-first, file-based, git-native, MCP-native, single
-binary, no database, no server, no cloud.
-
-The v0.2.0 release renames the crate and binary; the full Thunder cockpit
-(LHP + Workbench + Activity composition with the SpaceCell aesthetic,
-embedded board, configured-launcher agent terminals, three-tier memory
-integration) lands across the v0.3.x release line.
+Hierarchical project management cockpit for solo developers working with
+AI coding agents. Local-first, file-based, git-native, MCP-native, single
+binary.
 
 ## Install
 
 ```sh
 cargo install spacecell-thunder
 ```
-
-This installs two binaries: `spacecell` (the primary entry point) and `pm`
-(a deprecation shim that forwards to `spacecell`; removed in v0.3.0).
 
 Optional shell alias:
 
@@ -28,26 +20,45 @@ alias sc=spacecell
 
 ## Status
 
-- **v0.2.0 (current)**: crate renamed, composed-view artifact blocks
-  shipped, v0.9 TUI preserved as `spacecell legacy-tui`.
-- **v0.3.x (in progress)**: Thunder cockpit rewrite. The v0.9 TUI stays
-  reachable via `spacecell legacy-tui` until v0.3.7 ships.
+- **v0.3.0 (current)**: demolition + scaffold. The v0.9 menu and
+  per-project workspace TUI are gone. The workflow kanban board, the
+  hierarchy navigation primitives, the CLI, the MCP server, the memory
+  tiers and the activity feed all kept. SpaceCell palette applied across
+  the board.
+- **v0.3.x (in progress)**: wrap the kept pieces in the LHP + Workbench
+  + Activity composition; add configured-launcher agent terminals,
+  per-kind form templates, scope=subtree authority. See
+  [PM_DESIGN.md](https://github.com/pbower/project_management) and
+  [PM_BUILD_PLAN.md](https://github.com/pbower/project_management).
 
-## v0.9 TUI (legacy)
-
-The v0.9 TUI is still available during the v0.3 rewrite:
+## Workflow board
 
 ```sh
-spacecell legacy-tui    # main menu
-spacecell ui            # workspace
-spacecell wf            # workflow kanban
+spacecell wf
 ```
 
-These are removed in v0.3.7 once the new cockpit ships.
+Open the 9-stage kanban board over the current `.pm/` workspace. Cards
+drill down by hierarchy level; picking a card to edit drops you into
+`$EDITOR` on the ticket's `CLAUDE.md`.
+
+## CLI
+
+The full CLI surface is unchanged from v0.2.0. See `spacecell --help` for
+every verb. The main groups:
+
+- Workspace: `init`, `add`, `list`, `show`, `move`, `complete`, `delete`
+- Content: `edit`, `context`, `materialise`, `artifact`, `template`
+- Metadata: `status`, `priority`, `due`, `dep`, `tag`, `link`,
+  `milestone`
+- Memory: `memory link`, `memory write`, `memory promote`, `memory list`
+- Workflow: `checkout`, `checkin`, `next`, `locks`
+- Views: `tv`, `log`, `search`, `doctor`
+- MCP: `mcp` (runs the JSON-RPC server over stdio; identifier
+  `spacecell-thunder`)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for v0.2.0 onwards.
+See [CHANGELOG.md](CHANGELOG.md).
 
 Prior versions (v0.9.x as `project_management`):
 - V0.9.3: Workflow Ticket Manager
@@ -56,8 +67,9 @@ Prior versions (v0.9.x as `project_management`):
 ---
 
 The remainder of this README documents the v0.9 surface and remains
-accurate for the CLI verbs and storage model. Sections describing the v0.9
-TUI navigation get replaced when v0.3.7 ships.
+accurate for the CLI verbs and storage model. The v0.9 TUI navigation
+sections describe removed code; they get replaced as the v0.3.x cockpit
+sections come online.
 
 ## Features
 

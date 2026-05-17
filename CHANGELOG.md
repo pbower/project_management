@@ -4,6 +4,68 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-16
+
+The v0.3.0 demolition phase. Strips the v0.9 TUI substrate down to the
+pieces worth keeping (workflow kanban board, hierarchy navigation
+primitives, `$EDITOR` handoff, activity-feed view) and rebuilds the rest
+on the SpaceCell Thunder visual language across subsequent v0.3.x
+releases.
+
+### Added
+
+- New `src/style/` module: the SpaceCell palette as ratatui `Style` and
+  `Color` constants, plus a glyph table (`style::glyphs`). Single source
+  of truth for the brand tokens from PM_DESIGN section 8.7.
+- New `src/tui/nav/` module: free-standing hierarchy traversal
+  primitives (`Level::child` / `Level::parent` / `Level::label_upper`,
+  `ancestor_chain`, `tickets_at`). Salvaged from the deleted
+  `app/navigation.rs`, decoupled from the v0.9 `App` state.
+
+### Changed
+
+- Workflow kanban board (`src/tui/workflow.rs`) renderer now resolves
+  colour tokens through `src/style/`. The board's structure (9-stage
+  columns, drill-down, card movement) is unchanged.
+- `cmd_wf`: when the user picks a card to edit, the board exits and the
+  ticket's `CLAUDE.md` opens via `$EDITOR` (through `cmd_edit`) instead
+  of the deleted edit-form TUI. Reopens the board on the next
+  invocation.
+- Library crate identifier renamed: `project_management` is retired and
+  the library now publishes as `spacecell_thunder`. Internal `use`
+  statements were not affected by this change because no v0.3.0 code
+  references the library by its old identifier.
+
+### Removed
+
+- The v0.9 per-project `App` (`src/tui/app/`, 2856 lines) and every
+  module under it (`confirm`, `dialog`, `filter`, `help`, `prompt`,
+  `ticket_detail`, `mod`).
+- `MenuApp` (`src/tui/menu.rs`, 680 lines).
+- The v0.9 task form (`src/tui/task_form.rs`, 500 lines).
+- `src/tui/colors.rs` (replaced by `src/style/`).
+- `src/tui/input.rs` (App-specific input router).
+- The `pm` deprecation shim binary and `src/pm_shim.rs`. Users on
+  v0.9.x install `spacecell` directly.
+- CLI verbs: `ui`, `menu`, `legacy-tui`. Use `spacecell wf` for the
+  board, or the per-verb CLI for everything else.
+- Total TUI surface area: 6925 -> 1449 lines.
+
+### What survived
+
+- `src/tui/workflow.rs` + `workflow_run.rs` (the kanban board)
+- `src/tui/utils.rs` (small layout helper)
+- `src/tui/enums.rs` (slimmed: only the two types the board uses)
+- The CLI (`src/cli.rs`, `src/cmd.rs`)
+- The store substrate (`src/store/`)
+- The MCP server (`src/mcp/`)
+- The memory tiers (`src/memory/`)
+- The activity feed renderer (`src/views/events_view.rs`)
+- The `$EDITOR` handoff (`src/editor.rs`)
+
+The v0.3.1 phase wraps these pieces in the LHP + Workbench + Activity
+composition described in PM_DESIGN section 8.3.
+
 ## [0.2.0] - 2026-05-16
 
 ### Renamed

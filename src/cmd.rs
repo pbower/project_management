@@ -18,8 +18,7 @@ use crate::store::front_matter::MemoryRef;
 use crate::store::id::{IdInput, LeafId};
 use crate::store::migrate::kind_to_prefix;
 use crate::task::{Task, TaskTemplate};
-use crate::tui::menu::MenuApp;
-use crate::tui::run::{run_activity_view, run_tui, run_tui_with_edit};
+use crate::tui::run::run_activity_view;
 use crate::tui::workflow::WorkflowExit;
 use crate::tui::workflow_run::run_workflow_tui;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
@@ -29,10 +28,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Launch the interactive UI interface.
-    Ui,
-
-    /// Launch the workflow kanban board interface.
+    /// Launch the workflow kanban board.
     Wf,
 
     /// Add a new task.
@@ -258,16 +254,6 @@ pub enum Commands {
         #[arg(long)]
         all: bool,
     },
-
-    /// Open project main menu (interactive mode).
-    Menu,
-
-    /// Open the v0.9 TUI (Menu launcher + Ui workspace + Workflow board).
-    /// Same surface as `menu`; the new name is the stable entry point
-    /// users should adopt now. In v0.3.0 the default `spacecell` invocation
-    /// stops launching this TUI and `legacy-tui` becomes the only path to
-    /// the v1 surface, until the new cockpit ships.
-    LegacyTui,
 
     // ----- v2 lifecycle verbs -----
     /// Initialise a `.pm/` workspace in the current directory.
@@ -622,14 +608,6 @@ pub enum TemplateAction {
         #[arg(long, value_enum, default_value_t = Status::Open)]
         status: Status,
     },
-}
-
-/// Launch the terminal user interface.
-pub fn cmd_ui(db_path: &Path) {
-    if let Err(e) = run_tui(db_path) {
-        eprintln!("UI error: {e}");
-        std::process::exit(1);
-    }
 }
 
 /// Add a new task to the database.
@@ -2261,114 +2239,28 @@ pub fn cmd_export_all(
     }
 }
 
-/// Launch the workflow project selection menu.
-pub fn cmd_workflow_menu(pm_dir: &Path) {
-    use crossterm::{
-        execute,
-        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    };
-    use ratatui::{backend::CrosstermBackend, Terminal};
-    use std::io;
-
-    // Setup terminal
-    enable_raw_mode().unwrap();
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).unwrap();
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).unwrap();
-
-    // Create and run menu app starting in workflow selection
-    let mut app = MenuApp::new(pm_dir.to_path_buf()).unwrap();
-    app.start_workflow_selection();
-    let res = app.run(&mut terminal);
-
-    // Restore terminal
-    disable_raw_mode().unwrap();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).unwrap();
-    terminal.show_cursor().unwrap();
-
-    if let Err(err) = res {
-        println!("{:?}", err);
-        std::process::exit(1);
-    }
-
-    // Check what was selected
-    if let Some(project) = app.get_selected_project() {
-        if app.should_open_workflow() {
-            println!("Opening workflow for: {}", project.display_name);
-            cmd_wf(&project.file_path);
-        }
-    }
-}
-
-/// Launch the project selection menu.
-pub fn cmd_menu(pm_dir: &Path) {
-    use crossterm::{
-        execute,
-        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    };
-    use ratatui::{backend::CrosstermBackend, Terminal};
-    use std::io;
-
-    // Setup terminal
-    enable_raw_mode().unwrap();
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).unwrap();
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).unwrap();
-
-    // Create and run menu app
-    let mut app = MenuApp::new(pm_dir.to_path_buf()).unwrap();
-    let res = app.run(&mut terminal);
-
-    // Restore terminal
-    disable_raw_mode().unwrap();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).unwrap();
-    terminal.show_cursor().unwrap();
-
-    if let Err(err) = res {
-        println!("{:?}", err);
-        std::process::exit(1);
-    }
-
-    // Check what was selected
-    if let Some(project) = app.get_selected_project() {
-        if app.should_open_workflow() {
-            println!("Opening workflow for: {}", project.display_name);
-            cmd_wf(&project.file_path);
-        } else {
-            println!("Opening project: {}", project.display_name);
-            if let Err(err) = run_tui(&project.file_path) {
-                eprintln!("Error running TUI: {}", err);
-                std::process::exit(1);
-            }
-        }
-    }
-}
-
-/// Launch the workflow kanban board interface.
+/// Launch the workflow kanban board, the headline surface kept from the
+/// v0.9 TUI. When the user picks a card to edit, the board exits and the
+/// ticket's `CLAUDE.md` opens in `$EDITOR` via [`cmd_edit`]; the next
+/// `spacecell` invocation reopens the board where the user left off.
+///
+/// The intermediate "edit a card through a TUI form" flow from v0.9 is
+/// gone: the slim v0.3 edit path is the `$EDITOR` round-trip the rest of
+/// the codebase already uses for ticket bodies.
 pub fn cmd_wf(db_path: &Path) {
     loop {
         match run_workflow_tui(db_path) {
             Ok(WorkflowExit::EditTask(task_id)) => {
-                // User wants to edit a task
                 let db = Database::load(db_path);
-                if let Some(_task) = db.get(task_id) {
-                    // Run the TUI with the task pre-selected for editing
-                    if let Err(err) = run_tui_with_edit(db_path, task_id) {
-                        eprintln!("Error running TUI: {}", err);
-                        std::process::exit(1);
-                    }
-                    // After editing, return to workflow
+                let id_str = task_id.to_string();
+                if db.get(task_id).is_some() {
+                    cmd_edit(db_path, &id_str, None);
                     continue;
                 }
             }
-            Ok(WorkflowExit::Quit) => {
-                // Normal exit
-                break;
-            }
+            Ok(WorkflowExit::Quit) => break,
             Err(err) => {
-                eprintln!("Error running workflow TUI: {}", err);
+                eprintln!("Error running workflow board: {err}");
                 std::process::exit(1);
             }
         }
