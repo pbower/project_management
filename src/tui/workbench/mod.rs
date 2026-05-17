@@ -11,7 +11,7 @@ use ratatui::Frame;
 use crate::db::Database;
 use crate::store::LeafId;
 
-use crate::tui::input::Mode;
+use crate::tui::input::{Disposition, Mode};
 
 pub mod board;
 mod placeholder;
@@ -53,18 +53,19 @@ impl WorkbenchState {
         }
     }
 
-    /// Dispatch a keystroke into the surface that matches `mode`. Returns
-    /// `true` when a re-render is needed.
+    /// Dispatch a keystroke into the surface that matches `mode`.
+    /// Forwards the surface's [`Disposition`] up to the shell so
+    /// arrow-key overflows can flip focus back to the LHP.
     pub fn handle_key(
         &mut self,
         mode: Mode,
         key: KeyCode,
         mods: KeyModifiers,
         db: &Database,
-    ) -> bool {
+    ) -> Disposition {
         match Surface::for_mode(mode) {
             Surface::Board => self.board.handle_key(key, mods, db),
-            Surface::Documents | Surface::Activity => false,
+            Surface::Documents | Surface::Activity => Disposition::Consumed,
         }
     }
 

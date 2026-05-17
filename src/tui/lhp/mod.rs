@@ -26,6 +26,7 @@ use crate::db::{format_kind, format_status, Database};
 use crate::fields::{Kind, Status};
 use crate::store::LeafId;
 use crate::style;
+use crate::tui::input::Disposition;
 use crate::tui::nav::{ancestor_chain, tickets_at, Level};
 
 /// Persistent LHP state. Cursor positions at each level, plus a count
@@ -91,15 +92,38 @@ impl LhpState {
         None
     }
 
-    /// Handle a keystroke routed to the LHP. Returns `true` when the
-    /// selection changed and the Workbench should re-render.
-    pub fn handle_key(&mut self, key: KeyCode, _mods: KeyModifiers, db: &Database) -> bool {
+    /// Handle a keystroke routed to the LHP. Returns a [`Disposition`]
+    /// so the shell can flip focus to the Workbench when the user
+    /// arrows right past the deepest level.
+    pub fn handle_key(&mut self, key: KeyCode, _mods: KeyModifiers, db: &Database) -> Disposition {
         match key {
-            KeyCode::Up => self.move_cursor(db, -1),
-            KeyCode::Down => self.move_cursor(db, 1),
-            KeyCode::Left => self.move_focus(-1),
-            KeyCode::Right | KeyCode::Enter => self.move_focus(1),
-            _ => false,
+            KeyCode::Up => {
+                self.move_cursor(db, -1);
+                Disposition::Consumed
+            }
+            KeyCode::Down => {
+                self.move_cursor(db, 1);
+                Disposition::Consumed
+            }
+            KeyCode::Left => {
+                if !self.move_focus(-1) {
+                    // Already at the project (left-most) level. Signal
+                    // the shell so it could refocus an even-further-left
+                    // pane in the future; for v0.3.2 this is a no-op.
+                    return Disposition::OverflowLeft;
+                }
+                Disposition::Consumed
+            }
+            KeyCode::Right | KeyCode::Enter => {
+                if !self.move_focus(1) {
+                    // Right at the deepest level (Subtask) is the user
+                    // asking to leave the LHP and start operating on the
+                    // Workbench.
+                    return Disposition::OverflowRight;
+                }
+                Disposition::Consumed
+            }
+            _ => Disposition::Consumed,
         }
     }
 
@@ -115,7 +139,7 @@ impl LhpState {
         }
         self.cursors.insert(self.focused_level, next);
         // Moving the cursor at a parent level invalidates child cursors;
-        // they'll clamp on next read but reset to 0 for a clean drill.
+        // they will clamp on next read but reset to 0 for a clean drill.
         let mut child = self.focused_level.child();
         while let Some(l) = child {
             self.cursors.insert(l, 0);
@@ -145,7 +169,11 @@ impl LhpState {
         let outer = Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
-            .border_style(style::border())
+            .border_style(if focused_zone {
+                style::border_focused()
+            } else {
+                style::border()
+            })
             .title(Line::styled(" THUNDER ", style::wordmark_accent()))
             .style(style::body());
         let inner = outer.inner(area);

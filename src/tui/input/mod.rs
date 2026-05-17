@@ -1,9 +1,11 @@
 //! Mode router for the main shell.
 //!
-//! v0.3.1 wires `Tab` / `Shift-Tab` to cycle modes and `1` / `2` / `3` to
-//! jump directly. `?` and `F1` open the help overlay. `q` quits when no
-//! overlay is active. Everything else flows through to the focused zone
-//! (LHP or Workbench).
+//! Arrow keys flow seamlessly across LHP and Workbench: zones return a
+//! [`Disposition`] from their key handlers, and a `OverflowLeft` /
+//! `OverflowRight` value tells the shell to hand focus over to the
+//! adjacent zone. `Tab` / `Shift-Tab` cycle modes; `1` / `2` / `3`
+//! jump directly. `?` and `F1` open the help overlay. `q` quits when
+//! no overlay is active.
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -115,20 +117,26 @@ pub fn route(key: KeyCode, mods: KeyModifiers, focus: Focus, help_open: bool) ->
         _ => {}
     }
 
-    // Focus switching: square brackets jump focus between LHP and
-    // Workbench so two-handed keyboards do not need a chord.
-    if matches!(key, KeyCode::Char('[')) {
-        return ShellAction::FocusZone(Focus::Lhp);
-    }
-    if matches!(key, KeyCode::Char(']')) {
-        return ShellAction::FocusZone(Focus::Workbench);
-    }
-
-    // Everything else flows to the focused zone.
+    // Everything else flows to the focused zone. Focus moves across
+    // zones via arrow-key overflow inside the zone handlers, not via a
+    // dedicated focus-switch key.
     match focus {
         Focus::Lhp => ShellAction::LhpKey(key, mods),
         Focus::Workbench => ShellAction::WorkbenchKey(key, mods),
     }
+}
+
+/// What a zone's key handler tells the shell after processing a
+/// keystroke. `Consumed` covers both "handled with state change" and
+/// "handled with no change" (the shell re-renders on every tick
+/// regardless). The overflow variants ask the shell to flip focus to
+/// the adjacent zone so arrow-key navigation flows across the whole
+/// cockpit.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Disposition {
+    Consumed,
+    OverflowLeft,
+    OverflowRight,
 }
 
 #[cfg(test)]
@@ -168,16 +176,20 @@ mod tests {
     }
 
     #[test]
-    fn focus_brackets_switch_zones() {
+    fn brackets_are_no_longer_focus_keys() {
+        // Bracket keys used to flip focus in v0.3.1. The arrow-key
+        // overflow model dropped them; they should now flow through to
+        // the focused zone like any other unmapped key.
         let a = route(
             KeyCode::Char('['),
             KeyModifiers::NONE,
             Focus::Workbench,
             false,
         );
-        assert_eq!(a, ShellAction::FocusZone(Focus::Lhp));
-        let b = route(KeyCode::Char(']'), KeyModifiers::NONE, Focus::Lhp, false);
-        assert_eq!(b, ShellAction::FocusZone(Focus::Workbench));
+        assert_eq!(
+            a,
+            ShellAction::WorkbenchKey(KeyCode::Char('['), KeyModifiers::NONE)
+        );
     }
 
     #[test]

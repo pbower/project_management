@@ -33,7 +33,7 @@ use ratatui::Terminal;
 use crate::db::Database;
 use crate::style;
 use crate::tui::activity::ActivityStrip;
-use crate::tui::input::{route, Focus, Mode, ShellAction};
+use crate::tui::input::{route, Disposition, Focus, Mode, ShellAction};
 use crate::tui::lhp::LhpState;
 use crate::tui::workbench::WorkbenchState;
 
@@ -121,15 +121,39 @@ impl Shell {
                 false
             }
             ShellAction::LhpKey(k, m) => {
-                if self.lhp.handle_key(k, m, &self.db) {
-                    // Re-load the DB so the board sees fresh task state
-                    // when the user has navigated to a new scope.
-                    self.db = Database::load(&self.pm_dir);
+                match self.lhp.handle_key(k, m, &self.db) {
+                    Disposition::Consumed => {
+                        // Re-load the DB so the board sees fresh task
+                        // state when the user has navigated to a new
+                        // scope.
+                        self.db = Database::load(&self.pm_dir);
+                    }
+                    Disposition::OverflowRight => {
+                        // Right from the deepest LHP level hands focus
+                        // to the Workbench so the user can keep arrowing
+                        // into the board's cards.
+                        self.focus = Focus::Workbench;
+                    }
+                    Disposition::OverflowLeft => {
+                        // Already at the leftmost LHP level; nothing to
+                        // do until v0.3.4 adds a left-of-LHP surface.
+                    }
                 }
                 false
             }
             ShellAction::WorkbenchKey(k, m) => {
-                self.workbench.handle_key(self.mode, k, m, &self.db);
+                match self.workbench.handle_key(self.mode, k, m, &self.db) {
+                    Disposition::Consumed => {}
+                    Disposition::OverflowLeft => {
+                        // Left from the leftmost board column hands
+                        // focus back to the LHP.
+                        self.focus = Focus::Lhp;
+                    }
+                    Disposition::OverflowRight => {
+                        // Right from the rightmost column: stay put.
+                        // v0.3.4 adds a right-of-Workbench surface.
+                    }
+                }
                 false
             }
             ShellAction::None => false,

@@ -6,11 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.3.2] - 2026-05-16
 
-Lightning palette refresh. The cockpit canvas drops navy in favour of
-true black and adopts the SpaceCell Lightning logo's cyan-blue as the
-primary accent for eyebrows, ticket ids, section labels, and the bolt
-glyph. Gold is retained for active rows, focused selections, and the
-THUNDER half of the wordmark so both brand accents are present.
+Lightning palette refresh and arrow-key-only navigation. The cockpit
+canvas drops navy for true black; cyan-blue is reserved for the bolt
+glyph on the wordmark; eyebrows render in paper bold and ids in muted
+grey so the palette reads as restrained instead of saturated. Gold is
+retained for active rows, focused selections, the THUNDER half of the
+wordmark, and the focused-pane border accent.
+
+Arrow keys handle navigation everywhere. `H/L/J/K` and `[/]` are gone;
+Left from the leftmost board column hands focus back to the LHP, and
+Right from the deepest LHP level (Subtask) hands focus into the board,
+so a single cursor flows across the whole cockpit.
 
 Note: the program name stays SpaceCell Thunder. The Lightning palette
 is borrowed from the sibling SpaceCell Lightning product because the
@@ -32,17 +38,32 @@ navy + gold did.
 - Canvas (`body()`, all backgrounds) now `BLACK` instead of
   `NAVY_DEEP`. Every existing helper composes the new black canvas
   automatically.
-- `eyebrow()` and `id_code()` switched from gold3 ochre to Lightning
-  blue. The board's column headers, the LHP's section labels, every
-  ticket id and timestamp now reads in cyan-blue.
-- `border()` switched to `LIGHTNING_BLUE_DEEP` so panel rules sit
-  behind content rather than competing for attention.
+- `eyebrow()` is paper bold (clean white section labels); cyan-blue is
+  held back for the brand bolt only.
+- `id_code()` is muted grey so ticket ids and timestamps read as data
+  rather than competing with the active-row gold for attention.
+- `border()` is muted grey for unfocused panels. `border_focused()`
+  is the new gold accent for the pane that owns input; the user
+  always knows where the cursor is.
 - Semantic green / crimson tokens brightened so they pop on the new
   black canvas without losing their meaning.
 - `src/tui/shell/header.rs` renders the wordmark as three styled spans
   to mirror the SpaceCell Lightning logo treatment.
 - `src/tui/shell/help.rs` and `src/tui/lhp/mod.rs` align with the new
   wordmark treatment.
+
+### Navigation
+
+- Arrow keys flow seamlessly across the LHP and the Workbench. The
+  `H/L/J/K` and `[/]` bindings from v0.3.1 are gone.
+- LHP key handler returns a new `Disposition` enum. `OverflowRight`
+  from the deepest level (Subtask) tells the shell to flip focus to
+  the Workbench; `OverflowLeft` at Project is a no-op until v0.3.4
+  adds a left-of-LHP surface.
+- Board key handler does the symmetric thing: `OverflowLeft` from the
+  leftmost column flips focus back to the LHP.
+- Footer hints update with focus so the visible bindings always match
+  what the cursor will actually do.
 
 ### Renumbered
 

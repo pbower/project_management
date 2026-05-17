@@ -18,6 +18,7 @@ use crate::db::Database;
 use crate::fields::{Kind, ProcessStage, Status};
 use crate::store::LeafId;
 use crate::style;
+use crate::tui::input::Disposition;
 
 /// Persistent board state. Per-column scroll plus the focused column /
 /// card cursor pair.
@@ -36,48 +37,45 @@ impl BoardState {
         }
     }
 
-    pub fn handle_key(&mut self, key: KeyCode, _mods: KeyModifiers, db: &Database) -> bool {
+    pub fn handle_key(&mut self, key: KeyCode, _mods: KeyModifiers, db: &Database) -> Disposition {
         let columns = columns_in_scope(db, None);
         match key {
-            KeyCode::Char('H') | KeyCode::Char('h') => {
+            KeyCode::Left => {
                 if self.focused_column == 0 {
-                    false
-                } else {
-                    self.focused_column -= 1;
-                    self.focused_card = 0;
-                    true
+                    // Left from the leftmost column hands focus back to
+                    // the LHP so arrow-key navigation flows seamlessly
+                    // across the cockpit.
+                    return Disposition::OverflowLeft;
                 }
+                self.focused_column -= 1;
+                self.focused_card = 0;
+                Disposition::Consumed
             }
-            KeyCode::Char('L') | KeyCode::Char('l') => {
+            KeyCode::Right => {
                 if self.focused_column + 1 >= columns.len() {
-                    false
-                } else {
-                    self.focused_column += 1;
-                    self.focused_card = 0;
-                    true
+                    return Disposition::OverflowRight;
                 }
+                self.focused_column += 1;
+                self.focused_card = 0;
+                Disposition::Consumed
             }
-            KeyCode::Char('J') | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 let col_len = columns
                     .get(self.focused_column)
                     .map(|c| c.cards.len())
                     .unwrap_or(0);
-                if col_len == 0 || self.focused_card + 1 >= col_len {
-                    false
-                } else {
+                if col_len > 0 && self.focused_card + 1 < col_len {
                     self.focused_card += 1;
-                    true
                 }
+                Disposition::Consumed
             }
-            KeyCode::Char('K') | KeyCode::Char('k') => {
-                if self.focused_card == 0 {
-                    false
-                } else {
+            KeyCode::Up => {
+                if self.focused_card > 0 {
                     self.focused_card -= 1;
-                    true
                 }
+                Disposition::Consumed
             }
-            _ => false,
+            _ => Disposition::Consumed,
         }
     }
 }
@@ -179,7 +177,11 @@ pub fn render(
     let outer = Block::default()
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(style::border())
+        .border_style(if focused_zone {
+            style::border_focused()
+        } else {
+            style::border()
+        })
         .title(Line::styled(
             format!(" BOARD · {scope_label} · {total} tickets "),
             style::eyebrow(),

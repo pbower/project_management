@@ -118,18 +118,19 @@ pub fn body() -> Style {
 }
 
 /// Uppercase letter-spaced eyebrow labels (PROJECTS, ACTIVITY, etc.).
-/// Lightning blue does the heavy accent work.
+/// Paper bold so labels read as clean structural rules; cyan is held
+/// back for the brand bolt only.
 pub fn eyebrow() -> Style {
     Style::default()
-        .fg(LIGHTNING_BLUE)
+        .fg(PAPER)
         .bg(BLACK)
         .add_modifier(Modifier::BOLD)
 }
 
-/// Ticket ids, code-like metadata. Lightning blue at body weight so it
-/// reads as data rather than as a section label.
+/// Ticket ids, code-like metadata. Muted grey so data reads as data
+/// without competing with the active-row gold for attention.
 pub fn id_code() -> Style {
-    Style::default().fg(LIGHTNING_BLUE).bg(BLACK)
+    Style::default().fg(MUTED_2).bg(BLACK)
 }
 
 /// Active row or selected card. Gold marks the current cursor focus.
@@ -178,12 +179,18 @@ pub fn status_todo() -> Style {
     Style::default().fg(MUTED_2).bg(BLACK)
 }
 
-/// Border colour for panels. Deep Lightning blue so the border reads as
-/// a structural rule rather than competing with content for attention.
+/// Border colour for panels. Muted grey so the border reads as a quiet
+/// structural rule that does not compete with content for attention.
 /// Rounded corners come from
 /// [`ratatui::widgets::BorderType::Rounded`].
 pub fn border() -> Style {
-    Style::default().fg(LIGHTNING_BLUE_DEEP).bg(BLACK)
+    Style::default().fg(MUTED).bg(BLACK)
+}
+
+/// Border for the focused pane, lifted slightly so the user always
+/// knows which zone owns input. One step brighter than `border()`.
+pub fn border_focused() -> Style {
+    Style::default().fg(GOLD).bg(BLACK)
 }
 
 /// SpaceCell wordmark accent. Used on its own for "SPACECELL" in the

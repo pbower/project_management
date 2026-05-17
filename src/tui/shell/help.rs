@@ -37,26 +37,25 @@ pub fn render(f: &mut Frame, area: Rect, mode: Mode) {
     lines.push(Line::styled("  GLOBAL", style::eyebrow()));
     lines.push(row("Tab / Shift-Tab", "Cycle modes"));
     lines.push(row("1 / 2 / 3", "Jump to Board / Documents / Activity"));
-    lines.push(row("[ / ]", "Focus LHP / Workbench"));
     lines.push(row("? / F1", "Open / close this help"));
     lines.push(row("q / Ctrl-C", "Quit"));
     lines.push(Line::raw(""));
 
-    lines.push(Line::styled("  LEFT-HAND PANEL", style::eyebrow()));
-    lines.push(row("← / →", "Move focus between hierarchy levels"));
-    lines.push(row("↑ / ↓", "Move cursor within the focused level"));
+    lines.push(Line::styled("  NAVIGATION", style::eyebrow()));
     lines.push(row(
-        "Enter / →",
-        "Drill into the selected ticket's children",
+        "← / →",
+        "Move across hierarchy levels (LHP) or board columns",
     ));
-    lines.push(Line::raw(""));
-
-    lines.push(Line::styled("  WORKBENCH · BOARD", style::eyebrow()));
-    lines.push(row("H / L", "Move focus between columns"));
+    lines.push(row("↑ / ↓", "Move the cursor within the current pane"));
     lines.push(row(
-        "J / K",
-        "Move cursor between cards in the focused column",
+        "→  at Subtask",
+        "Hand focus from the LHP into the board",
     ));
+    lines.push(row(
+        "←  at column 1",
+        "Hand focus from the board back to the LHP",
+    ));
+    lines.push(row("Enter / →", "Drill into the selected ticket"));
     lines.push(Line::raw(""));
 
     lines.push(Line::styled("  CONCEPTS", style::eyebrow()));
