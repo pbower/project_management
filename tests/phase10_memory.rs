@@ -28,7 +28,9 @@ fn tmp_dir(label: &str) -> PathBuf {
 fn pm(pm_dir: &Path, home: &Path, args: &[&str]) -> Output {
     let bin = env!("CARGO_BIN_EXE_pm");
     let mut cmd = Command::new(bin);
-    cmd.arg("--db").arg(pm_dir).args(args)
+    cmd.arg("--db")
+        .arg(pm_dir)
+        .args(args)
         .env("HOME", home)
         .current_dir(pm_dir);
     cmd.output().expect("invoke pm binary")
@@ -59,7 +61,11 @@ fn seed_minimal(label: &str) -> (PathBuf, PathBuf) {
 
     assert_ok(&pm(&pm_dir, &home, &["init"]), "pm init");
     assert_ok(
-        &pm(&pm_dir, &home, &["add", "Demo project", "--kind", "project"]),
+        &pm(
+            &pm_dir,
+            &home,
+            &["add", "Demo project", "--kind", "project"],
+        ),
         "add PRJ",
     );
     assert_ok(
@@ -98,20 +104,29 @@ fn write_project_then_link_and_list() {
         &pm_dir,
         &home,
         &[
-            "memory", "write",
-            "--scope", "project",
-            "--ty", "project",
-            "--name", "auth-stack",
-            "--desc", "Auth conventions",
-            "--project", "PRJ1",
+            "memory",
+            "write",
+            "--scope",
+            "project",
+            "--ty",
+            "project",
+            "--name",
+            "auth-stack",
+            "--desc",
+            "Auth conventions",
+            "--project",
+            "PRJ1",
             "Use bearer JWTs.\n",
         ],
     );
     assert_ok(&write, "memory write project");
 
-    let project_file = pm_dir
-        .join("projects/PRJ1/memories/auth-stack.md");
-    assert!(project_file.is_file(), "project-tier file written: {}", project_file.display());
+    let project_file = pm_dir.join("projects/PRJ1/memories/auth-stack.md");
+    assert!(
+        project_file.is_file(),
+        "project-tier file written: {}",
+        project_file.display()
+    );
 
     let link = pm(&pm_dir, &home, &["memory", "link", "TSK1", "auth-stack"]);
     assert_ok(&link, "memory link");
@@ -124,8 +139,14 @@ fn write_project_then_link_and_list() {
     let list = pm(&pm_dir, &home, &["memory", "list", "TSK1"]);
     assert_ok(&list, "memory list");
     let stdout = String::from_utf8_lossy(&list.stdout);
-    assert!(stdout.contains("auth-stack"), "list shows the name: {stdout}");
-    assert!(stdout.contains("[project]"), "list annotates tier: {stdout}");
+    assert!(
+        stdout.contains("auth-stack"),
+        "list shows the name: {stdout}"
+    );
+    assert!(
+        stdout.contains("[project]"),
+        "list annotates tier: {stdout}"
+    );
 }
 
 #[test]
@@ -136,22 +157,31 @@ fn write_user_scope_is_rejected() {
         &pm_dir,
         &home,
         &[
-            "memory", "write",
-            "--scope", "user",
-            "--ty", "user",
-            "--name", "do-not-write",
+            "memory",
+            "write",
+            "--scope",
+            "user",
+            "--ty",
+            "user",
+            "--name",
+            "do-not-write",
             "body",
         ],
     );
     assert!(!out.status.success(), "user-tier writes must be rejected");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("user-tier") || stderr.contains("user tier") ||
-        stderr.contains("does not write"),
+        stderr.contains("user-tier")
+            || stderr.contains("user tier")
+            || stderr.contains("does not write"),
         "stderr explains the refusal: {stderr}"
     );
 
-    let user_dir = home.join(".claude").join("projects").join(encode_cwd(&pm_dir)).join("memory");
+    let user_dir = home
+        .join(".claude")
+        .join("projects")
+        .join(encode_cwd(&pm_dir))
+        .join("memory");
     assert!(
         !user_dir.join("do-not-write.md").exists(),
         "no user-tier file created"
@@ -162,10 +192,23 @@ fn write_user_scope_is_rejected() {
 fn unlink_removes_from_front_matter() {
     let (pm_dir, home) = seed_minimal("unlink");
     assert_ok(
-        &pm(&pm_dir, &home, &[
-            "memory", "write", "--scope", "project", "--ty", "project",
-            "--name", "foo", "--project", "PRJ1", "body",
-        ]),
+        &pm(
+            &pm_dir,
+            &home,
+            &[
+                "memory",
+                "write",
+                "--scope",
+                "project",
+                "--ty",
+                "project",
+                "--name",
+                "foo",
+                "--project",
+                "PRJ1",
+                "body",
+            ],
+        ),
         "write project memory",
     );
     assert_ok(
@@ -208,30 +251,54 @@ fn promote_user_to_project_moves_and_leaves_backref() {
     );
     assert_ok(&out, "promote up");
 
-    let project_file = pm_dir
-        .join("projects/PRJ1/memories/config-style.md");
+    let project_file = pm_dir.join("projects/PRJ1/memories/config-style.md");
     assert!(project_file.is_file(), "project canonical written");
     let project_body = fs::read_to_string(&project_file).unwrap();
-    assert!(project_body.contains("Use snake_case"), "project copy has the content");
+    assert!(
+        project_body.contains("Use snake_case"),
+        "project copy has the content"
+    );
 
     // User-tier file is now a back-reference (type: reference, body
     // pointing at the canonical project path).
     let user_body = fs::read_to_string(&user_file).unwrap();
-    assert!(user_body.contains("type: reference"), "user file demoted to a reference");
-    assert!(user_body.contains("Canonical:"), "user file mentions canonical path");
+    assert!(
+        user_body.contains("type: reference"),
+        "user file demoted to a reference"
+    );
+    assert!(
+        user_body.contains("Canonical:"),
+        "user file mentions canonical path"
+    );
 }
 
 #[test]
 fn context_no_memories_flag_suppresses_section() {
     let (pm_dir, home) = seed_minimal("context-flag");
     assert_ok(
-        &pm(&pm_dir, &home, &[
-            "memory", "write", "--scope", "project", "--ty", "project",
-            "--name", "n", "--project", "PRJ1", "memory body\n",
-        ]),
+        &pm(
+            &pm_dir,
+            &home,
+            &[
+                "memory",
+                "write",
+                "--scope",
+                "project",
+                "--ty",
+                "project",
+                "--name",
+                "n",
+                "--project",
+                "PRJ1",
+                "memory body\n",
+            ],
+        ),
         "write memory",
     );
-    assert_ok(&pm(&pm_dir, &home, &["memory", "link", "TSK1", "n"]), "link");
+    assert_ok(
+        &pm(&pm_dir, &home, &["memory", "link", "TSK1", "n"]),
+        "link",
+    );
 
     let with_memories = pm(&pm_dir, &home, &["context", "TSK1"]);
     assert_ok(&with_memories, "pm context (default includes memories)");
@@ -247,5 +314,120 @@ fn context_no_memories_flag_suppresses_section() {
     assert!(
         !without_text.contains("Linked memories"),
         "--no-memories suppresses the section: {without_text}"
+    );
+}
+
+#[test]
+fn context_emits_per_level_artifact_blocks_and_trailing_import() {
+    let (pm_dir, home) = seed_minimal("context-artifacts");
+    let staging = tmp_dir("context-artifacts-src");
+
+    // Seed an artifact at the EPIC level (EPC1) and two at the TASK level
+    // (TSK1). Skip the project-level deliberately so we can verify levels
+    // with no artifacts produce no block. Artifact source files live in a
+    // staging tmp dir; `pm artifact add` copies them into the resolved
+    // nested location under `.pm/`.
+    let epc_src = staging.join("design-notes.md");
+    fs::write(&epc_src, "decision log\n").unwrap();
+    assert_ok(
+        &pm(
+            &pm_dir,
+            &home,
+            &[
+                "artifact",
+                "add",
+                "EPC1",
+                epc_src.to_str().unwrap(),
+                "--desc",
+                "Decision log on heartbeat vs TTL",
+            ],
+        ),
+        "epic artifact add",
+    );
+
+    let tsk_src = staging.join("schema.png");
+    fs::write(&tsk_src, "fake png bytes\n").unwrap();
+    assert_ok(
+        &pm(
+            &pm_dir,
+            &home,
+            &[
+                "artifact",
+                "add",
+                "TSK1",
+                tsk_src.to_str().unwrap(),
+                "--desc",
+                "Lock-file structure",
+            ],
+        ),
+        "task artifact add",
+    );
+
+    let bench_src = staging.join("bench.csv");
+    fs::write(&bench_src, "a,b\n1,2\n").unwrap();
+    assert_ok(
+        &pm(
+            &pm_dir,
+            &home,
+            &["artifact", "add", "TSK1", bench_src.to_str().unwrap()],
+        ),
+        "task artifact add (no desc)",
+    );
+
+    let out = pm(&pm_dir, &home, &["context", "TSK1"]);
+    assert_ok(&out, "pm context TSK1");
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    // EPIC and TASK levels show artifact blocks; PROJECT and PRODUCT do
+    // not, because no artifacts were added there.
+    assert!(
+        text.contains("## Artifacts at EPIC (EPC1)"),
+        "epic block present: {text}"
+    );
+    assert!(
+        text.contains("- design-notes.md - Decision log on heartbeat vs TTL"),
+        "epic artifact with desc rendered: {text}"
+    );
+    assert!(
+        text.contains("## Artifacts at TASK (TSK1)"),
+        "task block present: {text}"
+    );
+    assert!(
+        text.contains("- schema.png - Lock-file structure"),
+        "task artifact with desc rendered: {text}"
+    );
+    assert!(
+        text.contains("- bench.csv\n"),
+        "task artifact without desc rendered minimally: {text}"
+    );
+    assert!(
+        !text.contains("## Artifacts at PROJECT"),
+        "project block absent (no artifacts): {text}"
+    );
+    assert!(
+        !text.contains("## Artifacts at PRODUCT"),
+        "product block absent (no artifacts): {text}"
+    );
+
+    // Trailing `@`-import line ends the composed view.
+    assert!(
+        text.trim_end().ends_with("@artifacts/ARTIFACTS.md"),
+        "composed view ends with the @-import line: {text}"
+    );
+}
+
+#[test]
+fn context_emits_trailing_import_even_without_artifacts() {
+    let (pm_dir, home) = seed_minimal("context-trailing");
+    let out = pm(&pm_dir, &home, &["context", "TSK1"]);
+    assert_ok(&out, "pm context TSK1");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.trim_end().ends_with("@artifacts/ARTIFACTS.md"),
+        "trailing import always present: {text}"
+    );
+    assert!(
+        !text.contains("## Artifacts at"),
+        "no artifact blocks when there are no artifacts: {text}"
     );
 }
