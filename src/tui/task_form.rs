@@ -5,10 +5,13 @@
 //! and form state management.
 
 use crate::{
-    fields::{Kind, Priority, ProcessStage, Status, Urgency}, 
-    task::Task, 
-    tui::{input::InputField, enums::{HierarchyLevel, NavigationContext}},
-    project::{discover_projects, get_legacy_project}
+    fields::{Kind, Priority, ProcessStage, Status, Urgency},
+    project::{discover_projects, get_legacy_project},
+    task::Task,
+    tui::{
+        enums::{HierarchyLevel, NavigationContext},
+        input::InputField,
+    },
 };
 use std::path::Path;
 
@@ -64,7 +67,7 @@ impl TaskForm {
     pub fn new() -> Self {
         Self::new_with_pm_dir(&Path::new(".pm"))
     }
-    
+
     /// Create a new task form with the specified PM directory.
     pub fn new_with_pm_dir(pm_dir: &Path) -> Self {
         let available_projects = Self::discover_project_names(pm_dir);
@@ -81,46 +84,70 @@ impl TaskForm {
             requirements: InputField::new(),
             artifacts: InputField::new(),
             project_selector: 0, // Default to first available project
-            kind: 3, // Task (index in `kinds` below: Project, Product, Epic, Task, ...)
-            status: 0, // Open
-            priority_level: 0, // None (first item)
-            urgency: 0, // None (first item)
-            process_stage: 0, // None (first item),
+            kind: 3,             // Task (index in `kinds` below: Project, Product, Epic, Task, ...)
+            status: 0,           // Open
+            priority_level: 0,   // None (first item)
+            urgency: 0,          // None (first item)
+            process_stage: 0,    // None (first item),
             current_field: 0,
-            kinds: vec![Kind::Project, Kind::Product, Kind::Epic, Kind::Task, Kind::Subtask, Kind::Milestone],
+            kinds: vec![
+                Kind::Project,
+                Kind::Product,
+                Kind::Epic,
+                Kind::Task,
+                Kind::Subtask,
+                Kind::Milestone,
+            ],
             statuses: vec![Status::Open, Status::InProgress, Status::Done],
-            priorities: vec![None, Some(Priority::MustHave), Some(Priority::NiceToHave), Some(Priority::CutFirst)],
-            urgencies: vec![None, Some(Urgency::UrgentImportant), Some(Urgency::UrgentNotImportant), 
-                          Some(Urgency::NotUrgentImportant), Some(Urgency::NotUrgentNotImportant)],
-            process_stages: vec![None, Some(ProcessStage::Ideation), Some(ProcessStage::Design), 
-                               Some(ProcessStage::Prototyping), Some(ProcessStage::ReadyToImplement),
-                               Some(ProcessStage::Implementation), Some(ProcessStage::Testing), 
-                               Some(ProcessStage::Refinement), Some(ProcessStage::Release)],
+            priorities: vec![
+                None,
+                Some(Priority::MustHave),
+                Some(Priority::NiceToHave),
+                Some(Priority::CutFirst),
+            ],
+            urgencies: vec![
+                None,
+                Some(Urgency::UrgentImportant),
+                Some(Urgency::UrgentNotImportant),
+                Some(Urgency::NotUrgentImportant),
+                Some(Urgency::NotUrgentNotImportant),
+            ],
+            process_stages: vec![
+                None,
+                Some(ProcessStage::Ideation),
+                Some(ProcessStage::Design),
+                Some(ProcessStage::Prototyping),
+                Some(ProcessStage::ReadyToImplement),
+                Some(ProcessStage::Implementation),
+                Some(ProcessStage::Testing),
+                Some(ProcessStage::Refinement),
+                Some(ProcessStage::Release),
+            ],
             available_projects,
         }
     }
-    
+
     /// Discover available project names in the PM directory.
     fn discover_project_names(pm_dir: &Path) -> Vec<String> {
         let mut project_names = Vec::new();
-        
+
         // Add discovered projects
         if let Ok(projects) = discover_projects(pm_dir) {
             for project in projects {
                 project_names.push(project.display_name);
             }
         }
-        
+
         // Add legacy project if it exists
         if let Some(legacy) = get_legacy_project(pm_dir) {
             project_names.push(legacy.display_name);
         }
-        
+
         // Ensure we have at least one project option
         if project_names.is_empty() {
             project_names.push("Default".to_string());
         }
-        
+
         project_names
     }
 
@@ -128,29 +155,33 @@ impl TaskForm {
     pub fn new_with_context(context: &NavigationContext) -> Self {
         Self::new_with_context_and_pm_dir(context, &Path::new(".pm"))
     }
-    
+
     /// Create a new task form with navigation context and PM directory.
     pub fn new_with_context_and_pm_dir(context: &NavigationContext, pm_dir: &Path) -> Self {
         let mut form = Self::new_with_pm_dir(pm_dir);
-        
+
         // Set parent ID if we're in a filtered view
         if let Some(parent_id) = context.parent_id {
             form.parent = InputField::with_value(&parent_id.to_string());
         }
-        
+
         // Set the appropriate child kind based on the current navigation level
         // When viewing Projects, create Products (children of projects);
         // when viewing Products, create Epics; and so on.
         let target_kind = match context.level {
-            HierarchyLevel::Project => Kind::Product,  // Projects contain Products
-            HierarchyLevel::Product => Kind::Epic,     // Products contain Epics
-            HierarchyLevel::Epic => Kind::Task,        // Epics contain Tasks
-            HierarchyLevel::Task => Kind::Subtask,     // Tasks contain Subtasks
-            HierarchyLevel::Subtask => Kind::Subtask,  // Subtasks can contain Subtasks
-            HierarchyLevel::Milestone => Kind::Task,   // Default for Milestones
+            HierarchyLevel::Project => Kind::Product, // Projects contain Products
+            HierarchyLevel::Product => Kind::Epic,    // Products contain Epics
+            HierarchyLevel::Epic => Kind::Task,       // Epics contain Tasks
+            HierarchyLevel::Task => Kind::Subtask,    // Tasks contain Subtasks
+            HierarchyLevel::Subtask => Kind::Subtask, // Subtasks can contain Subtasks
+            HierarchyLevel::Milestone => Kind::Task,  // Default for Milestones
         };
-        
-        form.kind = form.kinds.iter().position(|&k| k == target_kind).unwrap_or(3);
+
+        form.kind = form
+            .kinds
+            .iter()
+            .position(|&k| k == target_kind)
+            .unwrap_or(3);
         form
     }
 
@@ -158,39 +189,47 @@ impl TaskForm {
     pub fn from_task(task: &Task) -> Self {
         Self::from_task_with_pm_dir(task, &Path::new(".pm"))
     }
-    
+
     /// Create a task form populated from an existing task with PM directory.
     pub fn from_task_with_pm_dir(task: &Task, pm_dir: &Path) -> Self {
         let mut form = Self::new_with_pm_dir(pm_dir);
         form.title = InputField::with_value(&task.title);
-        form.summary = InputField::with_value(
-            &task.summary.clone().unwrap_or_default());
-        form.description = InputField::with_value(
-            &task.description.clone().unwrap_or_default());
+        form.summary = InputField::with_value(&task.summary.clone().unwrap_or_default());
+        form.description = InputField::with_value(&task.description.clone().unwrap_or_default());
         // Project membership in v2 is derived from the parent chain, not a
         // free-form label on the Task itself. The form's project selector
         // stays at its default; callers that want to scope creation to a
         // specific project drive that through navigation context.
         form.tags = InputField::with_value(&task.tags.join(","));
-        form.due = InputField::with_value(
-            &task.due.map(|d| d.to_string()).unwrap_or_default());
-        form.parent = InputField::with_value(
-            &task.parent.map(|p| p.to_string()).unwrap_or_default());
-        form.issue_link = InputField::with_value(
-            &task.issue_link.clone().unwrap_or_default());
-        form.pr_link = InputField::with_value(
-            &task.pr_link.clone().unwrap_or_default());
-        form.user_story = InputField::with_value(
-            &task.user_story.clone().unwrap_or_default());
-        form.requirements = InputField::with_value(
-            &task.requirements.clone().unwrap_or_default());
-        form.artifacts = InputField::with_value(
-            &task.artifacts.join(","));
+        form.due = InputField::with_value(&task.due.map(|d| d.to_string()).unwrap_or_default());
+        form.parent =
+            InputField::with_value(&task.parent.map(|p| p.to_string()).unwrap_or_default());
+        form.issue_link = InputField::with_value(&task.issue_link.clone().unwrap_or_default());
+        form.pr_link = InputField::with_value(&task.pr_link.clone().unwrap_or_default());
+        form.user_story = InputField::with_value(&task.user_story.clone().unwrap_or_default());
+        form.requirements = InputField::with_value(&task.requirements.clone().unwrap_or_default());
+        form.artifacts = InputField::with_value(&task.artifacts.join(","));
         form.kind = form.kinds.iter().position(|&k| k == task.kind).unwrap_or(3);
-        form.status = form.statuses.iter().position(|&s| s == task.status).unwrap_or(0);
-        form.priority_level = form.priorities.iter().position(|&p| p == task.priority_level).unwrap_or(0);
-        form.urgency = form.urgencies.iter().position(|&u| u == task.urgency).unwrap_or(0);
-        form.process_stage = form.process_stages.iter().position(|&s| s == task.process_stage).unwrap_or(0);
+        form.status = form
+            .statuses
+            .iter()
+            .position(|&s| s == task.status)
+            .unwrap_or(0);
+        form.priority_level = form
+            .priorities
+            .iter()
+            .position(|&p| p == task.priority_level)
+            .unwrap_or(0);
+        form.urgency = form
+            .urgencies
+            .iter()
+            .position(|&u| u == task.urgency)
+            .unwrap_or(0);
+        form.process_stage = form
+            .process_stages
+            .iter()
+            .position(|&s| s == task.process_stage)
+            .unwrap_or(0);
         form
     }
 
@@ -198,18 +237,18 @@ impl TaskForm {
     pub fn fields_mut(&mut self) -> Vec<&mut InputField> {
         // Order matches the visual layout: left column first, then right column
         vec![
-            &mut self.title,        // 0 - TITLE_GLOBAL_ORDER
-            &mut self.summary,      // 1 - SUMMARY_GLOBAL_ORDER  
-            &mut self.description,  // 2 - DESCRIPTION_GLOBAL_ORDER
+            &mut self.title,       // 0 - TITLE_GLOBAL_ORDER
+            &mut self.summary,     // 1 - SUMMARY_GLOBAL_ORDER
+            &mut self.description, // 2 - DESCRIPTION_GLOBAL_ORDER
             // PROJECT_SELECTOR at 3 - not in fields_mut(), handled as selector
-            &mut self.tags,         // 3 in fields_mut, but TAGS_GLOBAL_ORDER (4) in navigation
-            &mut self.due,          // 4 in fields_mut, but DUE_GLOBAL_ORDER (5) in navigation
-            &mut self.parent,       // 5 in fields_mut, but PARENT_GLOBAL_ORDER (6) in navigation
-            &mut self.issue_link,   // 6 in fields_mut, but ISSUE_LINK_GLOBAL_ORDER (7) in navigation
-            &mut self.pr_link,      // 7 in fields_mut, but PR_LINK_GLOBAL_ORDER (8) in navigation
-            &mut self.artifacts,    // 8 in fields_mut, but ARTIFACTS_GLOBAL_ORDER (9) in navigation
+            &mut self.tags, // 3 in fields_mut, but TAGS_GLOBAL_ORDER (4) in navigation
+            &mut self.due,  // 4 in fields_mut, but DUE_GLOBAL_ORDER (5) in navigation
+            &mut self.parent, // 5 in fields_mut, but PARENT_GLOBAL_ORDER (6) in navigation
+            &mut self.issue_link, // 6 in fields_mut, but ISSUE_LINK_GLOBAL_ORDER (7) in navigation
+            &mut self.pr_link, // 7 in fields_mut, but PR_LINK_GLOBAL_ORDER (8) in navigation
+            &mut self.artifacts, // 8 in fields_mut, but ARTIFACTS_GLOBAL_ORDER (9) in navigation
             // Note: selectors 10-14 are not in fields_mut() - they're handled separately
-            &mut self.user_story,   // 9 in fields_mut, but USER_STORY_GLOBAL_ORDER (15) in navigation
+            &mut self.user_story, // 9 in fields_mut, but USER_STORY_GLOBAL_ORDER (15) in navigation
             &mut self.requirements, // 10 in fields_mut, but REQUIREMENTS_GLOBAL_ORDER (16) in navigation
         ]
     }
@@ -240,7 +279,7 @@ impl TaskForm {
         for field in self.fields_mut() {
             field.active = false;
         }
-        
+
         match self.current_field {
             TITLE_GLOBAL_ORDER => self.title.active = true,
             SUMMARY_GLOBAL_ORDER => self.summary.active = true,
@@ -251,12 +290,12 @@ impl TaskForm {
             ISSUE_LINK_GLOBAL_ORDER => self.issue_link.active = true,
             PR_LINK_GLOBAL_ORDER => self.pr_link.active = true,
             ARTIFACTS_GLOBAL_ORDER => self.artifacts.active = true,
-            PROJECT_SELECTOR_GLOBAL_ORDER => {}, // project selector
-            KIND_GLOBAL_ORDER => {}, // kind selector
-            STATUS_GLOBAL_ORDER => {}, // status selector
-            PRIORITY_GLOBAL_ORDER => {}, // priority_level selector
-            URGENCY_GLOBAL_ORDER => {}, // urgency selector
-            PROCESS_STAGE_GLOBAL_ORDER => {}, // process_stage selector
+            PROJECT_SELECTOR_GLOBAL_ORDER => {} // project selector
+            KIND_GLOBAL_ORDER => {}             // kind selector
+            STATUS_GLOBAL_ORDER => {}           // status selector
+            PRIORITY_GLOBAL_ORDER => {}         // priority_level selector
+            URGENCY_GLOBAL_ORDER => {}          // urgency selector
+            PROCESS_STAGE_GLOBAL_ORDER => {}    // process_stage selector
             USER_STORY_GLOBAL_ORDER => self.user_story.active = true,
             REQUIREMENTS_GLOBAL_ORDER => self.requirements.active = true,
             _ => {}
@@ -302,63 +341,154 @@ impl TaskForm {
     /// Handle left/right arrow keys for cursor movement or selector changes.
     pub fn handle_left_right(&mut self, right: bool) {
         match self.current_field {
-            TITLE_GLOBAL_ORDER => if right { self.title.move_cursor_right() } else { self.title.move_cursor_left() },
-            SUMMARY_GLOBAL_ORDER => if right { self.summary.move_cursor_right() } else { self.summary.move_cursor_left() },
-            DESCRIPTION_GLOBAL_ORDER => if right { self.description.move_cursor_right() } else { self.description.move_cursor_left() },
-            TAGS_GLOBAL_ORDER => if right { self.tags.move_cursor_right() } else { self.tags.move_cursor_left() },
-            DUE_GLOBAL_ORDER => if right { self.due.move_cursor_right() } else { self.due.move_cursor_left() },
-            PARENT_GLOBAL_ORDER => if right { self.parent.move_cursor_right() } else { self.parent.move_cursor_left() },
-            ISSUE_LINK_GLOBAL_ORDER => if right { self.issue_link.move_cursor_right() } else { self.issue_link.move_cursor_left() },
-            PR_LINK_GLOBAL_ORDER => if right { self.pr_link.move_cursor_right() } else { self.pr_link.move_cursor_left() },
-            ARTIFACTS_GLOBAL_ORDER => if right { self.artifacts.move_cursor_right() } else { self.artifacts.move_cursor_left() },
+            TITLE_GLOBAL_ORDER => {
+                if right {
+                    self.title.move_cursor_right()
+                } else {
+                    self.title.move_cursor_left()
+                }
+            }
+            SUMMARY_GLOBAL_ORDER => {
+                if right {
+                    self.summary.move_cursor_right()
+                } else {
+                    self.summary.move_cursor_left()
+                }
+            }
+            DESCRIPTION_GLOBAL_ORDER => {
+                if right {
+                    self.description.move_cursor_right()
+                } else {
+                    self.description.move_cursor_left()
+                }
+            }
+            TAGS_GLOBAL_ORDER => {
+                if right {
+                    self.tags.move_cursor_right()
+                } else {
+                    self.tags.move_cursor_left()
+                }
+            }
+            DUE_GLOBAL_ORDER => {
+                if right {
+                    self.due.move_cursor_right()
+                } else {
+                    self.due.move_cursor_left()
+                }
+            }
+            PARENT_GLOBAL_ORDER => {
+                if right {
+                    self.parent.move_cursor_right()
+                } else {
+                    self.parent.move_cursor_left()
+                }
+            }
+            ISSUE_LINK_GLOBAL_ORDER => {
+                if right {
+                    self.issue_link.move_cursor_right()
+                } else {
+                    self.issue_link.move_cursor_left()
+                }
+            }
+            PR_LINK_GLOBAL_ORDER => {
+                if right {
+                    self.pr_link.move_cursor_right()
+                } else {
+                    self.pr_link.move_cursor_left()
+                }
+            }
+            ARTIFACTS_GLOBAL_ORDER => {
+                if right {
+                    self.artifacts.move_cursor_right()
+                } else {
+                    self.artifacts.move_cursor_left()
+                }
+            }
             PROJECT_SELECTOR_GLOBAL_ORDER => {
                 if right {
-                    self.project_selector = (self.project_selector + 1) % self.available_projects.len();
+                    self.project_selector =
+                        (self.project_selector + 1) % self.available_projects.len();
                 } else {
-                    self.project_selector = if self.project_selector == 0 { self.available_projects.len() - 1 } else { self.project_selector - 1 };
+                    self.project_selector = if self.project_selector == 0 {
+                        self.available_projects.len() - 1
+                    } else {
+                        self.project_selector - 1
+                    };
                 }
-            },
+            }
             KIND_GLOBAL_ORDER => {
                 if right {
                     self.kind = (self.kind + 1) % self.kinds.len();
                 } else {
-                    self.kind = if self.kind == 0 { self.kinds.len() - 1 } else { self.kind - 1 };
+                    self.kind = if self.kind == 0 {
+                        self.kinds.len() - 1
+                    } else {
+                        self.kind - 1
+                    };
                 }
-            },
+            }
             STATUS_GLOBAL_ORDER => {
                 if right {
                     self.status = (self.status + 1) % self.statuses.len();
                 } else {
-                    self.status = if self.status == 0 { self.statuses.len() - 1 } else { self.status - 1 };
+                    self.status = if self.status == 0 {
+                        self.statuses.len() - 1
+                    } else {
+                        self.status - 1
+                    };
                 }
-            },
+            }
             PRIORITY_GLOBAL_ORDER => {
                 if right {
                     self.priority_level = (self.priority_level + 1) % self.priorities.len();
                 } else {
-                    self.priority_level = if self.priority_level == 0 { self.priorities.len() - 1 } else { self.priority_level - 1 };
+                    self.priority_level = if self.priority_level == 0 {
+                        self.priorities.len() - 1
+                    } else {
+                        self.priority_level - 1
+                    };
                 }
-            },
+            }
             URGENCY_GLOBAL_ORDER => {
                 if right {
                     self.urgency = (self.urgency + 1) % self.urgencies.len();
                 } else {
-                    self.urgency = if self.urgency == 0 { self.urgencies.len() - 1 } else { self.urgency - 1 };
+                    self.urgency = if self.urgency == 0 {
+                        self.urgencies.len() - 1
+                    } else {
+                        self.urgency - 1
+                    };
                 }
-            },
+            }
             PROCESS_STAGE_GLOBAL_ORDER => {
                 if right {
                     self.process_stage = (self.process_stage + 1) % self.process_stages.len();
                 } else {
-                    self.process_stage = if self.process_stage == 0 { self.process_stages.len() - 1 } else { self.process_stage - 1 };
+                    self.process_stage = if self.process_stage == 0 {
+                        self.process_stages.len() - 1
+                    } else {
+                        self.process_stage - 1
+                    };
                 }
-            },
-            USER_STORY_GLOBAL_ORDER => if right { self.user_story.move_cursor_right() } else { self.user_story.move_cursor_left() },
-            REQUIREMENTS_GLOBAL_ORDER => if right { self.requirements.move_cursor_right() } else { self.requirements.move_cursor_left() },
+            }
+            USER_STORY_GLOBAL_ORDER => {
+                if right {
+                    self.user_story.move_cursor_right()
+                } else {
+                    self.user_story.move_cursor_left()
+                }
+            }
+            REQUIREMENTS_GLOBAL_ORDER => {
+                if right {
+                    self.requirements.move_cursor_right()
+                } else {
+                    self.requirements.move_cursor_left()
+                }
+            }
             _ => {}
         }
     }
-    
+
     /// Get the currently selected project name.
     pub fn get_selected_project(&self) -> Option<String> {
         if self.project_selector < self.available_projects.len() {

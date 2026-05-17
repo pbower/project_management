@@ -243,8 +243,7 @@ impl ActivityView {
             // A short current head means the file is smaller than the
             // remembered prefix, which is also a rotation signal.
             let cmp_len = self.fingerprint.len().min(head.len());
-            cmp_len < self.fingerprint.len()
-                || head[..cmp_len] != self.fingerprint[..cmp_len]
+            cmp_len < self.fingerprint.len() || head[..cmp_len] != self.fingerprint[..cmp_len]
         } else {
             false
         };
@@ -293,7 +292,10 @@ impl ActivityView {
 
     /// View of events with the current filter applied, oldest-first.
     pub fn filtered(&self) -> Vec<&Event> {
-        self.events.iter().filter(|e| self.filter.matches(e)).collect()
+        self.events
+            .iter()
+            .filter(|e| self.filter.matches(e))
+            .collect()
     }
 
     /// Returns the slice of filtered events that would be visible right now
@@ -333,7 +335,9 @@ impl ActivityView {
             let line = Line::from(vec![
                 Span::styled(
                     "Filter> ",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(buf),
             ]);
@@ -377,7 +381,10 @@ impl ActivityView {
 
     fn event_line(&mut self, ev: &Event) -> Line<'static> {
         let time = ev.ts.format("%H:%M:%S").to_string();
-        let id = ev.id.map(|i| i.to_string()).unwrap_or_else(|| "-".to_string());
+        let id = ev
+            .id
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "-".to_string());
         let actor = ev.actor.clone();
         let actor_colour = self.palette.colour_for(&actor);
         let detail = ev.detail.clone().unwrap_or_default();
@@ -572,8 +579,20 @@ mod tests {
     fn filter_matches_id_substring_case_insensitive() {
         let mut f = ActivityFilter::default();
         f.id = Some("tsk7".into());
-        let ev_match = make_event(0, "edit", "claude-be", Some(LeafId::new(TypePrefix::Task, 7)), None);
-        let ev_miss = make_event(0, "edit", "claude-be", Some(LeafId::new(TypePrefix::Task, 8)), None);
+        let ev_match = make_event(
+            0,
+            "edit",
+            "claude-be",
+            Some(LeafId::new(TypePrefix::Task, 7)),
+            None,
+        );
+        let ev_miss = make_event(
+            0,
+            "edit",
+            "claude-be",
+            Some(LeafId::new(TypePrefix::Task, 8)),
+            None,
+        );
         assert!(f.matches(&ev_match));
         assert!(!f.matches(&ev_miss));
     }
@@ -669,15 +688,33 @@ mod tests {
         assert!(view.events.is_empty());
         assert_eq!(view.read_offset, 0);
 
-        append_event(&dir, &make_event(0, "edit", "claude-be",
-            Some(LeafId::new(TypePrefix::Task, 1)), None)).unwrap();
+        append_event(
+            &dir,
+            &make_event(
+                0,
+                "edit",
+                "claude-be",
+                Some(LeafId::new(TypePrefix::Task, 1)),
+                None,
+            ),
+        )
+        .unwrap();
         view.refresh().unwrap();
         assert_eq!(view.events.len(), 1);
         let first_offset = view.read_offset;
         assert!(first_offset > 0);
 
-        append_event(&dir, &make_event(1, "edit", "claude-be",
-            Some(LeafId::new(TypePrefix::Task, 2)), None)).unwrap();
+        append_event(
+            &dir,
+            &make_event(
+                1,
+                "edit",
+                "claude-be",
+                Some(LeafId::new(TypePrefix::Task, 2)),
+                None,
+            ),
+        )
+        .unwrap();
         view.refresh().unwrap();
         assert_eq!(view.events.len(), 2);
         assert!(view.read_offset > first_offset);
@@ -689,18 +726,40 @@ mod tests {
     fn refresh_detects_truncation_and_re_reads() {
         let dir = tmp_dir();
         let mut view = ActivityView::new(&dir);
-        append_event(&dir, &make_event(0, "edit", "claude-be",
-            Some(LeafId::new(TypePrefix::Task, 1)), None)).unwrap();
+        append_event(
+            &dir,
+            &make_event(
+                0,
+                "edit",
+                "claude-be",
+                Some(LeafId::new(TypePrefix::Task, 1)),
+                None,
+            ),
+        )
+        .unwrap();
         view.refresh().unwrap();
         assert_eq!(view.events.len(), 1);
 
         // Truncate the file to zero bytes and write a different event.
         let path = StoreLayout::at(&dir).events_log_path();
         std::fs::write(&path, "").unwrap();
-        append_event(&dir, &make_event(2, "checkin", "claude-fe",
-            Some(LeafId::new(TypePrefix::Task, 9)), None)).unwrap();
+        append_event(
+            &dir,
+            &make_event(
+                2,
+                "checkin",
+                "claude-fe",
+                Some(LeafId::new(TypePrefix::Task, 9)),
+                None,
+            ),
+        )
+        .unwrap();
         view.refresh().unwrap();
-        assert_eq!(view.events.len(), 1, "events buffer should be reset on truncation");
+        assert_eq!(
+            view.events.len(),
+            1,
+            "events buffer should be reset on truncation"
+        );
         assert_eq!(view.events[0].verb, "checkin");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -711,19 +770,31 @@ mod tests {
         let path = StoreLayout::at(&dir).events_log_path();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         // Write a JSON line in two halves.
-        let ev = make_event(0, "edit", "claude-be",
-            Some(LeafId::new(TypePrefix::Task, 1)), None);
+        let ev = make_event(
+            0,
+            "edit",
+            "claude-be",
+            Some(LeafId::new(TypePrefix::Task, 1)),
+            None,
+        );
         let full = serde_json::to_string(&ev).unwrap();
         let (a, b) = full.split_at(full.len() / 2);
 
-        let mut f = OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
         f.write_all(a.as_bytes()).unwrap();
         drop(f);
 
         let mut view = ActivityView::new(&dir);
         view.refresh().unwrap();
         assert!(view.events.is_empty(), "partial line should not parse");
-        assert!(!view.partial.is_empty(), "partial buffer should carry the leading half");
+        assert!(
+            !view.partial.is_empty(),
+            "partial buffer should carry the leading half"
+        );
 
         let mut f = OpenOptions::new().append(true).open(&path).unwrap();
         f.write_all(b.as_bytes()).unwrap();
@@ -741,8 +812,17 @@ mod tests {
         let dir = tmp_dir();
         let mut view = ActivityView::new(&dir);
         for n in 0..10u64 {
-            append_event(&dir, &make_event(n as i64, "edit", "claude-be",
-                Some(LeafId::new(TypePrefix::Task, n)), None)).unwrap();
+            append_event(
+                &dir,
+                &make_event(
+                    n as i64,
+                    "edit",
+                    "claude-be",
+                    Some(LeafId::new(TypePrefix::Task, n)),
+                    None,
+                ),
+            )
+            .unwrap();
         }
         view.refresh().unwrap();
         assert_eq!(view.events.len(), 10);
@@ -758,12 +838,24 @@ mod tests {
 
         // New events arrive while paused; scroll offset must not move.
         for n in 10..15u64 {
-            append_event(&dir, &make_event(n as i64, "edit", "claude-be",
-                Some(LeafId::new(TypePrefix::Task, n)), None)).unwrap();
+            append_event(
+                &dir,
+                &make_event(
+                    n as i64,
+                    "edit",
+                    "claude-be",
+                    Some(LeafId::new(TypePrefix::Task, n)),
+                    None,
+                ),
+            )
+            .unwrap();
         }
         view.refresh().unwrap();
         assert_eq!(view.events.len(), 15);
-        assert_eq!(view.scroll_offset, scroll_before, "scroll must not move while paused");
+        assert_eq!(
+            view.scroll_offset, scroll_before,
+            "scroll must not move while paused"
+        );
 
         // The window's anchor relative to the buffer's tail moved (the buffer
         // grew by 5), so visible_window content shifts accordingly. The
@@ -777,8 +869,17 @@ mod tests {
         let dir = tmp_dir();
         let mut view = ActivityView::new(&dir);
         for n in 0..5u64 {
-            append_event(&dir, &make_event(n as i64, "edit", "claude-be",
-                Some(LeafId::new(TypePrefix::Task, n)), None)).unwrap();
+            append_event(
+                &dir,
+                &make_event(
+                    n as i64,
+                    "edit",
+                    "claude-be",
+                    Some(LeafId::new(TypePrefix::Task, n)),
+                    None,
+                ),
+            )
+            .unwrap();
         }
         view.refresh().unwrap();
         view.paused = true;
@@ -821,7 +922,11 @@ mod tests {
         }
         view.handle_key(KeyCode::Esc, KeyModifiers::NONE);
         assert!(view.editing_filter.is_none());
-        assert_eq!(view.filter.id.as_deref(), Some("seed"), "filter unchanged on cancel");
+        assert_eq!(
+            view.filter.id.as_deref(),
+            Some("seed"),
+            "filter unchanged on cancel"
+        );
         assert!(view.filter.agent.is_none());
     }
 

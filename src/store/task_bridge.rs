@@ -90,18 +90,16 @@ pub fn task_to_document(task: &Task) -> (FrontMatter, ParsedBody) {
 /// `artifacts/` directory. The bridge does not touch disk; the caller is
 /// expected to scan that directory (or read `ARTIFACTS.md`) and supply the
 /// list here. Pass an empty `Vec` for an artifact-free ticket.
-pub fn task_from_document(
-    fm: &FrontMatter,
-    body: &ParsedBody,
-    artifacts: Vec<String>,
-) -> Task {
+pub fn task_from_document(fm: &FrontMatter, body: &ParsedBody, artifacts: Vec<String>) -> Task {
     Task {
         id: fm.id,
         title: fm.title.clone(),
         summary: body.find(SECTION_SUMMARY).and_then(section_to_optional),
         description: body.find(SECTION_DESCRIPTION).and_then(section_to_optional),
         user_story: body.find(SECTION_USER_STORY).and_then(section_to_optional),
-        requirements: body.find(SECTION_REQUIREMENTS).and_then(section_to_optional),
+        requirements: body
+            .find(SECTION_REQUIREMENTS)
+            .and_then(section_to_optional),
         tags: fm.tags.clone(),
         deps: fm.deps.clone(),
         milestone: fm.milestone,
@@ -197,7 +195,10 @@ mod tests {
             user_story: Some("As an agent, I want my lock to auto-release on crash.".to_string()),
             requirements: Some("- TTL: 60s\n- Cleanup runs on pm doctor".to_string()),
             tags: vec!["infra".to_string(), "locking".to_string()],
-            deps: vec![LeafId::new(TypePrefix::Task, 6), LeafId::new(TypePrefix::Task, 11)],
+            deps: vec![
+                LeafId::new(TypePrefix::Task, 6),
+                LeafId::new(TypePrefix::Task, 11),
+            ],
             milestone: Some(LeafId::new(TypePrefix::Milestone, 1)),
             memories: vec![
                 MemoryRef::User("feedback-testing".to_string()),
@@ -347,8 +348,10 @@ mod tests {
 
         let mut db = Database::default();
         db.tasks.push(simple_task(prj, "pm", None, Kind::Project));
-        db.tasks.push(simple_task(prd, "core", Some(prj), Kind::Product));
-        db.tasks.push(simple_task(epc, "checkouts", Some(prd), Kind::Epic));
+        db.tasks
+            .push(simple_task(prd, "core", Some(prj), Kind::Product));
+        db.tasks
+            .push(simple_task(epc, "checkouts", Some(prd), Kind::Epic));
         let task = simple_task(tsk, "lock", Some(epc), Kind::Task);
         db.tasks.push(task.clone());
 

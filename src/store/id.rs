@@ -129,8 +129,12 @@ impl LeafId {
         LeafId { prefix, number }
     }
 
-    pub fn prefix(&self) -> TypePrefix { self.prefix }
-    pub fn number(&self) -> u64 { self.number }
+    pub fn prefix(&self) -> TypePrefix {
+        self.prefix
+    }
+    pub fn number(&self) -> u64 {
+        self.number
+    }
 
     /// Render as the canonical 3-letter-plus-decimal form (e.g. `"TSK7"`).
     pub fn as_string(&self) -> String {
@@ -147,9 +151,15 @@ impl fmt::Display for LeafId {
 impl FromStr for LeafId {
     type Err = IdParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_one_leaf(s).map(|(leaf, rest)| {
-            if rest.is_empty() { Ok(leaf) } else { Err(IdParseError::TrailingInput(rest.to_string())) }
-        }).and_then(|r| r)
+        parse_one_leaf(s)
+            .map(|(leaf, rest)| {
+                if rest.is_empty() {
+                    Ok(leaf)
+                } else {
+                    Err(IdParseError::TrailingInput(rest.to_string()))
+                }
+            })
+            .and_then(|r| r)
     }
 }
 
@@ -187,15 +197,26 @@ impl AddressId {
 
     /// The terminal leaf id, which is always the canonical handle for the ticket.
     pub fn leaf(&self) -> LeafId {
-        *self.segments.last().expect("AddressId invariant: at least one segment")
+        *self
+            .segments
+            .last()
+            .expect("AddressId invariant: at least one segment")
     }
 
-    pub fn segments(&self) -> &[LeafId] { &self.segments }
-    pub fn depth(&self) -> usize { self.segments.len() }
+    pub fn segments(&self) -> &[LeafId] {
+        &self.segments
+    }
+    pub fn depth(&self) -> usize {
+        self.segments.len()
+    }
 
     /// Render as the canonical dash-joined form (e.g. `"PRJ1-PRD3-EPC7-TSK22"`).
     pub fn as_string(&self) -> String {
-        self.segments.iter().map(|l| l.as_string()).collect::<Vec<_>>().join("-")
+        self.segments
+            .iter()
+            .map(|l| l.as_string())
+            .collect::<Vec<_>>()
+            .join("-")
     }
 }
 
@@ -217,9 +238,9 @@ impl FromStr for AddressId {
                 break;
             }
             // Expect a dash separator before the next leaf.
-            let next = after.strip_prefix('-').ok_or_else(|| {
-                IdParseError::UnexpectedSeparator(after.to_string())
-            })?;
+            let next = after
+                .strip_prefix('-')
+                .ok_or_else(|| IdParseError::UnexpectedSeparator(after.to_string()))?;
             rest = next;
         }
         AddressId::new(segments)
@@ -284,9 +305,9 @@ impl FromStr for IdInput {
                 break;
             }
             // A '-' may introduce either the next leaf or a label. Peek ahead.
-            let candidate = after.strip_prefix('-').ok_or_else(|| {
-                IdParseError::UnexpectedSeparator(after.to_string())
-            })?;
+            let candidate = after
+                .strip_prefix('-')
+                .ok_or_else(|| IdParseError::UnexpectedSeparator(after.to_string()))?;
             if looks_like_leaf_start(candidate) {
                 rest = candidate;
             } else {
@@ -304,10 +325,17 @@ impl FromStr for IdInput {
 }
 
 fn looks_like_leaf_start(s: &str) -> bool {
-    if s.len() < 4 { return false; }
+    if s.len() < 4 {
+        return false;
+    }
     let prefix = &s[..3];
-    if TypePrefix::parse(prefix).is_none() { return false; }
-    s.as_bytes().get(3).map(|b| b.is_ascii_digit()).unwrap_or(false)
+    if TypePrefix::parse(prefix).is_none() {
+        return false;
+    }
+    s.as_bytes()
+        .get(3)
+        .map(|b| b.is_ascii_digit())
+        .unwrap_or(false)
 }
 
 /// Parse one leading leaf id from `s`. Returns the leaf and the residual.
@@ -331,9 +359,9 @@ fn parse_one_leaf(s: &str) -> Result<(LeafId, &str), IdParseError> {
     if digit_end == 3 {
         return Err(IdParseError::MissingDigits(prefix_str.to_string()));
     }
-    let number: u64 = s[3..digit_end].parse().map_err(|_| {
-        IdParseError::NumberOverflow(s[3..digit_end].to_string())
-    })?;
+    let number: u64 = s[3..digit_end]
+        .parse()
+        .map_err(|_| IdParseError::NumberOverflow(s[3..digit_end].to_string()))?;
     Ok((LeafId::new(prefix, number), &s[digit_end..]))
 }
 
@@ -421,10 +449,16 @@ mod tests {
         assert_eq!(addr.leaf().to_string(), "SBT1");
         assert_eq!(addr.as_string(), raw);
         let kinds: Vec<TypePrefix> = addr.segments().iter().map(|l| l.prefix()).collect();
-        assert_eq!(kinds, vec![
-            TypePrefix::Project, TypePrefix::Product, TypePrefix::Epic,
-            TypePrefix::Task, TypePrefix::Subtask,
-        ]);
+        assert_eq!(
+            kinds,
+            vec![
+                TypePrefix::Project,
+                TypePrefix::Product,
+                TypePrefix::Epic,
+                TypePrefix::Task,
+                TypePrefix::Subtask,
+            ]
+        );
     }
 
     #[test]
@@ -461,7 +495,9 @@ mod tests {
 
     #[test]
     fn idinput_accepts_labelled_address() {
-        let input: IdInput = "PRJ1-pm/PRD3-core/EPC7-checkouts/TSK22-lock-protocol".parse().unwrap();
+        let input: IdInput = "PRJ1-pm/PRD3-core/EPC7-checkouts/TSK22-lock-protocol"
+            .parse()
+            .unwrap();
         match input {
             IdInput::Address(a) => {
                 assert_eq!(a.depth(), 4);

@@ -116,12 +116,7 @@ impl App {
             self.set_status_message(format!("rename: save failed: {e}"));
             return;
         }
-        let _ = events::emit_event(
-            &self.pm_dir,
-            "rename",
-            Some(leaf),
-            Some(&new_title),
-        );
+        let _ = events::emit_event(&self.pm_dir, "rename", Some(leaf), Some(&new_title));
         self.refresh_tasks();
         self.set_status_message(format!("{leaf}: renamed to {new_title}"));
     }
@@ -186,7 +181,12 @@ impl App {
         }
 
         // Clean up the old directory if the save landed elsewhere.
-        let new_abs_dir = self.db.state.items.get(&leaf).map(|e| self.pm_dir.join(&e.path));
+        let new_abs_dir = self
+            .db
+            .state
+            .items
+            .get(&leaf)
+            .map(|e| self.pm_dir.join(&e.path));
         if let (Some(old), Some(new)) = (old_abs_dir.as_ref(), new_abs_dir.as_ref()) {
             if old != new && old.exists() {
                 let _ = std::fs::remove_dir_all(old);

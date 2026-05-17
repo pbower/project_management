@@ -80,12 +80,18 @@ pub fn resolve(prefix: TypePrefix, pm_root: &Path, home_dir: Option<&Path>) -> R
     let stem = template_stem(prefix);
     let project_path = pm_root.join("templates").join(format!("{stem}.md"));
     if let Ok(content) = std::fs::read_to_string(&project_path) {
-        return ResolvedTemplate { content, source: TemplateSource::Project(project_path) };
+        return ResolvedTemplate {
+            content,
+            source: TemplateSource::Project(project_path),
+        };
     }
     if let Some(home) = home_dir {
         let user_path = home.join(".pm-templates").join(format!("{stem}.md"));
         if let Ok(content) = std::fs::read_to_string(&user_path) {
-            return ResolvedTemplate { content, source: TemplateSource::User(user_path) };
+            return ResolvedTemplate {
+                content,
+                source: TemplateSource::User(user_path),
+            };
         }
     }
     ResolvedTemplate {
@@ -156,7 +162,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "pm-store-templates-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -167,7 +176,13 @@ mod tests {
         let task = ParsedBody::parse(builtin(TypePrefix::Task));
         assert_eq!(
             task.names(),
-            vec!["Description", "User Story", "Requirements", "Acceptance Criteria", "Notes"],
+            vec![
+                "Description",
+                "User Story",
+                "Requirements",
+                "Acceptance Criteria",
+                "Notes"
+            ],
         );
 
         let project = ParsedBody::parse(builtin(TypePrefix::Project));
@@ -188,7 +203,10 @@ mod tests {
         let pb = scaffold(builtin(TypePrefix::Subtask));
         assert_eq!(pb.names(), vec!["Description", "Notes"]);
         for s in &pb.sections {
-            assert!(s.body.is_empty(), "fresh scaffold section should have empty body");
+            assert!(
+                s.body.is_empty(),
+                "fresh scaffold section should have empty body"
+            );
         }
     }
 
@@ -225,9 +243,16 @@ mod tests {
 
         // Template sections come first, then leftover user-added.
         let names = pb.names();
-        assert_eq!(&names[..5], &[
-            "Description", "User Story", "Requirements", "Acceptance Criteria", "Notes",
-        ]);
+        assert_eq!(
+            &names[..5],
+            &[
+                "Description",
+                "User Story",
+                "Requirements",
+                "Acceptance Criteria",
+                "Notes",
+            ]
+        );
         assert_eq!(names[5], "Performance Notes");
         assert_eq!(pb.find("Performance Notes").unwrap().body, "User-added.\n");
     }

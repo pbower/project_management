@@ -7,25 +7,25 @@
 use clap::Subcommand;
 use clap_complete::{generate, Shell};
 
-use std::path::{Path, PathBuf};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fs;
-use chrono::{Local, NaiveDate, TimeZone, Utc};
 use crate::db::*;
 use crate::fields::*;
 use crate::mcp::server::run as run_mcp_server;
+use crate::memory::store::MemoryContext;
 use crate::memory::{
     lookup_by_name, promote_memory, write_memory, MemoryFile, MemoryHit, MemoryType, Scope,
 };
-use crate::memory::store::MemoryContext;
 use crate::store::front_matter::MemoryRef;
 use crate::store::id::{IdInput, LeafId};
 use crate::store::migrate::kind_to_prefix;
 use crate::task::{Task, TaskTemplate};
-use crate::tui::run::{run_activity_view, run_tui, run_tui_with_edit};
 use crate::tui::menu::MenuApp;
-use crate::tui::workflow_run::run_workflow_tui;
+use crate::tui::run::{run_activity_view, run_tui, run_tui_with_edit};
 use crate::tui::workflow::WorkflowExit;
+use crate::tui::workflow_run::run_workflow_tui;
+use chrono::{Local, NaiveDate, TimeZone, Utc};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
 pub enum Commands {
@@ -182,9 +182,9 @@ pub enum Commands {
     },
 
     /// Reopen a task (status open).
-    Reopen { 
+    Reopen {
         /// Task ID or name to reopen
-        id: String 
+        id: String,
     },
 
     /// Delete a task by ID or name.
@@ -210,20 +210,20 @@ pub enum Commands {
 
     /// List distinct tags and counts.
     Tags,
-    
+
     /// Generate shell completion scripts.
     Completions {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: Shell,
     },
-    
+
     /// Manage task templates.
     Template {
         #[command(subcommand)]
         action: TemplateAction,
     },
-    
+
     /// Export tasks to CSV format.
     Export {
         /// Output file path (default: tasks.csv)
@@ -262,8 +262,14 @@ pub enum Commands {
     /// Open project main menu (interactive mode).
     Menu,
 
-    // ----- v2 lifecycle verbs -----
+    /// Open the v0.9 TUI (Menu launcher + Ui workspace + Workflow board).
+    /// Same surface as `menu`; the new name is the stable entry point
+    /// users should adopt now. In v0.3.0 the default `spacecell` invocation
+    /// stops launching this TUI and `legacy-tui` becomes the only path to
+    /// the v1 surface, until the new cockpit ships.
+    LegacyTui,
 
+    // ----- v2 lifecycle verbs -----
     /// Initialise a `.pm/` workspace in the current directory.
     Init,
 
@@ -286,7 +292,6 @@ pub enum Commands {
     },
 
     // ----- v2 content verbs -----
-
     /// Open a ticket's CLAUDE.md in `$EDITOR`.
     Edit {
         /// Ticket id.
@@ -321,7 +326,6 @@ pub enum Commands {
     },
 
     // ----- v2 metadata verbs -----
-
     /// Set a ticket's status.
     SetStatus {
         /// Ticket id.
@@ -387,7 +391,6 @@ pub enum Commands {
     },
 
     // ----- v2 views and maintenance -----
-
     /// Rebuild state.json from the on-disk tree. Pass `--migrate` to import a
     /// legacy `tasks.json` archive into the workspace via the bridge.
     Doctor {
@@ -403,7 +406,6 @@ pub enum Commands {
     },
 
     // ----- v2 verbs deferred to later phases -----
-
     /// (Phase 6) Acquire a soft lock on a ticket.
     Checkout {
         /// Ticket id.
@@ -622,7 +624,6 @@ pub enum TemplateAction {
     },
 }
 
-
 /// Launch the terminal user interface.
 pub fn cmd_ui(db_path: &Path) {
     if let Err(e) = run_tui(db_path) {
@@ -654,33 +655,59 @@ pub fn cmd_add(
     status: Status,
 ) {
     // Apply template defaults if specified
-    let (task_kind, final_tags, final_priority, final_urgency, final_process_stage, final_status, final_desc) =
-        if let Some(template_name) = template {
-            let template = db.state.templates.iter()
-                .find(|t| t.name == template_name)
-                .cloned();
+    let (
+        task_kind,
+        final_tags,
+        final_priority,
+        final_urgency,
+        final_process_stage,
+        final_status,
+        final_desc,
+    ) = if let Some(template_name) = template {
+        let template = db
+            .state
+            .templates
+            .iter()
+            .find(|t| t.name == template_name)
+            .cloned();
 
-            match template {
-                Some(tmpl) => {
-                    let template_tags = if tags.is_empty() { tmpl.tags } else { split_and_normalise_tags(&tags) };
-                    (
-                        if kind == Kind::Task { tmpl.kind } else { kind },
-                        template_tags,
-                        priority_level.or(tmpl.priority_level),
-                        urgency.or(tmpl.urgency),
-                        process_stage.or(tmpl.process_stage),
-                        if status == Status::Open { tmpl.status } else { status },
-                        desc.or(tmpl.description_template.clone()),
-                    )
-                },
-                None => {
-                    eprintln!("Template '{}' not found", template_name);
-                    std::process::exit(1);
-                }
+        match template {
+            Some(tmpl) => {
+                let template_tags = if tags.is_empty() {
+                    tmpl.tags
+                } else {
+                    split_and_normalise_tags(&tags)
+                };
+                (
+                    if kind == Kind::Task { tmpl.kind } else { kind },
+                    template_tags,
+                    priority_level.or(tmpl.priority_level),
+                    urgency.or(tmpl.urgency),
+                    process_stage.or(tmpl.process_stage),
+                    if status == Status::Open {
+                        tmpl.status
+                    } else {
+                        status
+                    },
+                    desc.or(tmpl.description_template.clone()),
+                )
             }
-        } else {
-            (kind, split_and_normalise_tags(&tags), priority_level, urgency, process_stage, status, desc)
-        };
+            None => {
+                eprintln!("Template '{}' not found", template_name);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        (
+            kind,
+            split_and_normalise_tags(&tags),
+            priority_level,
+            urgency,
+            process_stage,
+            status,
+            desc,
+        )
+    };
 
     let now_utc = Utc::now().timestamp();
     let id = db.allocate_id(kind_to_prefix(task_kind));
@@ -714,7 +741,8 @@ pub fn cmd_add(
     };
 
     let due = due.as_deref().and_then(parse_due_input);
-    let artifacts_list = artifacts.iter()
+    let artifacts_list = artifacts
+        .iter()
         .flat_map(|s| s.split(','))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -750,7 +778,10 @@ pub fn cmd_add(
         eprintln!("Failed to save DB: {e}");
         std::process::exit(1);
     }
-    commit_or_warn(db_path, &commit_subject_for(id, "add", Some(&title_for_msg)));
+    commit_or_warn(
+        db_path,
+        &commit_subject_for(id, "add", Some(&title_for_msg)),
+    );
     emit_or_warn(db_path, "add", Some(id), Some(&title_for_msg));
     println!("Added task {}", id);
 }
@@ -845,17 +876,17 @@ pub fn cmd_list(
                 // Sort by priority_level first (MustHave=0, NiceToHave=1, CutFirst=2, None=3)
                 let a_priority = match a.priority_level {
                     Some(Priority::MustHave) => 0,
-                    Some(Priority::NiceToHave) => 1, 
+                    Some(Priority::NiceToHave) => 1,
                     Some(Priority::CutFirst) => 2,
                     None => 3,
                 };
                 let b_priority = match b.priority_level {
                     Some(Priority::MustHave) => 0,
                     Some(Priority::NiceToHave) => 1,
-                    Some(Priority::CutFirst) => 2, 
+                    Some(Priority::CutFirst) => 2,
                     None => 3,
                 };
-                
+
                 // Then by urgency (UrgentImportant=0, UrgentNotImportant=1, NotUrgentImportant=2, NotUrgentNotImportant=3, None=4)
                 let a_urgency = match a.urgency {
                     Some(Urgency::UrgentImportant) => 0,
@@ -871,13 +902,14 @@ pub fn cmd_list(
                     Some(Urgency::NotUrgentNotImportant) => 3,
                     None => 4,
                 };
-                
+
                 // Finally by ID for stable sort
-                a_priority.cmp(&b_priority)
+                a_priority
+                    .cmp(&b_priority)
                     .then(a_urgency.cmp(&b_urgency))
                     .then(a.id.cmp(&b.id))
             });
-        },
+        }
         SortKey::Id => filtered.sort_by_key(|t| t.id),
     }
 
@@ -915,7 +947,7 @@ pub fn cmd_view(db: &Database, id: String, children: bool, parents: bool) {
             std::process::exit(1);
         }
     };
-    
+
     let Some(task) = db.get(task_id).cloned() else {
         eprintln!("Task {} not found.", task_id);
         std::process::exit(1);
@@ -928,12 +960,45 @@ pub fn cmd_view(db: &Database, id: String, children: bool, parents: bool) {
     println!("Status:       {}", format_status(task.status));
     println!("Priority:     {}", format_priority(task.priority_level));
     println!("Project:      {}", project_for_view);
-    println!("Due:          {}", match task.due { Some(d) => format!("{d} ({})", format_due_relative(Some(d), today)), None => "-".into() });
-    println!("Parent:       {}", task.parent.map(|p| p.to_string()).unwrap_or_else(|| "-".into()));
-    println!("Tags:         {}", if task.tags.is_empty() { "-".into() } else { task.tags.join(",") });
-    println!("Created UTC:  {}", Utc.timestamp_opt(task.created_at_utc, 0).single().unwrap().to_rfc3339());
-    println!("Updated UTC:  {}", Utc.timestamp_opt(task.updated_at_utc, 0).single().unwrap().to_rfc3339());
-    println!("Description:\n{}\n", task.description.unwrap_or_else(|| "-".into()));
+    println!(
+        "Due:          {}",
+        match task.due {
+            Some(d) => format!("{d} ({})", format_due_relative(Some(d), today)),
+            None => "-".into(),
+        }
+    );
+    println!(
+        "Parent:       {}",
+        task.parent
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "-".into())
+    );
+    println!(
+        "Tags:         {}",
+        if task.tags.is_empty() {
+            "-".into()
+        } else {
+            task.tags.join(",")
+        }
+    );
+    println!(
+        "Created UTC:  {}",
+        Utc.timestamp_opt(task.created_at_utc, 0)
+            .single()
+            .unwrap()
+            .to_rfc3339()
+    );
+    println!(
+        "Updated UTC:  {}",
+        Utc.timestamp_opt(task.updated_at_utc, 0)
+            .single()
+            .unwrap()
+            .to_rfc3339()
+    );
+    println!(
+        "Description:\n{}\n",
+        task.description.unwrap_or_else(|| "-".into())
+    );
 
     let child_map = build_children_map(&db.tasks);
 
@@ -942,7 +1007,14 @@ pub fn cmd_view(db: &Database, id: String, children: bool, parents: bool) {
         if chain.is_empty() {
             println!("Ancestors: -");
         } else {
-            println!("Ancestors (closest first): {}", chain.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" -> "));
+            println!(
+                "Ancestors (closest first): {}",
+                chain
+                    .iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            );
         }
     }
 
@@ -962,7 +1034,13 @@ pub fn cmd_view(db: &Database, id: String, children: bool, parents: bool) {
                     for &c in children {
                         if let Some(&i) = idx.get(&c) {
                             let t = &db.tasks[i];
-                            println!("{}- {} [{}] ({})", "  ".repeat(depth), t.title, format_status(t.status), t.id);
+                            println!(
+                                "{}- {} [{}] ({})",
+                                "  ".repeat(depth),
+                                t.title,
+                                format_status(t.status),
+                                t.id
+                            );
                             dfs(c, child_map, idx, db, depth + 1);
                         }
                     }
@@ -998,7 +1076,7 @@ pub fn cmd_update(
             std::process::exit(1);
         }
     };
-    
+
     // Resolve parent if provided
     let parent_id = if let Some(parent_str) = parent {
         match resolve_task_identifier(&parent_str, db) {
@@ -1011,7 +1089,7 @@ pub fn cmd_update(
     } else {
         None
     };
-    
+
     // Validate parent exists and won't cause cycles before getting mutable borrow
     if let Some(pid) = parent_id {
         if pid == task_id {
@@ -1032,36 +1110,52 @@ pub fn cmd_update(
             }
             cur = db.get(p).and_then(|x| x.parent);
             hops += 1;
-            if hops > 64 { break; }
+            if hops > 64 {
+                break;
+            }
         }
     }
 
-    // Store values needed for hierarchy validation 
+    // Store values needed for hierarchy validation
     let (final_parent, final_kind) = {
         let Some(t) = db.get_mut(task_id) else {
             eprintln!("Task {} not found.", task_id);
             std::process::exit(1);
         };
-        if let Some(s) = title { t.title = s; }
-        if let Some(d) = desc { t.description = if d.is_empty() { None } else { Some(d) }; }
-        if clear_due { t.due = None; }
+        if let Some(s) = title {
+            t.title = s;
+        }
+        if let Some(d) = desc {
+            t.description = if d.is_empty() { None } else { Some(d) };
+        }
+        if clear_due {
+            t.due = None;
+        }
         if let Some(ds) = due {
             t.due = parse_due_input(&ds);
             if t.due.is_none() {
-                eprintln!("Unrecognised due date. Use YYYY-MM-DD, 'today', 'tomorrow', or 'in Nd'.");
+                eprintln!(
+                    "Unrecognised due date. Use YYYY-MM-DD, 'today', 'tomorrow', or 'in Nd'."
+                );
                 std::process::exit(1);
             }
         }
-        if clear_parent { t.parent = None; }
+        if clear_parent {
+            t.parent = None;
+        }
         if let Some(pid) = parent_id {
             t.parent = Some(pid);
         }
-        if let Some(k) = kind { t.kind = k; }
-        if let Some(s) = status { t.status = s; }
-        
+        if let Some(k) = kind {
+            t.kind = k;
+        }
+        if let Some(s) = status {
+            t.status = s;
+        }
+
         (t.parent, t.kind)
     };
-    
+
     // Validate hierarchy after kind/parent updates
     if let Some(parent_id) = final_parent {
         if let Some(parent_task) = db.get(parent_id) {
@@ -1072,19 +1166,25 @@ pub fn cmd_update(
             }
         }
     }
-    
+
     // Get mutable borrow again for tag updates
     let Some(t) = db.get_mut(task_id) else {
         eprintln!("Task {} not found.", task_id);
         std::process::exit(1);
     };
     let mut add = split_and_normalise_tags(&add_tags);
-    let rm = split_and_normalise_tags(&rm_tags).into_iter().collect::<HashSet<_>>();
+    let rm = split_and_normalise_tags(&rm_tags)
+        .into_iter()
+        .collect::<HashSet<_>>();
     if !add.is_empty() || !rm.is_empty() {
         // Merge tags.
         let mut set = t.tags.iter().cloned().collect::<BTreeSet<_>>();
-        for a in add.drain(..) { set.insert(a); }
-        for r in rm { set.remove(&r); }
+        for a in add.drain(..) {
+            set.insert(a);
+        }
+        for r in rm {
+            set.remove(&r);
+        }
         t.tags = set.into_iter().collect();
     }
 
@@ -1100,21 +1200,29 @@ pub fn cmd_update(
 
 /// Mark a task as completed, optionally completing all descendants.
 pub fn cmd_complete(
-    db: &mut Database, 
-    db_path: &Path, 
-    id: Option<String>, 
+    db: &mut Database,
+    db_path: &Path,
+    id: Option<String>,
     recurse: bool,
     tag: Option<String>,
     project: Option<String>,
     status_filter: Option<Status>,
 ) {
     // Validate that exactly one option is provided
-    let option_count = [id.is_some(), tag.is_some(), project.is_some(), status_filter.is_some()].iter().filter(|&&x| x).count();
+    let option_count = [
+        id.is_some(),
+        tag.is_some(),
+        project.is_some(),
+        status_filter.is_some(),
+    ]
+    .iter()
+    .filter(|&&x| x)
+    .count();
     if option_count != 1 {
         eprintln!("Error: Must specify exactly one of --id, --tag, --project, or --status");
         std::process::exit(1);
     }
-    
+
     let mut to_mark: HashSet<LeafId> = HashSet::new();
 
     if let Some(id_str) = id {
@@ -1202,7 +1310,7 @@ pub fn cmd_reopen(db: &mut Database, db_path: &Path, id: String) {
             std::process::exit(1);
         }
     };
-    
+
     let Some(t) = db.get_mut(task_id) else {
         eprintln!("Task {} not found.", task_id);
         std::process::exit(1);
@@ -1220,21 +1328,29 @@ pub fn cmd_reopen(db: &mut Database, db_path: &Path, id: String) {
 
 /// Delete a task, optionally cascading to all descendants.
 pub fn cmd_delete(
-    db: &mut Database, 
-    db_path: &Path, 
-    id: Option<String>, 
+    db: &mut Database,
+    db_path: &Path,
+    id: Option<String>,
     cascade: bool,
     tag: Option<String>,
     project: Option<String>,
     status_filter: Option<Status>,
 ) {
     // Validate that exactly one option is provided
-    let option_count = [id.is_some(), tag.is_some(), project.is_some(), status_filter.is_some()].iter().filter(|&&x| x).count();
+    let option_count = [
+        id.is_some(),
+        tag.is_some(),
+        project.is_some(),
+        status_filter.is_some(),
+    ]
+    .iter()
+    .filter(|&&x| x)
+    .count();
     if option_count != 1 {
         eprintln!("Error: Must specify exactly one of --id, --tag, --project, or --status");
         std::process::exit(1);
     }
-    
+
     let mut to_delete: HashSet<LeafId> = HashSet::new();
 
     if let Some(id_str) = id {
@@ -1256,7 +1372,11 @@ pub fn cmd_delete(
         let mut children: HashSet<LeafId> = HashSet::new();
         collect_descendants(task_id, &child_map, &mut children);
         if !children.is_empty() && !cascade {
-            eprintln!("Task {} has {} descendant(s). Use --cascade to delete all.", task_id, children.len());
+            eprintln!(
+                "Task {} has {} descendant(s). Use --cascade to delete all.",
+                task_id,
+                children.len()
+            );
             std::process::exit(1);
         }
         to_delete = children;
@@ -1292,7 +1412,7 @@ pub fn cmd_delete(
             }
         }
     }
-    
+
     let ids = to_delete;
     let count = ids.len();
     let first = ids.iter().next().copied();
@@ -1344,9 +1464,9 @@ pub fn cmd_tags(db: &Database) {
 
 /// Generate shell completion scripts.
 pub fn cmd_completions(shell: Shell) {
-    use clap::CommandFactory;
     use crate::cli::Cli;
-    
+    use clap::CommandFactory;
+
     let mut app = Cli::command();
     let app_name = app.get_name().to_string();
     generate(shell, &mut app, app_name, &mut std::io::stdout());
@@ -1355,7 +1475,10 @@ pub fn cmd_completions(shell: Shell) {
 /// Handle template management commands.
 pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
     match action {
-        TemplateAction::Save { task_id, template_name } => {
+        TemplateAction::Save {
+            task_id,
+            template_name,
+        } => {
             let task_id_resolved = match resolve_task_identifier(&task_id, db) {
                 Ok(id) => id,
                 Err(e) => {
@@ -1363,18 +1486,21 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
                     std::process::exit(1);
                 }
             };
-            
+
             let Some(task) = db.get(task_id_resolved) else {
                 eprintln!("Task {} not found.", task_id_resolved);
                 std::process::exit(1);
             };
-            
+
             // Check if template already exists
             if db.state.templates.iter().any(|t| t.name == template_name) {
-                eprintln!("Template '{}' already exists. Use a different name.", template_name);
+                eprintln!(
+                    "Template '{}' already exists. Use a different name.",
+                    template_name
+                );
                 std::process::exit(1);
             }
-            
+
             let template = TaskTemplate {
                 name: template_name.clone(),
                 title_template: Some(task.title.clone()),
@@ -1386,17 +1512,20 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
                 process_stage: task.process_stage,
                 status: task.status,
             };
-            
+
             db.state.templates.push(template);
-            
+
             if let Err(e) = db.save(db_path) {
                 eprintln!("Failed to save database: {}", e);
                 std::process::exit(1);
             }
-            
-            println!("Saved template '{}' from task {}", template_name, task_id_resolved);
-        },
-        
+
+            println!(
+                "Saved template '{}' from task {}",
+                template_name, task_id_resolved
+            );
+        }
+
         TemplateAction::List => {
             if db.state.templates.is_empty() {
                 println!("No templates found.");
@@ -1412,25 +1541,25 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
                     format_status(template.status),
                 );
             }
-        },
-        
+        }
+
         TemplateAction::Delete { template_name } => {
             let initial_len = db.state.templates.len();
             db.state.templates.retain(|t| t.name != template_name);
-            
+
             if db.state.templates.len() == initial_len {
                 eprintln!("Template '{}' not found.", template_name);
                 std::process::exit(1);
             }
-            
+
             if let Err(e) = db.save(db_path) {
                 eprintln!("Failed to save database: {}", e);
                 std::process::exit(1);
             }
-            
+
             println!("Deleted template '{}'", template_name);
-        },
-        
+        }
+
         TemplateAction::Create {
             name,
             title_template,
@@ -1465,7 +1594,7 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
                 process_stage,
                 status,
             };
-            
+
             db.state.templates.push(template);
 
             if let Err(e) = db.save(db_path) {
@@ -1474,13 +1603,13 @@ pub fn cmd_template(db: &mut Database, db_path: &Path, action: TemplateAction) {
             }
 
             println!("Created template '{}'", name);
-        },
+        }
         TemplateAction::Edit { kind } => {
             cmd_template_edit(db_path, &kind);
-        },
+        }
         TemplateAction::Apply { id } => {
             cmd_template_apply(db, db_path, &id);
-        },
+        }
     }
 }
 
@@ -1506,13 +1635,18 @@ pub fn cmd_template_edit(pm_dir: &Path, kind: &str) {
         }
     };
 
-    let target = pm_dir.join("templates").join(format!("{}.md", templates::template_stem(prefix)));
+    let target = pm_dir
+        .join("templates")
+        .join(format!("{}.md", templates::template_stem(prefix)));
     if !target.exists() {
         if let Some(parent) = target.parent() {
             let _ = fs::create_dir_all(parent);
         }
         if let Err(e) = fs::write(&target, templates::builtin(prefix)) {
-            eprintln!("template edit: could not seed override at {}: {e}", target.display());
+            eprintln!(
+                "template edit: could not seed override at {}: {e}",
+                target.display()
+            );
             std::process::exit(1);
         }
     }
@@ -1548,11 +1682,16 @@ pub fn cmd_template_apply(db: &mut Database, pm_dir: &Path, id: &str) {
         eprintln!("template apply: state.json has no entry for {id}");
         std::process::exit(1);
     };
-    let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
+    let claude_path = pm_dir
+        .join(&entry.path)
+        .join(crate::store::claude_md::CLAUDE_MD);
     let mut ticket = match crate::store::Ticket::read(&claude_path) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("template apply: could not read {}: {e}", claude_path.display());
+            eprintln!(
+                "template apply: could not read {}: {e}",
+                claude_path.display()
+            );
             std::process::exit(1);
         }
     };
@@ -1577,16 +1716,18 @@ pub fn cmd_template_apply(db: &mut Database, pm_dir: &Path, id: &str) {
 
 /// Export tasks to CSV format for external analysis and time tracking.
 pub fn cmd_export(
-    db: &Database, 
-    output: Option<String>, 
-    all: bool, 
-    project: Option<String>, 
-    tag: Option<String>
+    db: &Database,
+    output: Option<String>,
+    all: bool,
+    project: Option<String>,
+    tag: Option<String>,
 ) {
     let output_path = output.unwrap_or_else(|| "tasks.csv".to_string());
-    
+
     // Filter tasks
-    let tasks: Vec<&Task> = db.tasks.iter()
+    let tasks: Vec<&Task> = db
+        .tasks
+        .iter()
         .filter(|task| {
             // Include completed tasks only if --all is specified
             if !all && task.status == Status::Done {
@@ -1620,15 +1761,36 @@ pub fn cmd_export(
     // CSV Rows
     let task_count = tasks.len();
     for task in &tasks {
-        let priority = task.priority_level.map(|p| format_priority(Some(p))).unwrap_or("-");
+        let priority = task
+            .priority_level
+            .map(|p| format_priority(Some(p)))
+            .unwrap_or("-");
         let urgency = task.urgency.map(|u| format_urgency(Some(u))).unwrap_or("-");
-        let process_stage = task.process_stage.map(|ps| format_process_stage(Some(ps))).unwrap_or("-");
+        let process_stage = task
+            .process_stage
+            .map(|ps| format_process_stage(Some(ps)))
+            .unwrap_or("-");
         let project_col = project_label(db, task);
-        let tags = if task.tags.is_empty() { "-".to_string() } else { task.tags.join(";") };
+        let tags = if task.tags.is_empty() {
+            "-".to_string()
+        } else {
+            task.tags.join(";")
+        };
         let due = task.due.map(|d| d.to_string()).unwrap_or("-".to_string());
-        let parent = task.parent.map(|p| p.to_string()).unwrap_or("-".to_string());
-        let created = chrono::Utc.timestamp_opt(task.created_at_utc, 0).single().unwrap().to_rfc3339();
-        let updated = chrono::Utc.timestamp_opt(task.updated_at_utc, 0).single().unwrap().to_rfc3339();
+        let parent = task
+            .parent
+            .map(|p| p.to_string())
+            .unwrap_or("-".to_string());
+        let created = chrono::Utc
+            .timestamp_opt(task.created_at_utc, 0)
+            .single()
+            .unwrap()
+            .to_rfc3339();
+        let updated = chrono::Utc
+            .timestamp_opt(task.updated_at_utc, 0)
+            .single()
+            .unwrap()
+            .to_rfc3339();
         let description = task.description.as_deref().unwrap_or("-");
 
         // Escape CSV fields that contain commas or quotes
@@ -1658,12 +1820,12 @@ pub fn cmd_export(
             escape_csv(description)
         ));
     }
-    
+
     // Write to file
     match std::fs::write(&output_path, csv_content) {
         Ok(_) => {
             println!("Exported {} task(s) to {}", task_count, output_path);
-        },
+        }
         Err(e) => {
             eprintln!("Failed to write CSV file: {}", e);
             std::process::exit(1);
@@ -1676,28 +1838,29 @@ pub fn create_backup(db_path: &Path) -> Result<String, std::io::Error> {
     if !db_path.exists() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "Database file does not exist"
+            "Database file does not exist",
         ));
     }
 
     let parent_dir = db_path.parent().unwrap_or_else(|| Path::new("."));
     let backup_dir = parent_dir.join("backup");
-    
+
     // Create backup directory if it doesn't exist
     fs::create_dir_all(&backup_dir)?;
-    
+
     // Generate timestamp for backup filename
     let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S");
-    let db_filename = db_path.file_name()
+    let db_filename = db_path
+        .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("tasks.json");
-        
+
     let backup_filename = format!("{}_{}", timestamp, db_filename);
     let backup_path = backup_dir.join(backup_filename);
-    
+
     // Copy the database file to backup location
     fs::copy(db_path, &backup_path)?;
-    
+
     Ok(backup_path.to_string_lossy().to_string())
 }
 
@@ -1708,23 +1871,24 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
         match create_backup(db_path) {
             Ok(backup_path) => {
                 println!("Created backup: {}", backup_path);
-            },
+            }
             Err(e) => {
                 eprintln!("Warning: Failed to create backup: {}", e);
                 print!("Continue without backup? (y/N): ");
                 use std::io::{self, Write};
                 io::stdout().flush().unwrap();
-                
+
                 let mut response = String::new();
-                if io::stdin().read_line(&mut response).is_err() 
-                    || !response.trim().to_lowercase().starts_with('y') {
+                if io::stdin().read_line(&mut response).is_err()
+                    || !response.trim().to_lowercase().starts_with('y')
+                {
                     println!("Import cancelled.");
                     return;
                 }
             }
         }
     }
-    
+
     // Read CSV file
     let csv_content = match fs::read_to_string(&input) {
         Ok(content) => content,
@@ -1733,20 +1897,23 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
             std::process::exit(1);
         }
     };
-    
+
     let lines: Vec<&str> = csv_content.lines().collect();
     if lines.is_empty() {
         eprintln!("CSV file is empty");
         std::process::exit(1);
     }
-    
+
     // Parse header to validate format
     let expected_header = "ID,Title,Kind,Status,Priority,Urgency,ProcessStage,Project,Tags,Due,Parent,CreatedUTC,UpdatedUTC,Description";
     if lines[0] != expected_header {
-        eprintln!("Invalid CSV header. Expected:\n{}\nGot:\n{}", expected_header, lines[0]);
+        eprintln!(
+            "Invalid CSV header. Expected:\n{}\nGot:\n{}",
+            expected_header, lines[0]
+        );
         std::process::exit(1);
     }
-    
+
     let mut imported_count = 0;
     let mut skipped_count = 0;
 
@@ -1757,7 +1924,11 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
         // Simple CSV parsing (handles quoted fields)
         let fields = parse_csv_line(line);
         if fields.len() != 14 {
-            eprintln!("Warning: Line {} has {} fields, expected 14. Skipping.", line_num, fields.len());
+            eprintln!(
+                "Warning: Line {} has {} fields, expected 14. Skipping.",
+                line_num,
+                fields.len()
+            );
             skipped_count += 1;
             continue;
         }
@@ -1773,17 +1944,26 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
         let priority = parse_priority(&fields[4]);
         let urgency = parse_urgency(&fields[5]);
         let process_stage = parse_process_stage(&fields[6]);
-        let tags = if fields[8] == "-" { Vec::new() } else { fields[8].split(';').map(|s| s.to_string()).collect() };
-        let due = if fields[9] == "-" { None } else { NaiveDate::parse_from_str(&fields[9], "%Y-%m-%d").ok() };
+        let tags = if fields[8] == "-" {
+            Vec::new()
+        } else {
+            fields[8].split(';').map(|s| s.to_string()).collect()
+        };
+        let due = if fields[9] == "-" {
+            None
+        } else {
+            NaiveDate::parse_from_str(&fields[9], "%Y-%m-%d").ok()
+        };
         let parent = if fields[10] == "-" {
             None
         } else {
-            fields[10]
-                .parse::<IdInput>()
-                .ok()
-                .map(|input| input.leaf())
+            fields[10].parse::<IdInput>().ok().map(|input| input.leaf())
         };
-        let description = if fields[13] == "-" { None } else { Some(fields[13].clone()) };
+        let description = if fields[13] == "-" {
+            None
+        } else {
+            Some(fields[13].clone())
+        };
 
         if title.is_empty() {
             eprintln!("Warning: Line {} has empty title. Skipping.", line_num);
@@ -1793,7 +1973,10 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
 
         // Check if task with same title already exists
         if db.tasks.iter().any(|t| t.title == title) {
-            eprintln!("Warning: Task with title '{}' already exists. Skipping.", title);
+            eprintln!(
+                "Warning: Task with title '{}' already exists. Skipping.",
+                title
+            );
             skipped_count += 1;
             continue;
         }
@@ -1803,7 +1986,7 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
             title,
             summary: None, // CSV doesn't include summary field
             description,
-            user_story: None, // CSV doesn't include user_story field
+            user_story: None,   // CSV doesn't include user_story field
             requirements: None, // CSV doesn't include requirements field
             tags,
             deps: Vec::new(),
@@ -1816,8 +1999,8 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
             priority_level: priority,
             urgency,
             process_stage,
-            issue_link: None, // CSV doesn't include issue_link field
-            pr_link: None, // CSV doesn't include pr_link field
+            issue_link: None,      // CSV doesn't include issue_link field
+            pr_link: None,         // CSV doesn't include pr_link field
             artifacts: Vec::new(), // CSV doesn't include artifacts field
             created_at_utc: Utc::now().timestamp(),
             updated_at_utc: Utc::now().timestamp(),
@@ -1826,14 +2009,17 @@ pub fn cmd_import(db: &mut Database, db_path: &Path, input: String, no_backup: b
         db.tasks.push(new_task);
         imported_count += 1;
     }
-    
+
     // Save database
     if let Err(e) = db.save(db_path) {
         eprintln!("Failed to save database: {}", e);
         std::process::exit(1);
     }
-    
-    println!("Import completed. {} tasks imported, {} skipped.", imported_count, skipped_count);
+
+    println!(
+        "Import completed. {} tasks imported, {} skipped.",
+        imported_count, skipped_count
+    );
 }
 
 /// Simple CSV line parser that handles quoted fields.
@@ -1842,7 +2028,7 @@ fn parse_csv_line(line: &str) -> Vec<String> {
     let mut current_field = String::new();
     let mut in_quotes = false;
     let mut chars = line.chars().peekable();
-    
+
     while let Some(ch) = chars.next() {
         match ch {
             '"' => {
@@ -1854,18 +2040,18 @@ fn parse_csv_line(line: &str) -> Vec<String> {
                     // Toggle quote state
                     in_quotes = !in_quotes;
                 }
-            },
+            }
             ',' if !in_quotes => {
                 // Field separator
                 fields.push(current_field);
                 current_field = String::new();
-            },
+            }
             _ => {
                 current_field.push(ch);
             }
         }
     }
-    
+
     // Don't forget the last field
     fields.push(current_field);
     fields
@@ -1878,11 +2064,11 @@ pub fn cmd_backup(db_path: &Path, all: bool) {
         cmd_backup_all(pm_dir);
         return;
     }
-    
+
     match create_backup(db_path) {
         Ok(backup_path) => {
             println!("Backup created: {}", backup_path);
-        },
+        }
         Err(e) => {
             eprintln!("Failed to create backup: {}", e);
             std::process::exit(1);
@@ -1893,59 +2079,68 @@ pub fn cmd_backup(db_path: &Path, all: bool) {
 /// Backup all projects in the PM directory.
 pub fn cmd_backup_all(pm_dir: &Path) {
     use crate::project::{discover_projects, get_legacy_project};
-    
+
     let mut projects = discover_projects(pm_dir).unwrap_or_else(|e| {
         eprintln!("Failed to discover projects: {}", e);
         std::process::exit(1);
     });
-    
+
     // Add legacy project if it exists
     if let Some(legacy) = get_legacy_project(pm_dir) {
         projects.push(legacy);
     }
-    
+
     if projects.is_empty() {
         println!("No projects found to backup.");
         return;
     }
-    
+
     let mut success_count = 0;
     let total_count = projects.len();
-    
+
     for project in &projects {
         match create_backup(&project.file_path) {
             Ok(backup_path) => {
                 println!("Backed up {}: {}", project.display_name, backup_path);
                 success_count += 1;
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to backup {}: {}", project.display_name, e);
             }
         }
     }
-    
-    println!("Backup completed: {}/{} projects backed up successfully.", success_count, total_count);
+
+    println!(
+        "Backup completed: {}/{} projects backed up successfully.",
+        success_count, total_count
+    );
 }
 
 /// Export all projects to CSV format.
-pub fn cmd_export_all(pm_dir: &Path, output: Option<String>, include_completed: bool, project_filter: Option<String>, tag_filter: Option<String>) {
+pub fn cmd_export_all(
+    pm_dir: &Path,
+    output: Option<String>,
+    include_completed: bool,
+    project_filter: Option<String>,
+    tag_filter: Option<String>,
+) {
     use crate::project::{discover_projects, get_legacy_project};
-    
+
     let mut projects = discover_projects(pm_dir).unwrap_or_else(|e| {
         eprintln!("Failed to discover projects: {}", e);
         std::process::exit(1);
     });
-    
+
     // Add legacy project if it exists
     if let Some(legacy) = get_legacy_project(pm_dir) {
         projects.push(legacy);
     }
-    
+
     if projects.is_empty() {
         println!("No projects found to export.");
         return;
     }
-    
+
     // Apply project filter if specified
     if let Some(ref proj_filter) = project_filter {
         projects.retain(|p| p.name == *proj_filter || p.display_name == *proj_filter);
@@ -1954,7 +2149,7 @@ pub fn cmd_export_all(pm_dir: &Path, output: Option<String>, include_completed: 
             std::process::exit(1);
         }
     }
-    
+
     let output_path = output.unwrap_or_else(|| "all_projects.csv".to_string());
     // Collect (project, task, derived_project_label) so the CSV row writer
     // does not need the db handle later.
@@ -1989,14 +2184,35 @@ pub fn cmd_export_all(pm_dir: &Path, output: Option<String>, include_completed: 
     // CSV Rows
     let task_count = all_rows.len();
     for (project, task, project_col) in &all_rows {
-        let priority = task.priority_level.map(|p| format_priority(Some(p))).unwrap_or("-");
+        let priority = task
+            .priority_level
+            .map(|p| format_priority(Some(p)))
+            .unwrap_or("-");
         let urgency = task.urgency.map(|u| format_urgency(Some(u))).unwrap_or("-");
-        let process_stage = task.process_stage.map(|ps| format_process_stage(Some(ps))).unwrap_or("-");
-        let tags = if task.tags.is_empty() { "-".to_string() } else { task.tags.join(";") };
+        let process_stage = task
+            .process_stage
+            .map(|ps| format_process_stage(Some(ps)))
+            .unwrap_or("-");
+        let tags = if task.tags.is_empty() {
+            "-".to_string()
+        } else {
+            task.tags.join(";")
+        };
         let due = task.due.map(|d| d.to_string()).unwrap_or("-".to_string());
-        let parent = task.parent.map(|p| p.to_string()).unwrap_or("-".to_string());
-        let created = chrono::Utc.timestamp_opt(task.created_at_utc, 0).single().unwrap().to_rfc3339();
-        let updated = chrono::Utc.timestamp_opt(task.updated_at_utc, 0).single().unwrap().to_rfc3339();
+        let parent = task
+            .parent
+            .map(|p| p.to_string())
+            .unwrap_or("-".to_string());
+        let created = chrono::Utc
+            .timestamp_opt(task.created_at_utc, 0)
+            .single()
+            .unwrap()
+            .to_rfc3339();
+        let updated = chrono::Utc
+            .timestamp_opt(task.updated_at_utc, 0)
+            .single()
+            .unwrap()
+            .to_rfc3339();
         let description = task.description.as_deref().unwrap_or("-");
 
         // Escape CSV fields that contain commas or quotes
@@ -2027,12 +2243,17 @@ pub fn cmd_export_all(pm_dir: &Path, output: Option<String>, include_completed: 
             escape_csv(description)
         ));
     }
-    
+
     // Write to file
     match std::fs::write(&output_path, csv_content) {
         Ok(_) => {
-            println!("Exported {} task(s) from {} project(s) to {}", task_count, projects.len(), output_path);
-        },
+            println!(
+                "Exported {} task(s) from {} project(s) to {}",
+                task_count,
+                projects.len(),
+                output_path
+            );
+        }
         Err(e) => {
             eprintln!("Failed to write CSV file: {}", e);
             std::process::exit(1);
@@ -2048,32 +2269,29 @@ pub fn cmd_workflow_menu(pm_dir: &Path) {
     };
     use ratatui::{backend::CrosstermBackend, Terminal};
     use std::io;
-    
+
     // Setup terminal
     enable_raw_mode().unwrap();
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).unwrap();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).unwrap();
-    
+
     // Create and run menu app starting in workflow selection
     let mut app = MenuApp::new(pm_dir.to_path_buf()).unwrap();
     app.start_workflow_selection();
     let res = app.run(&mut terminal);
-    
+
     // Restore terminal
     disable_raw_mode().unwrap();
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen
-    ).unwrap();
+    execute!(terminal.backend_mut(), LeaveAlternateScreen).unwrap();
     terminal.show_cursor().unwrap();
-    
+
     if let Err(err) = res {
         println!("{:?}", err);
         std::process::exit(1);
     }
-    
+
     // Check what was selected
     if let Some(project) = app.get_selected_project() {
         if app.should_open_workflow() {
@@ -2091,31 +2309,28 @@ pub fn cmd_menu(pm_dir: &Path) {
     };
     use ratatui::{backend::CrosstermBackend, Terminal};
     use std::io;
-    
+
     // Setup terminal
     enable_raw_mode().unwrap();
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).unwrap();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).unwrap();
-    
+
     // Create and run menu app
     let mut app = MenuApp::new(pm_dir.to_path_buf()).unwrap();
     let res = app.run(&mut terminal);
-    
+
     // Restore terminal
     disable_raw_mode().unwrap();
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen
-    ).unwrap();
+    execute!(terminal.backend_mut(), LeaveAlternateScreen).unwrap();
     terminal.show_cursor().unwrap();
-    
+
     if let Err(err) = res {
         println!("{:?}", err);
         std::process::exit(1);
     }
-    
+
     // Check what was selected
     if let Some(project) = app.get_selected_project() {
         if app.should_open_workflow() {
@@ -2338,7 +2553,10 @@ pub fn cmd_move(
     if let (Some(old), Some(new)) = (old_abs_dir.as_ref(), new_abs_dir.as_ref()) {
         if old != new && old.exists() {
             if let Err(e) = fs::remove_dir_all(old) {
-                eprintln!("move: warning - could not remove old directory {}: {e}", old.display());
+                eprintln!(
+                    "move: warning - could not remove old directory {}: {e}",
+                    old.display()
+                );
             }
         }
     }
@@ -2365,7 +2583,12 @@ pub fn cmd_move(
         pm_dir,
         &commit_subject_for(leaf, "move", Some(&format!("-> {dest_label}"))),
     );
-    emit_or_warn(pm_dir, "move", Some(leaf), Some(&format!("-> {dest_label}")));
+    emit_or_warn(
+        pm_dir,
+        "move",
+        Some(leaf),
+        Some(&format!("-> {dest_label}")),
+    );
     println!("Moved {leaf} -> {dest_label}");
 
     // Suppress unused-import warning on `AddressId` if no other site brings it.
@@ -2409,7 +2632,9 @@ pub fn cmd_edit(pm_dir: &Path, id: &str, section: Option<&str>) {
         eprintln!("edit: ticket not found in state.json: {id}");
         std::process::exit(1);
     };
-    let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
+    let claude_path = pm_dir
+        .join(&entry.path)
+        .join(crate::store::claude_md::CLAUDE_MD);
     if !claude_path.exists() {
         eprintln!("edit: missing CLAUDE.md at {}", claude_path.display());
         std::process::exit(1);
@@ -2485,9 +2710,13 @@ pub fn cmd_context(db: &Database, pm_dir: &Path, id: &str, include_memories: boo
     let mut cursor = Some(leaf);
     let mut guard = 0;
     while let Some(cid) = cursor {
-        if guard > 16 { break; }
+        if guard > 16 {
+            break;
+        }
         guard += 1;
-        let Some(task) = db.get(cid) else { break; };
+        let Some(task) = db.get(cid) else {
+            break;
+        };
         chain.push(task.id);
         cursor = task.parent;
     }
@@ -2498,11 +2727,22 @@ pub fn cmd_context(db: &Database, pm_dir: &Path, id: &str, include_memories: boo
     let mut leaf_ticket: Option<crate::store::Ticket> = None;
 
     for id in chain {
-        let Some(entry) = db.state.items.get(&id) else { continue; };
-        let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
-        let Ok(ticket) = crate::store::Ticket::read(&claude_path) else { continue; };
+        let Some(entry) = db.state.items.get(&id) else {
+            continue;
+        };
+        let claude_path = pm_dir
+            .join(&entry.path)
+            .join(crate::store::claude_md::CLAUDE_MD);
+        let Ok(ticket) = crate::store::Ticket::read(&claude_path) else {
+            continue;
+        };
         let task = db.get(id).expect("resolved above");
-        println!("# {} - {} ({})", format_kind(task.kind).to_uppercase(), task.title, id);
+        println!(
+            "# {} - {} ({})",
+            format_kind(task.kind).to_uppercase(),
+            task.title,
+            id
+        );
         for section in &ticket.body.sections {
             println!();
             println!("# {}", section.name);
@@ -2595,7 +2835,9 @@ fn render_linked_memories_section(
                 }
                 println!();
                 print!("{}", mf.body);
-                if !mf.body.ends_with('\n') { println!(); }
+                if !mf.body.ends_with('\n') {
+                    println!();
+                }
             }
             Err(e) => {
                 println!();
@@ -2635,20 +2877,37 @@ pub fn cmd_materialise(db: &Database, pm_dir: &Path, id: &str, output: Option<Pa
         let mut chain: Vec<crate::store::LeafId> = Vec::new();
         let mut guard = 0;
         while let Some(cid) = cursor {
-            if guard > 16 { break; }
+            if guard > 16 {
+                break;
+            }
             guard += 1;
-            let Some(task) = db.get(cid) else { break; };
+            let Some(task) = db.get(cid) else {
+                break;
+            };
             chain.push(task.id);
             cursor = task.parent;
         }
         chain.reverse();
 
         for id in chain {
-            let Some(entry) = db.state.items.get(&id) else { continue; };
-            let claude_path = pm_dir.join(&entry.path).join(crate::store::claude_md::CLAUDE_MD);
-            let Ok(ticket) = crate::store::Ticket::read(&claude_path) else { continue; };
+            let Some(entry) = db.state.items.get(&id) else {
+                continue;
+            };
+            let claude_path = pm_dir
+                .join(&entry.path)
+                .join(crate::store::claude_md::CLAUDE_MD);
+            let Ok(ticket) = crate::store::Ticket::read(&claude_path) else {
+                continue;
+            };
             let task = db.get(id).expect("resolved above");
-            writeln!(buf, "# {} - {} ({})", format_kind(task.kind).to_uppercase(), task.title, id).ok();
+            writeln!(
+                buf,
+                "# {} - {} ({})",
+                format_kind(task.kind).to_uppercase(),
+                task.title,
+                id
+            )
+            .ok();
             for section in &ticket.body.sections {
                 writeln!(buf).ok();
                 writeln!(buf, "# {}", section.name).ok();
@@ -2750,7 +3009,11 @@ pub fn cmd_artifact(db: &Database, pm_dir: &Path, action: ArtifactAction) {
                         println!("(no artifacts)");
                     } else {
                         for entry in idx.entries {
-                            let desc = if entry.desc.is_empty() { "-" } else { entry.desc.as_str() };
+                            let desc = if entry.desc.is_empty() {
+                                "-"
+                            } else {
+                                entry.desc.as_str()
+                            };
                             println!("  {}  ({})  [{}]", entry.file, desc, entry.tags.join(","));
                         }
                     }
@@ -2778,8 +3041,7 @@ fn mutate_task_with_summary<F>(
     label: &str,
     summary: Option<&str>,
     f: F,
-)
-where
+) where
     F: FnOnce(&mut Task),
 {
     let leaf = match resolve_v2_id(id, db) {
@@ -2922,7 +3184,9 @@ pub fn cmd_milestone(db: &mut Database, pm_dir: &Path, id: &str, milestone_id: &
         eprintln!("milestone: target milestone {mls} not found in workspace.");
         std::process::exit(1);
     }
-    mutate_task(db, pm_dir, id, "milestone", |task| task.milestone = Some(mls));
+    mutate_task(db, pm_dir, id, "milestone", |task| {
+        task.milestone = Some(mls)
+    });
 }
 
 /// `pm doctor [--migrate]`: rebuild `state.json` from disk and (with the
@@ -2990,9 +3254,12 @@ fn run_doctor_rebuild(pm_dir: &Path) {
         if !existing.items.contains_key(&leaf) {
             added += 1;
         }
-        rebuilt
-            .items
-            .insert(leaf, ItemEntry { path: rel.to_path_buf() });
+        rebuilt.items.insert(
+            leaf,
+            ItemEntry {
+                path: rel.to_path_buf(),
+            },
+        );
         // Bump the counter past this leaf so future allocations skip it.
         let entry = rebuilt.next.entry(leaf.prefix()).or_insert(1);
         if leaf.number() >= *entry {
@@ -3014,7 +3281,10 @@ fn run_doctor_rebuild(pm_dir: &Path) {
     if added > 0 || !removed_paths.is_empty() {
         commit_or_warn(
             pm_dir,
-            &format!("pm: doctor rebuild (+{added}/-{} entries)", removed_paths.len()),
+            &format!(
+                "pm: doctor rebuild (+{added}/-{} entries)",
+                removed_paths.len()
+            ),
         );
         emit_or_warn(
             pm_dir,
@@ -3024,7 +3294,10 @@ fn run_doctor_rebuild(pm_dir: &Path) {
         );
     }
 
-    println!("doctor: scanned {found} tickets at {}", layout.root.display());
+    println!(
+        "doctor: scanned {found} tickets at {}",
+        layout.root.display()
+    );
     if added > 0 {
         println!("  added {added} entries to state.json");
     }
@@ -3040,29 +3313,32 @@ fn run_doctor_rebuild(pm_dir: &Path) {
 }
 
 fn run_doctor_migrate(pm_dir: &Path) {
-    use crate::store::migrate::MigrationPlan;
     use crate::store::layout::Layout;
+    use crate::store::migrate::MigrationPlan;
 
     let layout = Layout::at(pm_dir);
-    layout
-        .init()
-        .map(|_| ())
-        .unwrap_or_else(|e| {
-            eprintln!("doctor --migrate: layout init failed: {e}");
-            std::process::exit(1);
-        });
+    layout.init().map(|_| ()).unwrap_or_else(|e| {
+        eprintln!("doctor --migrate: layout init failed: {e}");
+        std::process::exit(1);
+    });
 
     // Look for legacy tasks.json files inside the workspace directory and in
     // the user's HOME/.pm/ if that's where the workspace lives.
     let candidates: Vec<PathBuf> = collect_legacy_files(pm_dir);
     if candidates.is_empty() {
-        println!("doctor --migrate: no legacy tasks.json files found near {}", pm_dir.display());
+        println!(
+            "doctor --migrate: no legacy tasks.json files found near {}",
+            pm_dir.display()
+        );
         return;
     }
 
     let backup_dir = pm_dir.join(".legacy-backup");
     if let Err(e) = fs::create_dir_all(&backup_dir) {
-        eprintln!("doctor --migrate: could not create {}: {e}", backup_dir.display());
+        eprintln!(
+            "doctor --migrate: could not create {}: {e}",
+            backup_dir.display()
+        );
         std::process::exit(1);
     }
 
@@ -3102,7 +3378,10 @@ fn run_doctor_migrate(pm_dir: &Path) {
                     imported += 1;
                 }
                 if let Err(e) = db.save(pm_dir) {
-                    eprintln!("doctor --migrate: save after import of {}: {e}", legacy.display());
+                    eprintln!(
+                        "doctor --migrate: save after import of {}: {e}",
+                        legacy.display()
+                    );
                     continue;
                 }
                 // Archive the legacy file.
@@ -3115,10 +3394,16 @@ fn run_doctor_migrate(pm_dir: &Path) {
                     );
                 }
             }
-            Err(e) => eprintln!("doctor --migrate: plan failed for {}: {e}", legacy.display()),
+            Err(e) => eprintln!(
+                "doctor --migrate: plan failed for {}: {e}",
+                legacy.display()
+            ),
         }
     }
-    println!("doctor --migrate: imported {imported} tickets; legacy files archived to {}", backup_dir.display());
+    println!(
+        "doctor --migrate: imported {imported} tickets; legacy files archived to {}",
+        backup_dir.display()
+    );
 }
 
 /// Collect candidate legacy `*_tasks.json` files near the workspace. Looks
@@ -3155,7 +3440,9 @@ fn walk_tickets_inner(dir: &Path, visitor: &mut dyn FnMut(&Path)) {
     if dir.join(crate::store::claude_md::CLAUDE_MD).exists() {
         visitor(dir);
     }
-    let Ok(entries) = fs::read_dir(dir) else { return; };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
@@ -3186,7 +3473,9 @@ pub fn cmd_search(pm_dir: &Path, query: &str) {
     let mut hits = 0usize;
     walk_tickets(&layout.root, &mut |abs_dir: &Path| {
         let claude_path = abs_dir.join(CLAUDE_MD);
-        let Ok(content) = fs::read_to_string(&claude_path) else { return; };
+        let Ok(content) = fs::read_to_string(&claude_path) else {
+            return;
+        };
         for (i, line) in content.lines().enumerate() {
             if line.to_lowercase().contains(&needle) {
                 hits += 1;
@@ -3250,7 +3539,10 @@ pub fn cmd_checkout(pm_dir: &Path, id: &str, intent: Option<&str>) {
             println!("checkout: {leaf} locked by {}.", lock.agent);
         }
         Ok(AcquireOutcome::Blocked { holder }) => {
-            eprintln!("checkout: {leaf} is hard-locked by {}; cannot check out.", holder.agent);
+            eprintln!(
+                "checkout: {leaf} is hard-locked by {}; cannot check out.",
+                holder.agent
+            );
             std::process::exit(1);
         }
         Err(e) => {
@@ -3422,9 +3714,16 @@ pub fn cmd_next(pm_dir: &Path, agent: Option<&str>, _filter: Option<&str>) {
         .collect();
     ready.sort_by_key(|t| t.id);
 
-    let who = agent.map(|s| s.to_string()).unwrap_or_else(crate::store::events::actor);
+    let who = agent
+        .map(|s| s.to_string())
+        .unwrap_or_else(crate::store::events::actor);
     match ready.first() {
-        Some(t) => println!("next ({who}): {}  {}  [{}]", t.id, t.title, format_kind(t.kind)),
+        Some(t) => println!(
+            "next ({who}): {}  {}  [{}]",
+            t.id,
+            t.title,
+            format_kind(t.kind)
+        ),
         None => println!("next ({who}): no ready tickets."),
     }
 }
@@ -3471,10 +3770,7 @@ pub fn cmd_log(pm_dir: &Path, id: &str) {
     };
     let root_canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
     let pm_canonical = std::fs::canonicalize(pm_dir).unwrap_or_else(|_| pm_dir.to_path_buf());
-    let ticket_path_in_repo = match pm_canonical
-        .join(&entry.path)
-        .strip_prefix(&root_canonical)
-    {
+    let ticket_path_in_repo = match pm_canonical.join(&entry.path).strip_prefix(&root_canonical) {
         Ok(p) => p.to_path_buf(),
         Err(_) => {
             eprintln!("log: workspace lies outside repository workdir.");
@@ -3494,7 +3790,10 @@ pub fn cmd_log(pm_dir: &Path, id: &str) {
     let output = match output {
         Ok(o) if o.status.success() => o,
         Ok(o) => {
-            eprintln!("log: git log failed: {}", String::from_utf8_lossy(&o.stderr).trim());
+            eprintln!(
+                "log: git log failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
             std::process::exit(1);
         }
         Err(e) => {
@@ -3507,7 +3806,8 @@ pub fn cmd_log(pm_dir: &Path, id: &str) {
     let mut printed = 0usize;
     for line in stdout.lines() {
         let mut parts = line.splitn(3, '\t');
-        let (Some(hash), Some(ts), Some(summary)) = (parts.next(), parts.next(), parts.next()) else {
+        let (Some(hash), Some(ts), Some(summary)) = (parts.next(), parts.next(), parts.next())
+        else {
             continue;
         };
         let dt = ts
@@ -3527,7 +3827,9 @@ pub fn cmd_log(pm_dir: &Path, id: &str) {
 
 /// Borrow helper so the deferred id resolution can fall back when Database::load
 /// returns an empty set.
-fn db_ref(db: &Database) -> &Database { db }
+fn db_ref(db: &Database) -> &Database {
+    db
+}
 
 /// `pm memory <action>` (Phase 10): three-tier memory store. Dispatches each
 /// `MemoryAction` to the matching helper. Errors print a friendly message
@@ -3546,10 +3848,25 @@ pub fn cmd_memory(db: &mut Database, pm_dir: &Path, action: MemoryAction) {
         MemoryAction::Link { id, name } => memory_link(db, pm_dir, &id, &name),
         MemoryAction::Unlink { id, name } => memory_unlink(db, pm_dir, &id, &name),
         MemoryAction::List { id } => memory_list(db, pm_dir, &id),
-        MemoryAction::Write { scope, ty, name, desc, ticket, project, content } => {
-            memory_write(db, pm_dir, &scope, &ty, &name, desc.as_deref(),
-                ticket.as_deref(), project.as_deref(), &content)
-        }
+        MemoryAction::Write {
+            scope,
+            ty,
+            name,
+            desc,
+            ticket,
+            project,
+            content,
+        } => memory_write(
+            db,
+            pm_dir,
+            &scope,
+            &ty,
+            &name,
+            desc.as_deref(),
+            ticket.as_deref(),
+            project.as_deref(),
+            &content,
+        ),
         MemoryAction::Promote { name, to } => memory_promote(db, pm_dir, &name, &to),
         MemoryAction::Show { name } => memory_show(db, pm_dir, &name),
     }
@@ -3568,7 +3885,9 @@ fn project_ancestor(db: &Database, leaf: LeafId) -> Option<LeafId> {
     let mut cursor = Some(leaf);
     let mut guard = 0;
     while let Some(id) = cursor {
-        if guard > 16 { break; }
+        if guard > 16 {
+            break;
+        }
         guard += 1;
         let task = db.get(id)?;
         if matches!(task.kind, Kind::Project) {
@@ -3618,15 +3937,14 @@ fn build_memory_context(
     };
 
     let active_project = if let Some(arg) = project_override {
-        let leaf = resolve_v2_id(arg, db)
-            .ok_or_else(|| format!("project not found: {arg}"))?;
+        let leaf = resolve_v2_id(arg, db).ok_or_else(|| format!("project not found: {arg}"))?;
         if !matches!(db.get(leaf).map(|t| t.kind), Some(Kind::Project)) {
             return Err(format!("--project must be a PRJ leaf; got {arg}"));
         }
         Some(leaf)
     } else if let Some(ticket_id) = ticket_arg {
-        let leaf = resolve_v2_id(ticket_id, db)
-            .ok_or_else(|| format!("ticket not found: {ticket_id}"))?;
+        let leaf =
+            resolve_v2_id(ticket_id, db).ok_or_else(|| format!("ticket not found: {ticket_id}"))?;
         project_ancestor(db, leaf)
     } else {
         solo_project(db)
@@ -3691,7 +4009,12 @@ fn memory_link(db: &mut Database, pm_dir: &Path, id: &str, name: &str) {
             std::process::exit(1);
         }
     };
-    if !ticket.front_matter.memories.iter().any(|m| memref_eq(m, &memref)) {
+    if !ticket
+        .front_matter
+        .memories
+        .iter()
+        .any(|m| memref_eq(m, &memref))
+    {
         ticket.front_matter.memories.push(memref.clone());
         if let Err(e) = ticket.write_to(&ticket_dir) {
             eprintln!("memory link: cannot write {}: {e}", claude_path.display());
@@ -3727,7 +4050,10 @@ fn memory_unlink(db: &mut Database, pm_dir: &Path, id: &str, name: &str) {
         }
     };
     let before = ticket.front_matter.memories.len();
-    ticket.front_matter.memories.retain(|m| memref_name(m) != name);
+    ticket
+        .front_matter
+        .memories
+        .retain(|m| memref_name(m) != name);
     let after = ticket.front_matter.memories.len();
     if after == before {
         println!("unlink {name} from {leaf}: nothing to remove");
@@ -3737,7 +4063,10 @@ fn memory_unlink(db: &mut Database, pm_dir: &Path, id: &str, name: &str) {
         eprintln!("memory unlink: cannot write {}: {e}", claude_path.display());
         std::process::exit(1);
     }
-    println!("unlinked {name} from {leaf} ({} entries removed)", before - after);
+    println!(
+        "unlinked {name} from {leaf} ({} entries removed)",
+        before - after
+    );
 }
 
 /// `pm memory list <id>`: print every memory linked to a ticket, tier-tagged.
@@ -3803,7 +4132,9 @@ fn memory_write(
     let kind = match MemoryType::parse(type_arg) {
         Some(t) => t,
         None => {
-            eprintln!("memory write: unknown --type: {type_arg} (use user|feedback|project|reference)");
+            eprintln!(
+                "memory write: unknown --type: {type_arg} (use user|feedback|project|reference)"
+            );
             std::process::exit(1);
         }
     };
@@ -3814,7 +4145,14 @@ fn memory_write(
             std::process::exit(1);
         }
     };
-    match write_memory(&ctx, scope, name, kind, desc.map(|s| s.to_string()), content) {
+    match write_memory(
+        &ctx,
+        scope,
+        name,
+        kind,
+        desc.map(|s| s.to_string()),
+        content,
+    ) {
         Ok(loc) => println!("wrote {} ({})", loc.file.display(), scope.as_str()),
         Err(e) => {
             eprintln!("memory write: {e}");
@@ -3871,13 +4209,19 @@ fn memory_show(db: &Database, pm_dir: &Path, name: &str) {
     };
     match lookup_by_name(&ctx, name) {
         Ok(Some(hit)) => {
-            println!("# {} [{}]", hit.file.front_matter.name, hit.location.scope.as_str());
+            println!(
+                "# {} [{}]",
+                hit.file.front_matter.name,
+                hit.location.scope.as_str()
+            );
             if let Some(desc) = &hit.file.front_matter.description {
                 println!("# {desc}");
             }
             println!();
             print!("{}", hit.file.body);
-            if !hit.file.body.ends_with('\n') { println!(); }
+            if !hit.file.body.ends_with('\n') {
+                println!();
+            }
         }
         Ok(None) => {
             eprintln!("memory show: not found: {name}");

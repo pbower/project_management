@@ -40,20 +40,29 @@ pub struct Server {
 
 impl Server {
     pub fn new(pm_dir: PathBuf) -> Self {
-        Server { ctx: Context::for_pm_dir(pm_dir) }
+        Server {
+            ctx: Context::for_pm_dir(pm_dir),
+        }
     }
 
     /// Drive the read loop using arbitrary readers/writers. The binary
     /// entry point wires `stdin` and `stdout`; tests pipe their own.
-    pub fn drive<R: BufRead, W: Write>(&mut self, reader: R, mut writer: W) -> Result<(), ServerError> {
+    pub fn drive<R: BufRead, W: Write>(
+        &mut self,
+        reader: R,
+        mut writer: W,
+    ) -> Result<(), ServerError> {
         for line in reader.lines() {
             let line = line.map_err(ServerError::Io)?;
             let trimmed = line.trim();
-            if trimmed.is_empty() { continue; }
+            if trimmed.is_empty() {
+                continue;
+            }
 
             let response = self.handle_line(trimmed);
             if let Some(resp) = response {
-                let s = serde_json::to_string(&resp).map_err(|e| ServerError::Protocol(ProtocolError::Json(e)))?;
+                let s = serde_json::to_string(&resp)
+                    .map_err(|e| ServerError::Protocol(ProtocolError::Json(e)))?;
                 writer.write_all(s.as_bytes()).map_err(ServerError::Io)?;
                 writer.write_all(b"\n").map_err(ServerError::Io)?;
                 writer.flush().map_err(ServerError::Io)?;
@@ -75,7 +84,10 @@ impl Server {
         };
         if request.jsonrpc != JSONRPC_VERSION {
             return request.id.map(|id| {
-                Response::err(id, ResponseError::invalid_request("jsonrpc must be \"2.0\""))
+                Response::err(
+                    id,
+                    ResponseError::invalid_request("jsonrpc must be \"2.0\""),
+                )
             });
         }
         let id = request.id.clone()?;
@@ -84,39 +96,53 @@ impl Server {
 
     fn dispatch_method(&mut self, method: &str, params: Option<&Value>, id: Value) -> Response {
         match method {
-            "initialize" => Response::ok(id, json!({
-                "protocolVersion": "2024-11-05",
-                "serverInfo": {
-                    "name": "pm",
-                    "version": env!("CARGO_PKG_VERSION"),
-                },
-                "capabilities": {
-                    "tools": {}
-                }
-            })),
+            "initialize" => Response::ok(
+                id,
+                json!({
+                    "protocolVersion": "2024-11-05",
+                    "serverInfo": {
+                        "name": "spacecell-thunder",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    },
+                    "capabilities": {
+                        "tools": {}
+                    }
+                }),
+            ),
             "tools/list" => {
-                let tools: Vec<Value> = tool_catalog().into_iter().map(|t| t.to_listing()).collect();
+                let tools: Vec<Value> =
+                    tool_catalog().into_iter().map(|t| t.to_listing()).collect();
                 Response::ok(id, json!({"tools": tools}))
             }
             "tools/call" => {
                 let params = match params {
                     Some(p) => p,
-                    None => return Response::err(id, ResponseError::invalid_params("missing params")),
+                    None => {
+                        return Response::err(id, ResponseError::invalid_params("missing params"))
+                    }
                 };
                 let name = match params.get("name").and_then(Value::as_str) {
                     Some(n) => n,
-                    None => return Response::err(id, ResponseError::invalid_params("missing name")),
+                    None => {
+                        return Response::err(id, ResponseError::invalid_params("missing name"))
+                    }
                 };
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 match dispatch(&mut self.ctx, name, &args) {
-                    Ok(payload) => Response::ok(id, json!({
-                        "content": [{"type": "text", "text": serde_json::to_string(&payload).unwrap_or_default()}],
-                        "isError": false,
-                    })),
-                    Err(msg) => Response::ok(id, json!({
-                        "content": [{"type": "text", "text": msg}],
-                        "isError": true,
-                    })),
+                    Ok(payload) => Response::ok(
+                        id,
+                        json!({
+                            "content": [{"type": "text", "text": serde_json::to_string(&payload).unwrap_or_default()}],
+                            "isError": false,
+                        }),
+                    ),
+                    Err(msg) => Response::ok(
+                        id,
+                        json!({
+                            "content": [{"type": "text", "text": msg}],
+                            "isError": true,
+                        }),
+                    ),
                 }
             }
             _ => Response::err(id, ResponseError::method_not_found(method)),
@@ -155,7 +181,10 @@ mod tests {
     /// tests can exercise the JSON-RPC dispatch without touching real stdio.
     fn rpc<S: AsRef<str>>(server: &mut Server, lines: &[S]) -> Vec<Value> {
         let mut input = String::new();
-        for l in lines { input.push_str(l.as_ref()); input.push('\n'); }
+        for l in lines {
+            input.push_str(l.as_ref());
+            input.push('\n');
+        }
         let mut out: Vec<u8> = Vec::new();
         server.drive(Cursor::new(input), &mut out).unwrap();
         let raw = String::from_utf8(out).unwrap();
@@ -168,21 +197,26 @@ mod tests {
     #[test]
     fn initialize_returns_server_info() {
         let mut server = Server::new(tmp_pm_dir());
-        let responses = rpc(&mut server, &[
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
-        ]);
+        let responses = rpc(
+            &mut server,
+            &[r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#],
+        );
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0]["id"], json!(1));
-        assert_eq!(responses[0]["result"]["serverInfo"]["name"], json!("pm"));
+        assert_eq!(
+            responses[0]["result"]["serverInfo"]["name"],
+            json!("spacecell-thunder")
+        );
         assert!(responses[0]["result"]["protocolVersion"].is_string());
     }
 
     #[test]
     fn tools_list_returns_fourteen_entries() {
         let mut server = Server::new(tmp_pm_dir());
-        let responses = rpc(&mut server, &[
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
-        ]);
+        let responses = rpc(
+            &mut server,
+            &[r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#],
+        );
         assert_eq!(responses.len(), 1);
         let tools = responses[0]["result"]["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 14);
@@ -191,9 +225,10 @@ mod tests {
     #[test]
     fn unknown_method_returns_method_not_found() {
         let mut server = Server::new(tmp_pm_dir());
-        let responses = rpc(&mut server, &[
-            r#"{"jsonrpc":"2.0","id":3,"method":"surely/not"}"#,
-        ]);
+        let responses = rpc(
+            &mut server,
+            &[r#"{"jsonrpc":"2.0","id":3,"method":"surely/not"}"#],
+        );
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0]["error"]["code"], json!(-32601));
     }
@@ -201,18 +236,20 @@ mod tests {
     #[test]
     fn notification_produces_no_response() {
         let mut server = Server::new(tmp_pm_dir());
-        let responses = rpc(&mut server, &[
-            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
-        ]);
-        assert!(responses.is_empty(), "notifications don't produce responses");
+        let responses = rpc(
+            &mut server,
+            &[r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#],
+        );
+        assert!(
+            responses.is_empty(),
+            "notifications don't produce responses"
+        );
     }
 
     #[test]
     fn invalid_json_returns_parse_error() {
         let mut server = Server::new(tmp_pm_dir());
-        let responses = rpc(&mut server, &[
-            r#"not even json"#,
-        ]);
+        let responses = rpc(&mut server, &[r#"not even json"#]);
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0]["error"]["code"], json!(-32700));
     }
@@ -220,9 +257,12 @@ mod tests {
     #[test]
     fn tools_call_unknown_tool_returns_is_error_text() {
         let mut server = Server::new(tmp_pm_dir());
-        let responses = rpc(&mut server, &[
-            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"nope","arguments":{}}}"#,
-        ]);
+        let responses = rpc(
+            &mut server,
+            &[
+                r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"nope","arguments":{}}}"#,
+            ],
+        );
         assert_eq!(responses.len(), 1);
         let result = &responses[0]["result"];
         assert_eq!(result["isError"], json!(true));

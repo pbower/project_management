@@ -63,7 +63,10 @@ impl Database {
             let abs_dir = pm_dir.join(&entry.path);
             let claude_md_path = abs_dir.join(CLAUDE_MD);
             if !claude_md_path.exists() {
-                eprintln!("state.json references missing {}; skipping.", claude_md_path.display());
+                eprintln!(
+                    "state.json references missing {}; skipping.",
+                    claude_md_path.display()
+                );
                 continue;
             }
             let ticket = match Ticket::read(&claude_md_path) {
@@ -104,11 +107,8 @@ impl Database {
         let Database { tasks, state } = self;
         state.items.clear();
 
-        let id_index: HashMap<LeafId, usize> = tasks
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (t.id, i))
-            .collect();
+        let id_index: HashMap<LeafId, usize> =
+            tasks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
 
         for task in tasks.iter() {
             let address = match build_address(task, tasks, &id_index) {
@@ -132,7 +132,10 @@ impl Database {
             // `updated` timestamp; the per-handler mutate_task helper is the
             // single place that bumps updated_at_utc for the target ticket.
             let (fm, body) = task_to_document(task);
-            let ticket = Ticket { front_matter: fm, body };
+            let ticket = Ticket {
+                front_matter: fm,
+                body,
+            };
             let rendered = ticket
                 .render()
                 .map_err(|e| std::io::Error::other(format!("render CLAUDE.md: {e}")))?;
@@ -316,7 +319,7 @@ pub fn parse_due_input(s: &str) -> Option<NaiveDate> {
         "end of week" | "eow" => {
             let (_, end) = start_end_of_this_week(today);
             return Some(end);
-        },
+        }
         "end of month" | "eom" => {
             // Last day of current month
             let year = today.year();
@@ -325,13 +328,13 @@ pub fn parse_due_input(s: &str) -> Option<NaiveDate> {
             let next_year = if month == 12 { year + 1 } else { year };
             let first_of_next = NaiveDate::from_ymd_opt(next_year, next_month, 1)?;
             return Some(first_of_next - Duration::days(1));
-        },
+        }
         "this weekend" | "weekend" => {
             // Coming Saturday
             let days_until_saturday = (6 - today.weekday().num_days_from_monday()) % 7;
             let saturday = today + Duration::days(days_until_saturday as i64);
             return Some(saturday);
-        },
+        }
         _ => {}
     }
 
@@ -357,10 +360,20 @@ pub fn parse_due_input(s: &str) -> Option<NaiveDate> {
 
     // Weekday patterns
     let weekdays = [
-        ("monday", 0), ("tuesday", 1), ("wednesday", 2), ("thursday", 3),
-        ("friday", 4), ("saturday", 5), ("sunday", 6),
-        ("mon", 0), ("tue", 1), ("wed", 2), ("thu", 3),
-        ("fri", 4), ("sat", 5), ("sun", 6),
+        ("monday", 0),
+        ("tuesday", 1),
+        ("wednesday", 2),
+        ("thursday", 3),
+        ("friday", 4),
+        ("saturday", 5),
+        ("sunday", 6),
+        ("mon", 0),
+        ("tue", 1),
+        ("wed", 2),
+        ("thu", 3),
+        ("fri", 4),
+        ("sat", 5),
+        ("sun", 6),
     ];
 
     for (day_name, target_day) in weekdays {
@@ -525,7 +538,9 @@ pub fn project_ancestor<'a>(db: &'a Database, task: &Task) -> Option<&'a Task> {
     let mut guard = 0usize;
     while let Some(pid) = cur {
         guard += 1;
-        if guard > 64 { return None; } // cycle/depth guard
+        if guard > 64 {
+            return None;
+        } // cycle/depth guard
         let parent = db.get(pid)?;
         if parent.kind == Kind::Project {
             return Some(parent);
@@ -554,9 +569,7 @@ pub fn print_table(db: &Database, tasks: &[&Task], id_to_depth: Option<&HashMap<
     );
     let today = Local::now().date_naive();
     for t in tasks {
-        let indent = id_to_depth
-            .and_then(|m| m.get(&t.id).copied())
-            .unwrap_or(0);
+        let indent = id_to_depth.and_then(|m| m.get(&t.id).copied()).unwrap_or(0);
         let indent_str = "  ".repeat(indent);
         let tags = if t.tags.is_empty() {
             String::new()
@@ -611,7 +624,11 @@ pub fn build_children_map(tasks: &[Task]) -> BTreeMap<LeafId, Vec<LeafId>> {
 }
 
 /// Recursively collect all descendant task ids from a root task.
-pub fn collect_descendants(root: LeafId, child_map: &BTreeMap<LeafId, Vec<LeafId>>, out: &mut HashSet<LeafId>) {
+pub fn collect_descendants(
+    root: LeafId,
+    child_map: &BTreeMap<LeafId, Vec<LeafId>>,
+    out: &mut HashSet<LeafId>,
+) {
     if let Some(children) = child_map.get(&root) {
         for &c in children {
             if out.insert(c) {
@@ -656,7 +673,8 @@ pub fn resolve_task_identifier(identifier: &str, db: &Database) -> Result<LeafId
     }
 
     // Search by title (case-insensitive).
-    let matches: Vec<&Task> = db.tasks
+    let matches: Vec<&Task> = db
+        .tasks
         .iter()
         .filter(|task| task.title.to_lowercase() == identifier.to_lowercase())
         .collect();
@@ -667,7 +685,8 @@ pub fn resolve_task_identifier(identifier: &str, db: &Database) -> Result<LeafId
         _ => {
             let mut error_msg = format!("Multiple tasks found with name '{}':\n", identifier);
             for task in matches {
-                error_msg.push_str(&format!("  {}: {} ({})",
+                error_msg.push_str(&format!(
+                    "  {}: {} ({})",
                     task.id,
                     task.title,
                     format_kind(task.kind)

@@ -70,7 +70,9 @@ struct ArtifactsFrontMatter {
     node: LeafId,
 }
 
-fn default_generated_by() -> String { "pm".to_string() }
+fn default_generated_by() -> String {
+    "pm".to_string()
+}
 
 /// The parsed `ARTIFACTS.md` file: front-matter plus the entry list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +85,11 @@ pub struct ArtifactsIndex {
 impl ArtifactsIndex {
     /// Build a fresh empty index for `node`.
     pub fn new(node: LeafId) -> Self {
-        ArtifactsIndex { node, last_swept: Utc::now(), entries: Vec::new() }
+        ArtifactsIndex {
+            node,
+            last_swept: Utc::now(),
+            entries: Vec::new(),
+        }
     }
 
     /// Look up an entry by file name. Case-sensitive.
@@ -101,7 +107,11 @@ impl ArtifactsIndex {
         let (yaml, body) = split_front_matter(raw).map_err(ArtifactError::FrontMatter)?;
         let fm: ArtifactsFrontMatter = serde_yml::from_str(yaml).map_err(ArtifactError::Yaml)?;
         let entries = parse_entries(body)?;
-        Ok(ArtifactsIndex { node: fm.node, last_swept: fm.last_swept, entries })
+        Ok(ArtifactsIndex {
+            node: fm.node,
+            last_swept: fm.last_swept,
+            entries,
+        })
     }
 
     /// Load from `<artifacts_dir>/ARTIFACTS.md`.
@@ -153,8 +163,7 @@ impl ArtifactsIndex {
     /// metadata untouched. `last_swept` is updated.
     pub fn sweep(&mut self, artifacts_dir: &Path) -> Result<SweepReport, ArtifactError> {
         let on_disk = list_artifact_files(artifacts_dir)?;
-        let on_disk_set: BTreeMap<&str, ()> =
-            on_disk.iter().map(|f| (f.as_str(), ())).collect();
+        let on_disk_set: BTreeMap<&str, ()> = on_disk.iter().map(|f| (f.as_str(), ())).collect();
 
         // Index existing entries by file name for O(1) survival lookup.
         let mut existing: BTreeMap<String, ArtifactEntry> = std::mem::take(&mut self.entries)
@@ -234,11 +243,7 @@ pub fn sweep_dir(
 /// atomic-ish step. The `desc`, `tags`, and `added` fields carry over; only
 /// the `file` field changes. Errors if the source is missing or the target
 /// already exists.
-pub fn rename_artifact(
-    artifacts_dir: &Path,
-    old: &str,
-    new: &str,
-) -> Result<(), ArtifactError> {
+pub fn rename_artifact(artifacts_dir: &Path, old: &str, new: &str) -> Result<(), ArtifactError> {
     let old_path = artifacts_dir.join(old);
     let new_path = artifacts_dir.join(new);
     if !old_path.exists() {
@@ -358,13 +363,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "pm-store-artifacts-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    fn task_leaf() -> LeafId { LeafId::new(TypePrefix::Task, 7) }
+    fn task_leaf() -> LeafId {
+        LeafId::new(TypePrefix::Task, 7)
+    }
 
     #[test]
     fn render_round_trip_empty() {
@@ -396,7 +406,10 @@ mod tests {
         assert_eq!(back.entries.len(), 2);
         assert_eq!(back.entries[0].file, "schema.png");
         assert_eq!(back.entries[0].desc, "ER diagram of the lock-file format");
-        assert_eq!(back.entries[0].tags, vec!["reference".to_string(), "design".to_string()]);
+        assert_eq!(
+            back.entries[0].tags,
+            vec!["reference".to_string(), "design".to_string()]
+        );
         assert_eq!(back.entries[1].desc, "");
     }
 
@@ -442,7 +455,10 @@ mod tests {
         // Second sweep should not blow away the hand-edits.
         let (_, idx_after) = sweep_dir(&artifacts, task_leaf()).unwrap();
         assert_eq!(idx_after.find("schema.png").unwrap().desc, "ER diagram");
-        assert_eq!(idx_after.find("schema.png").unwrap().tags, vec!["reference".to_string()]);
+        assert_eq!(
+            idx_after.find("schema.png").unwrap().tags,
+            vec!["reference".to_string()]
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -569,18 +585,24 @@ mod tests {
             let mut n = 0u32;
             while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
                 let p = artifacts2.join(format!("file-{}.txt", n % 4));
-                if p.exists() { let _ = fs::remove_file(&p); }
-                else { let _ = fs::write(&p, b"x"); }
+                if p.exists() {
+                    let _ = fs::remove_file(&p);
+                } else {
+                    let _ = fs::write(&p, b"x");
+                }
                 n = n.wrapping_add(1);
             }
         }));
         std::thread::sleep(std::time::Duration::from_millis(150));
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        for h in handles { let _ = h.join(); }
+        for h in handles {
+            let _ = h.join();
+        }
 
         // Final file should be parseable - never a torn read.
         let index_path = artifacts.join(ARTIFACTS_MD);
-        ArtifactsIndex::load(&index_path).expect("ARTIFACTS.md must remain valid under concurrent sweeps");
+        ArtifactsIndex::load(&index_path)
+            .expect("ARTIFACTS.md must remain valid under concurrent sweeps");
         fs::remove_dir_all(&*dir).ok();
     }
 }
