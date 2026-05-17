@@ -25,12 +25,13 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::prelude::CrosstermBackend;
 use ratatui::Terminal;
 
+use crate::cmd::cmd_edit;
 use crate::db::Database;
+use crate::store::LeafId;
 use crate::style;
 use crate::tui::activity::ActivityStrip;
 use crate::tui::input::{route, Disposition, Focus, Mode, ShellAction};
@@ -40,6 +41,16 @@ use crate::tui::workbench::WorkbenchState;
 mod footer;
 mod header;
 mod help;
+
+/// What `Shell::apply` reports back to the run loop after each
+/// keystroke. `Continue` keeps the loop running; `Quit` exits; `Edit`
+/// suspends the TUI so `$EDITOR` can take over the terminal for the
+/// duration of the edit and then resumes.
+enum ShellOutcome {
+    Continue,
+    Quit,
+    Edit(LeafId),
+}
 
 /// The main shell state. Re-loads the database on every refresh tick so
 /// out-of-band mutations from concurrent CLI calls become visible without
@@ -72,8 +83,11 @@ impl Shell {
         }
     }
 
-    /// Drive the shell against `terminal`. Returns on quit.
-    pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
+    /// Drive the shell against `terminal`. Returns on quit. Edit
+    /// requests from the workbench short-circuit the inner loop, exit
+    /// the alternate screen so `$EDITOR` can take over the tty, then
+    /// re-enter and continue.
+    pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
         loop {
             self.activity.refresh_if_due();
             terminal.draw(|f| self.render(f))?;
@@ -84,21 +98,58 @@ impl Shell {
                         continue;
                     }
                     let action = route(key.code, key.modifiers, self.focus, self.show_help);
-                    if self.apply(key, action) {
-                        return Ok(());
+                    match self.apply(key, action) {
+                        ShellOutcome::Continue => {}
+                        ShellOutcome::Quit => return Ok(()),
+                        ShellOutcome::Edit(id) => {
+                            self.run_editor(terminal, id)?;
+                        }
                     }
                 }
             }
         }
     }
 
-    /// Apply a routed action. Returns `true` when the shell should quit.
-    fn apply(&mut self, key: crossterm::event::KeyEvent, action: ShellAction) -> bool {
+    /// Suspend the alternate screen, hand the terminal back to `$EDITOR`
+    /// for the given ticket, then resume and re-load the database so
+    /// any front-matter changes the user made show up immediately.
+    fn run_editor(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        id: LeafId,
+    ) -> io::Result<()> {
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+
+        cmd_edit(&self.pm_dir, &id.to_string(), None);
+
+        enable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableMouseCapture
+        )?;
+        terminal.clear()?;
+
+        // Reload state so any front-matter or section changes the user
+        // made in $EDITOR are reflected in the next render.
+        self.db = Database::load(&self.pm_dir);
+        Ok(())
+    }
+
+    /// Apply a routed action and report what the run loop should do
+    /// next ([`ShellOutcome::Continue`], `Quit`, or `Edit`).
+    fn apply(&mut self, key: crossterm::event::KeyEvent, action: ShellAction) -> ShellOutcome {
         match action {
-            ShellAction::Quit => true,
+            ShellAction::Quit => ShellOutcome::Quit,
             ShellAction::ToggleHelp => {
                 self.show_help = !self.show_help;
-                false
+                ShellOutcome::Continue
             }
             ShellAction::SwitchMode(_) => {
                 // Tab / Shift-Tab resolve to a relative cycle; jump
@@ -114,11 +165,11 @@ impl Shell {
                     _ => {}
                 }
                 self.show_help = false;
-                false
+                ShellOutcome::Continue
             }
             ShellAction::FocusZone(focus) => {
                 self.focus = focus;
-                false
+                ShellOutcome::Continue
             }
             ShellAction::LhpKey(k, m) => {
                 match self.lhp.handle_key(k, m, &self.db) {
@@ -138,8 +189,9 @@ impl Shell {
                         // Already at the leftmost LHP level; nothing to
                         // do until v0.3.4 adds a left-of-LHP surface.
                     }
+                    Disposition::Edit(id) => return ShellOutcome::Edit(id),
                 }
-                false
+                ShellOutcome::Continue
             }
             ShellAction::WorkbenchKey(k, m) => {
                 match self.workbench.handle_key(self.mode, k, m, &self.db) {
@@ -153,10 +205,11 @@ impl Shell {
                         // Right from the rightmost column: stay put.
                         // v0.3.4 adds a right-of-Workbench surface.
                     }
+                    Disposition::Edit(id) => return ShellOutcome::Edit(id),
                 }
-                false
+                ShellOutcome::Continue
             }
-            ShellAction::None => false,
+            ShellAction::None => ShellOutcome::Continue,
         }
     }
 

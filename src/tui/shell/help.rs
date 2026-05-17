@@ -41,21 +41,20 @@ pub fn render(f: &mut Frame, area: Rect, mode: Mode) {
     lines.push(row("q / Ctrl-C", "Quit"));
     lines.push(Line::raw(""));
 
-    lines.push(Line::styled("  NAVIGATION", style::eyebrow()));
+    lines.push(Line::styled("  NAVIGATION · LHP", style::eyebrow()));
     lines.push(row(
-        "← / →",
-        "Move across hierarchy levels (LHP) or board columns",
+        "↑ / ↓",
+        "Move through items; rolls across level boundaries",
     ));
-    lines.push(row("↑ / ↓", "Move the cursor within the current pane"));
-    lines.push(row(
-        "→  at Subtask",
-        "Hand focus from the LHP into the board",
-    ));
-    lines.push(row(
-        "←  at column 1",
-        "Hand focus from the board back to the LHP",
-    ));
-    lines.push(row("Enter / →", "Drill into the selected ticket"));
+    lines.push(row("→ / Enter", "Hand focus to the board"));
+    lines.push(row("←", "Hand focus left (no-op until v0.3.4)"));
+    lines.push(Line::raw(""));
+
+    lines.push(Line::styled("  NAVIGATION · BOARD", style::eyebrow()));
+    lines.push(row("← / →", "Move between columns"));
+    lines.push(row("↑ / ↓", "Move between cards in the focused column"));
+    lines.push(row("Enter", "Open the focused card in $EDITOR"));
+    lines.push(row("←  at column 1", "Hand focus back to the LHP"));
     lines.push(Line::raw(""));
 
     lines.push(Line::styled("  CONCEPTS", style::eyebrow()));

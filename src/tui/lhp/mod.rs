@@ -50,13 +50,19 @@ impl LhpState {
 
     /// Items visible at `level` given the current parent-chain
     /// selections. `Project` is unfiltered; deeper levels filter on the
-    /// selected ticket at the parent level.
+    /// selected ticket at the parent level. When the parent level has
+    /// no selection (empty list), child levels return empty rather than
+    /// falling back to "all items at this kind" - otherwise picking a
+    /// project with no products would still show every epic in the
+    /// workspace at the Epic level.
     fn items_at(&self, db: &Database, level: Level) -> Vec<LeafId> {
-        let parent = match level.parent() {
-            None => None,
-            Some(parent_level) => self.selected_at(db, parent_level),
+        let mut items = match level.parent() {
+            None => tickets_at(db, level, None),
+            Some(parent_level) => match self.selected_at(db, parent_level) {
+                Some(parent_id) => tickets_at(db, level, Some(parent_id)),
+                None => Vec::new(),
+            },
         };
-        let mut items = tickets_at(db, level, parent);
         // Stable visual ordering by id so the cursor does not jitter
         // when the database is reloaded between ticks.
         items.sort();
@@ -92,74 +98,84 @@ impl LhpState {
         None
     }
 
-    /// Handle a keystroke routed to the LHP. Returns a [`Disposition`]
-    /// so the shell can flip focus to the Workbench when the user
-    /// arrows right past the deepest level.
+    /// Handle a keystroke routed to the LHP.
+    ///
+    /// `Up`/`Down` navigate vertically within the LHP. The LHP renders
+    /// five stacked level sections, so within-cursor movement and
+    /// across-level movement are both vertical; pressing `Down` at the
+    /// bottom of a level rolls the focus down to the first item of the
+    /// next level, and `Up` at the top rolls back up.
+    ///
+    /// `Left` and `Right` always overflow out of the LHP. The shell
+    /// turns `OverflowRight` into a focus flip into the Workbench so a
+    /// single arrow-key cursor flows across the whole cockpit.
     pub fn handle_key(&mut self, key: KeyCode, _mods: KeyModifiers, db: &Database) -> Disposition {
         match key {
             KeyCode::Up => {
-                self.move_cursor(db, -1);
+                self.move_up(db);
                 Disposition::Consumed
             }
             KeyCode::Down => {
-                self.move_cursor(db, 1);
+                self.move_down(db);
                 Disposition::Consumed
             }
-            KeyCode::Left => {
-                if !self.move_focus(-1) {
-                    // Already at the project (left-most) level. Signal
-                    // the shell so it could refocus an even-further-left
-                    // pane in the future; for v0.3.2 this is a no-op.
-                    return Disposition::OverflowLeft;
-                }
-                Disposition::Consumed
-            }
-            KeyCode::Right | KeyCode::Enter => {
-                if !self.move_focus(1) {
-                    // Right at the deepest level (Subtask) is the user
-                    // asking to leave the LHP and start operating on the
-                    // Workbench.
-                    return Disposition::OverflowRight;
-                }
-                Disposition::Consumed
-            }
+            KeyCode::Left => Disposition::OverflowLeft,
+            KeyCode::Right | KeyCode::Enter => Disposition::OverflowRight,
             _ => Disposition::Consumed,
         }
     }
 
-    fn move_cursor(&mut self, db: &Database, delta: i32) -> bool {
-        let items = self.items_at(db, self.focused_level);
-        if items.is_empty() {
-            return false;
-        }
+    /// Move the cursor up one item. If already at the top of the
+    /// current level, jump to the last item of the parent level.
+    fn move_up(&mut self, db: &Database) {
         let cursor = self.cursors.get(&self.focused_level).copied().unwrap_or(0);
-        let next = (cursor as i32 + delta).clamp(0, items.len() as i32 - 1) as usize;
-        if next == cursor {
-            return false;
+        if cursor > 0 {
+            self.cursors.insert(self.focused_level, cursor - 1);
+            self.reset_descendant_cursors(self.focused_level);
+            return;
         }
-        self.cursors.insert(self.focused_level, next);
-        // Moving the cursor at a parent level invalidates child cursors;
-        // they will clamp on next read but reset to 0 for a clean drill.
-        let mut child = self.focused_level.child();
+        // At the top of this level. Roll up into the parent level's
+        // last item if a parent level exists.
+        if let Some(parent_level) = self.focused_level.parent() {
+            let parent_items = self.items_at(db, parent_level);
+            if !parent_items.is_empty() {
+                self.focused_level = parent_level;
+                self.cursors.insert(parent_level, parent_items.len() - 1);
+                self.reset_descendant_cursors(parent_level);
+            }
+        }
+    }
+
+    /// Move the cursor down one item. If already at the bottom of the
+    /// current level, jump to the first item of the child level.
+    fn move_down(&mut self, db: &Database) {
+        let items = self.items_at(db, self.focused_level);
+        let cursor = self.cursors.get(&self.focused_level).copied().unwrap_or(0);
+        if cursor + 1 < items.len() {
+            self.cursors.insert(self.focused_level, cursor + 1);
+            self.reset_descendant_cursors(self.focused_level);
+            return;
+        }
+        // At the bottom of this level. Roll down into the child level
+        // if a child level exists and has items.
+        if let Some(child_level) = self.focused_level.child() {
+            let child_items = self.items_at(db, child_level);
+            if !child_items.is_empty() {
+                self.focused_level = child_level;
+                self.cursors.insert(child_level, 0);
+                self.reset_descendant_cursors(child_level);
+            }
+        }
+    }
+
+    /// Reset cursors below `level` to 0. Called whenever the cursor at
+    /// `level` changes so the cascade filter re-anchors on the new
+    /// selection's first child rather than a stale index.
+    fn reset_descendant_cursors(&mut self, level: Level) {
+        let mut child = level.child();
         while let Some(l) = child {
             self.cursors.insert(l, 0);
             child = l.child();
-        }
-        true
-    }
-
-    fn move_focus(&mut self, delta: i32) -> bool {
-        let new = match (self.focused_level, delta.signum()) {
-            (l, 1) => l.child(),
-            (l, -1) => l.parent(),
-            _ => None,
-        };
-        match new {
-            Some(l) => {
-                self.focused_level = l;
-                true
-            }
-            None => false,
         }
     }
 

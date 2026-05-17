@@ -75,6 +75,15 @@ impl BoardState {
                 }
                 Disposition::Consumed
             }
+            KeyCode::Enter => {
+                // Open the focused card's CLAUDE.md in $EDITOR.
+                if let Some(col) = columns.get(self.focused_column) {
+                    if let Some(id) = col.cards.get(self.focused_card) {
+                        return Disposition::Edit(*id);
+                    }
+                }
+                Disposition::Consumed
+            }
             _ => Disposition::Consumed,
         }
     }

@@ -9,6 +9,8 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
+use crate::store::LeafId;
+
 /// The three Workbench presets described in PM_DESIGN section 8.3.2.
 /// Mode 1 hosts the kanban board; Modes 2 and 3 are placeholders in
 /// v0.3.1 and gain content in later sub-phases.
@@ -131,12 +133,14 @@ pub fn route(key: KeyCode, mods: KeyModifiers, focus: Focus, help_open: bool) ->
 /// "handled with no change" (the shell re-renders on every tick
 /// regardless). The overflow variants ask the shell to flip focus to
 /// the adjacent zone so arrow-key navigation flows across the whole
-/// cockpit.
+/// cockpit. `Edit` asks the shell to suspend the TUI, open the named
+/// ticket in `$EDITOR`, then resume.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Disposition {
     Consumed,
     OverflowLeft,
     OverflowRight,
+    Edit(LeafId),
 }
 
 #[cfg(test)]
