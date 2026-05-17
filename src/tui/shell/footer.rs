@@ -23,18 +23,21 @@ pub fn render(f: &mut Frame, area: Rect, mode: Mode, focus: Focus) {
     spans.push(Span::styled("  ", style::body()));
     spans.extend(key("Tab", "mode"));
     spans.extend(key("1 2 3", "jump"));
+    spans.extend(key("⇧← ⇧→", "zone"));
 
     // Arrow-key affordances flow across both zones; the labels change
     // with focus so the footer always describes what the cursor will
     // actually do.
     match (focus, mode) {
         (Focus::Lhp, _) => {
-            spans.extend(key("← →", "level"));
+            spans.extend(key("→ Enter", "drill"));
+            spans.extend(key("←", "back"));
             spans.extend(key("↑ ↓", "item"));
         }
         (Focus::Workbench, Mode::Board) => {
             spans.extend(key("← →", "column"));
             spans.extend(key("↑ ↓", "card"));
+            spans.extend(key("Enter", "edit"));
         }
         (Focus::Workbench, _) => {}
     }

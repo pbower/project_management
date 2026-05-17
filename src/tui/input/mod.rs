@@ -119,9 +119,21 @@ pub fn route(key: KeyCode, mods: KeyModifiers, focus: Focus, help_open: bool) ->
         _ => {}
     }
 
+    // Shift + arrow jumps focus between zones from anywhere, so the
+    // user does not have to drill to a hierarchy edge before crossing
+    // into the board (or back). The unmodified arrows still drive
+    // within-zone navigation; only the chord crosses zones.
+    if mods.contains(KeyModifiers::SHIFT) {
+        match key {
+            KeyCode::Right => return ShellAction::FocusZone(Focus::Workbench),
+            KeyCode::Left => return ShellAction::FocusZone(Focus::Lhp),
+            _ => {}
+        }
+    }
+
     // Everything else flows to the focused zone. Focus moves across
-    // zones via arrow-key overflow inside the zone handlers, not via a
-    // dedicated focus-switch key.
+    // zones via arrow-key overflow inside the zone handlers, plus the
+    // Shift+arrow shortcut above.
     match focus {
         Focus::Lhp => ShellAction::LhpKey(key, mods),
         Focus::Workbench => ShellAction::WorkbenchKey(key, mods),
@@ -194,6 +206,17 @@ mod tests {
             a,
             ShellAction::WorkbenchKey(KeyCode::Char('['), KeyModifiers::NONE)
         );
+    }
+
+    #[test]
+    fn shift_arrows_jump_zones_from_anywhere() {
+        let a = route(KeyCode::Right, KeyModifiers::SHIFT, Focus::Lhp, false);
+        assert_eq!(a, ShellAction::FocusZone(Focus::Workbench));
+        let b = route(KeyCode::Left, KeyModifiers::SHIFT, Focus::Workbench, false);
+        assert_eq!(b, ShellAction::FocusZone(Focus::Lhp));
+        // Plain arrows are still within-zone navigation.
+        let c = route(KeyCode::Right, KeyModifiers::NONE, Focus::Lhp, false);
+        assert_eq!(c, ShellAction::LhpKey(KeyCode::Right, KeyModifiers::NONE));
     }
 
     #[test]

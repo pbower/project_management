@@ -37,6 +37,10 @@ pub fn render(f: &mut Frame, area: Rect, mode: Mode) {
     lines.push(Line::styled("  GLOBAL", style::eyebrow()));
     lines.push(row("Tab / Shift-Tab", "Cycle modes"));
     lines.push(row("1 / 2 / 3", "Jump to Board / Documents / Activity"));
+    lines.push(row(
+        "Shift + ← / →",
+        "Jump focus between LHP and Workbench from anywhere",
+    ));
     lines.push(row("? / F1", "Open / close this help"));
     lines.push(row("q / Ctrl-C", "Quit"));
     lines.push(Line::raw(""));
