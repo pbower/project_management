@@ -18,10 +18,15 @@ pub mod style;
 pub mod task;
 pub mod views;
 pub mod tui {
+    pub mod activity;
     pub mod enums;
+    pub mod input;
+    pub mod lhp;
     pub mod nav;
     pub mod run;
+    pub mod shell;
     pub mod utils;
+    pub mod workbench;
     pub mod workflow;
     pub mod workflow_run;
 }

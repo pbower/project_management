@@ -95,8 +95,17 @@ fn main() {
         pm_dir
     };
 
+    // No subcommand: open the SpaceCell Thunder main shell.
+    let Some(command) = cli.command.as_ref().cloned() else {
+        if let Err(e) = project_management::tui::shell::run_shell(&pm_dir) {
+            eprintln!("shell error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    };
+
     // Handle commands that don't need a loaded Database.
-    match &cli.command {
+    match &command {
         Commands::Backup { all: true } => {
             cmd_backup_all(&pm_dir);
             return;
@@ -114,17 +123,17 @@ fn main() {
         _ => {}
     }
 
-    // The workflow board opens the workspace directly. v0.3.x will wrap it
-    // with the LHP + Workbench + Activity composition; for now it is the
-    // headline TUI surface.
-    if let Commands::Wf = &cli.command {
+    // The standalone workflow board stays reachable via `spacecell wf`
+    // for users who want the v0.9-style full-screen kanban without the
+    // surrounding LHP and Activity strip.
+    if let Commands::Wf = &command {
         cmd_wf(&pm_dir);
         return;
     }
 
     let mut db = Database::load(&pm_dir);
 
-    match cli.command {
+    match command {
         Commands::Wf => unreachable!("Workflow command handled above"),
         Commands::Add {
             title,

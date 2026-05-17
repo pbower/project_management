@@ -11,7 +11,7 @@ use crate::store::LeafId;
 
 /// The five linear levels in the work hierarchy. `Milestone` is excluded
 /// because it is not strictly above or below the other kinds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Level {
     Project,
     Product,

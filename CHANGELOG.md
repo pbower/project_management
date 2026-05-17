@@ -4,6 +4,54 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-05-16
+
+The main shell composition. Wraps the v0.3.0 kept-pieces (workflow
+board, hierarchy navigation, activity feed) in the LHP + Workbench +
+Activity layout described in PM_DESIGN section 8.3. `spacecell` invoked
+without a subcommand now opens the new shell; the standalone kanban at
+`spacecell wf` stays for users who prefer it.
+
+### Added
+
+- `src/tui/shell/`: main shell with header (brand wordmark + scope
+  breadcrumb + mode badge), three-zone body layout, activity strip,
+  and context-sensitive footer.
+- `src/tui/lhp/`: left-hand panel rendering five hierarchy levels
+  (`PROJECTS`/`PRODUCTS`/`EPICS`/`TASKS`/`SUBTASKS`) plus a totals
+  block. Up/Down moves the cursor within the focused level, Left/Right
+  shifts focus between levels, Enter drills.
+- `src/tui/workbench/`: `Surface` enum + `WorkbenchState`. Board
+  surface is populated (9-stage kanban filtered to the LHP scope, H/L
+  column nav, J/K card nav, read-only for v0.3.1). Documents and
+  Activity surfaces render placeholder cards.
+- `src/tui/activity/`: 3-line `events.log` tail strip. Reuses
+  `views::events_view::ActivityView` for buffer parsing. Polls every
+  500ms; v0.3.2 swaps the poll for a `notify` watcher.
+- `src/tui/input/`: mode router. Tab/Shift-Tab cycle modes, 1/2/3
+  jump, `[`/`]` switch focus between LHP and Workbench, `?`/F1 toggle
+  help overlay, `q`/Ctrl-C quit.
+- `src/tui/shell/help.rs`: modal help overlay reachable from every
+  mode. v0.3.1 ships a single-page reference; v0.3.x phases extend it.
+- Subcommand made optional in `cli.rs`: `spacecell` with no args opens
+  the shell. Every existing CLI verb continues to work.
+- `Commands` and the per-action enums under it now derive `Clone` so
+  the main dispatcher can pass the subcommand through both the
+  database-loaded and database-free branches.
+
+### Changed
+
+- `Cargo.toml` version bumped to 0.3.1.
+
+### Tests
+
+- `tui::input::tests` covers mode cycling, quit-key recognition, help
+  overlay swallowing, focus-bracket routing, and key forwarding to
+  the focused zone.
+- `tui::workbench::board::tests` covers stage-index mapping and the
+  truncation helper.
+- 270 tests pass (210 lib + 60 integration; +7 from new modules).
+
 ## [0.3.0] - 2026-05-16
 
 The v0.3.0 demolition phase. Strips the v0.9 TUI substrate down to the

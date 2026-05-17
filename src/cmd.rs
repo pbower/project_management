@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum Commands {
     /// Launch the workflow kanban board.
     Wf,
@@ -461,7 +461,7 @@ pub enum Commands {
     Mcp,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ArtifactAction {
     /// Drop a file into a ticket's `artifacts/` directory and sweep.
     Add {
@@ -489,7 +489,7 @@ pub enum ArtifactAction {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum MemoryAction {
     /// Link a memory to a ticket.
     Link {
@@ -552,7 +552,7 @@ pub enum MemoryAction {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum TemplateAction {
     /// Save a task as a template.
     Save {

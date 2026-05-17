@@ -4,15 +4,18 @@ use clap::Parser;
 
 use crate::cmd::Commands;
 
-/// Simple, file-backed task manager CLI.
-/// Storage defaults to ./tasks.json or a path passed via --db.
+/// SpaceCell Thunder CLI. Hierarchical project management cockpit with an
+/// embedded kanban board, three-tier memory, and an MCP server for AI
+/// agents.
 #[derive(Parser)]
-#[command(name = "taskcli", version, about = "Daily task management CLI")]
+#[command(name = "spacecell", version, about = "SpaceCell Thunder")]
 pub struct Cli {
-    /// Path to the JSON database file.
+    /// Workspace directory (defaults to `~/.pm/`). The `.pm/` tree under
+    /// this path is the storage root.
     #[arg(long, global = true)]
     pub db: Option<PathBuf>,
 
+    /// CLI subcommand. Omit to launch the main shell.
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
