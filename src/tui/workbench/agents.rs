@@ -29,11 +29,45 @@ pub struct AgentsState {
     /// focused on a live agent; `Esc` while focused exits input mode
     /// so the user can move the cursor without sending characters.
     pub input_mode: bool,
+    /// The ticket whose agent the surface should render and route
+    /// keys to. Set by `Shell::spawn_agent_and_switch` so the
+    /// surface lookup does not depend on the LHP scope matching the
+    /// spawn target (the user can be focused on PRJ1 in the LHP but
+    /// press `r` on TSK7 in the board; both should work).
+    pub active: Option<LeafId>,
 }
 
 impl AgentsState {
     pub fn new() -> Self {
-        AgentsState { input_mode: true }
+        AgentsState {
+            input_mode: true,
+            active: None,
+        }
+    }
+
+    /// Pin the surface to `leaf`. Called by the shell when spawning
+    /// or switching focus to a different ticket's agent.
+    pub fn set_active(&mut self, leaf: LeafId) {
+        self.active = Some(leaf);
+        self.input_mode = true;
+    }
+
+    /// Resolve which leaf the surface should display. Pinned active
+    /// agent wins; otherwise the LHP scope (so navigating to a
+    /// ticket with a live agent surfaces it without pressing keys);
+    /// otherwise `None` (empty state).
+    fn resolved(&self, scope: Option<LeafId>, agents: &AgentManager) -> Option<LeafId> {
+        if let Some(a) = self.active {
+            if agents.get(a).is_some() {
+                return Some(a);
+            }
+        }
+        if let Some(s) = scope {
+            if agents.get(s).is_some() {
+                return Some(s);
+            }
+        }
+        None
     }
 
     pub fn handle_key(
@@ -55,7 +89,7 @@ impl AgentsState {
             return Disposition::Consumed;
         }
 
-        let Some(leaf) = scope else {
+        let Some(leaf) = self.resolved(scope, agents) else {
             return Disposition::Consumed;
         };
 
@@ -104,6 +138,8 @@ pub fn render(
     state: &AgentsState,
     focused_zone: bool,
 ) {
+    let resolved = state.resolved(scope, agents);
+
     let outer = Block::default()
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
@@ -112,16 +148,19 @@ pub fn render(
         } else {
             theme::border()
         })
-        .title(Line::styled(agent_title(agents, scope), theme::eyebrow()))
+        .title(Line::styled(
+            agent_title(agents, resolved),
+            theme::eyebrow(),
+        ))
         .style(theme::body());
     let inner = outer.inner(area);
     f.render_widget(outer, area);
 
-    let Some(leaf) = scope else {
+    let Some(leaf) = resolved else {
         render_empty_state(
             f,
             inner,
-            "No scope selected. Drill into the LHP to a ticket.",
+            "No agent attached. Press r on a board card to spawn one.",
         );
         return;
     };
@@ -130,7 +169,7 @@ pub fn render(
         render_empty_state(
             f,
             inner,
-            "No agent here. Press r on the board card to spawn one.",
+            "Agent went away. Press r on a board card to spawn a new one.",
         );
         return;
     };

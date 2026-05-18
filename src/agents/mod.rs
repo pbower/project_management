@@ -47,6 +47,11 @@ pub struct Agent {
     pub status: AgentStatus,
     parser: Arc<Mutex<Parser>>,
     master: Box<dyn MasterPty + Send>,
+    /// Cached writer for the PTY master. `portable-pty`'s
+    /// `take_writer` succeeds once; calling it on every keystroke
+    /// returns `Err` after the first call and silently drops input.
+    /// We grab it at spawn time and reuse it for the agent's lifetime.
+    writer: Option<Box<dyn std::io::Write + Send>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     rx: Receiver<Vec<u8>>,
     rows: u16,
@@ -92,6 +97,19 @@ impl Agent {
             .map_err(|e| AgentError::Spawn(format!("spawn: {e}")))?;
         let killer = child.clone_killer();
 
+        let parser = Arc::new(Mutex::new(Parser::new(INITIAL_ROWS, INITIAL_COLS, 1000)));
+
+        // Seed the parser with a banner so a freshly spawned agent
+        // never looks empty before its first byte arrives. The
+        // child's own output will overwrite the top-left cells the
+        // first time it draws.
+        if let Ok(mut p) = parser.lock() {
+            let banner = format!(
+                "\x1b[1;33m\u{258c} {leaf}\x1b[0m   \x1b[2magent starting: {command}\x1b[0m\r\n"
+            );
+            p.process(banner.as_bytes());
+        }
+
         // Background reader: blocking read from the PTY master into
         // an mpsc channel the main shell drains every tick.
         let mut reader = pair
@@ -114,13 +132,18 @@ impl Agent {
             }
         });
 
-        // Best-effort: also reap the child on exit by spawning a tiny
-        // wait thread. The killer handle still works while it runs.
+        // Best-effort: reap the child on exit so the OS does not
+        // accumulate zombies if the user spawns and closes many
+        // agents in a single session. The killer handle still works
+        // while this thread blocks on `wait`.
         thread::spawn(move || {
             let _ = child.wait();
         });
 
-        let parser = Arc::new(Mutex::new(Parser::new(INITIAL_ROWS, INITIAL_COLS, 1000)));
+        // Grab the writer up front. `take_writer` only succeeds on
+        // the first call; caching it here lets every subsequent
+        // `Agent::write` succeed for the agent's lifetime.
+        let writer = pair.master.take_writer().ok();
 
         Ok(Agent {
             leaf,
@@ -128,6 +151,7 @@ impl Agent {
             status: AgentStatus::Running,
             parser,
             master: pair.master,
+            writer,
             killer,
             rx,
             rows: INITIAL_ROWS,
@@ -167,10 +191,11 @@ impl Agent {
         if self.status != AgentStatus::Running {
             return;
         }
-        if let Ok(mut writer) = self.master.take_writer() {
-            let _ = writer.write_all(bytes);
-            let _ = writer.flush();
-        }
+        let Some(writer) = self.writer.as_mut() else {
+            return;
+        };
+        let _ = writer.write_all(bytes);
+        let _ = writer.flush();
     }
 
     /// Resize the PTY when the surface's allocated area changes.

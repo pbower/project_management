@@ -4,6 +4,48 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] - 2026-05-18
+
+Bug-fix release for v0.3.7. The embedded agent was reachable but
+invisible because of two issues that compounded into "press r,
+activity feed says spawned, surface stays blank".
+
+### Fixed
+
+- **Agents surface looked up by LHP scope, not the spawned ticket.**
+  Pressing `r` on a board card spawned an agent keyed on that card
+  (e.g., `TSK7`) but the surface rendered against the LHP's current
+  scope (often `PRJ1` if the user hadn't drilled down). The lookup
+  missed and the surface showed its empty state. `AgentsState` now
+  carries an `active: Option<LeafId>` that the shell pins on spawn;
+  `resolved()` prefers the active pin, falls back to LHP scope, and
+  falls back to `None` only when neither resolves to a live agent.
+- **`portable-pty`'s `take_writer` consumed the writer on first
+  call.** `Agent::write` called `take_writer` per keystroke, so every
+  byte after the first was silently dropped. Cached the writer at
+  spawn time; every subsequent call writes through the same handle.
+  Regression test `writing_to_pty_works_across_multiple_keystrokes`
+  sends two payloads through `cat` and verifies both round-trip.
+
+### Added
+
+- **Spawn banner.** A fresh agent's parser is seeded with a single
+  line - `▌ <leaf>   agent starting: <command>` - so the surface
+  never renders an empty 80x24 grid even before the child's first
+  byte arrives. The child's own output overwrites the banner.
+
+### Tests
+
+- 303 pass (+1 regression test for the writer cache).
+
+### Notes
+
+- If `claude` is not on `$PATH`, the inner command exits 127 and
+  `bash: claude: command not found` lands in the PTY's screen.
+  Visible inside the surface; the agent's status flips to `EXITED`.
+  To test without `claude`, set `[launcher] inner_command = "bash"`
+  in the workspace's `.pm/.thunder.toml`.
+
 ## [0.3.7] - 2026-05-18
 
 Embedded agent PTYs. `spacecell` is now an agent host, not just a

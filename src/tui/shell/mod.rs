@@ -462,7 +462,10 @@ impl Shell {
             Ok(()) => {
                 self.mode = Mode::Agents;
                 self.focus = Focus::Workbench;
-                self.workbench.agents_state.input_mode = true;
+                // Pin the surface to the agent we just spawned so the
+                // render lookup does not need LHP scope to match the
+                // board card the user pressed `r` on.
+                self.workbench.agents_state.set_active(leaf);
                 let _ = crate::store::events::emit_event(
                     &self.pm_dir,
                     "agent-spawn",

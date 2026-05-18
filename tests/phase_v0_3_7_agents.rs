@@ -67,6 +67,32 @@ fn writing_to_pty_round_trips_through_cat() {
     agent.kill();
 }
 
+/// Regression for the v0.3.7 writer-cache bug. `portable-pty`'s
+/// `take_writer` consumes the writer; calling it on every keystroke
+/// silently dropped every write after the first. The fix caches the
+/// writer at spawn time. This test sends two distinct payloads in
+/// sequence and asserts both come back from cat - if the second one
+/// is missing the cache regressed.
+#[test]
+fn writing_to_pty_works_across_multiple_keystrokes() {
+    let leaf = LeafId::new(TypePrefix::Task, 22);
+    let mut agent = Agent::spawn(leaf, "cat", None, &[]).expect("spawn cat");
+
+    agent.write(b"first-write\r");
+    assert!(
+        drain_until_text(&mut agent, "first-write", Duration::from_secs(2)),
+        "first write must round-trip"
+    );
+
+    agent.write(b"second-write\r");
+    assert!(
+        drain_until_text(&mut agent, "second-write", Duration::from_secs(2)),
+        "second write must also round-trip (regression: take_writer was being called per-keystroke)"
+    );
+
+    agent.kill();
+}
+
 #[test]
 fn manager_enforces_one_agent_per_ticket() {
     let leaf = LeafId::new(TypePrefix::Task, 3);
