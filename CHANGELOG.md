@@ -4,6 +4,88 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-05-18
+
+Embedded agent PTYs. `spacecell` is now an agent host, not just a
+driver. Press `r` on a board card and a real PTY-backed Claude
+session spawns inside the cockpit, with its stdout rendered in the
+Agents surface and your keystrokes piped straight to its stdin. The
+v0.3.5 external-launcher path stays available via `spacecell run`
+for users who prefer separate OS windows.
+
+### Added
+
+- `src/agents/`: in-process agent management.
+  - `Agent` owns a PTY master + vt100 parser + reader thread that
+    drains the PTY in the background and pushes bytes through an
+    mpsc channel into the parser.
+  - `AgentManager` keyed by `LeafId`; one agent per ticket for
+    v0.3.7. `poll_all` drains every live agent in a single shell
+    tick. `close` kills + reaps.
+  - `scope_env` returns `THUNDER_SCOPE` / `THUNDER_LABEL` /
+    `PM_AGENT_ID` / `PM_TICKET` so the child sees the same env an
+    OS-launcher terminal would.
+- `src/tui/workbench/agents.rs` (Agents surface): renders the
+  focused ticket's PTY screen by walking the vt100 cells and
+  building styled ratatui spans. Resizes the PTY to match the
+  visible rect on every render. Empty state when the focused scope
+  has no agent.
+- `Disposition::SpawnAgent(LeafId)`: zone-level handlers ask the
+  shell to spawn an embedded agent + auto-switch to Agents mode.
+  Wired to the `r` key on the Board surface.
+- `Shell::spawn_agent_and_switch`: resolves the per-kind inner
+  command (default `claude`), resolves the scope's cwd from
+  `state.json`, spawns through the WorkbenchState's manager, and
+  flips `Mode::Agents` + Workbench focus so the user sees the PTY
+  immediately.
+- New deps: `portable-pty` 0.9 (PTY abstraction from wezterm),
+  `shpool_vt100` 0.1 (vt100 terminal emulator fork that resolves
+  cleanly against ratatui 0.29's `unicode-width = 0.2.0` pin).
+
+### Changed
+
+- `Mode` rename: `Mode::Terminals` -> `Mode::Agents`. Label updates
+  in footer + help + header.
+- Workbench's surface enum now has an `Agents` variant; the v0.3.6
+  external-terminals registry surface is removed (replaced by the
+  embedded PTY view + the CLI `spacecell terminals`).
+- `Workbench::handle_key` now takes a full `KeyEvent` rather than a
+  `KeyCode` + `KeyModifiers` pair so the Agents surface has the
+  fidelity it needs to encode keystrokes for the PTY.
+- `Workbench::render` and `Shell::render` are `&mut` so the PTY's
+  resize-on-render and reader-thread drain can mutate manager state.
+- `Disposition` lost `Copy` (already in v0.3.6 because of
+  `EditPath`); v0.3.7 adds `SpawnAgent`.
+
+### Removed
+
+- `src/tui/workbench/terminals.rs` (the v0.3.6 launcher-registry
+  view). The Agents surface covers the in-cockpit case; the CLI
+  covers external windows.
+
+### Tests
+
+- `tests/phase_v0_3_7_agents.rs`: four end-to-end tests using real
+  PTYs.
+  - `spawning_echo_renders_output_into_the_pty_screen` confirms
+    `echo` output lands in the parsed vt100 screen.
+  - `writing_to_pty_round_trips_through_cat` confirms keystrokes
+    written to the PTY master come back through stdout.
+  - `manager_enforces_one_agent_per_ticket` covers spawn / close /
+    re-spawn idempotency.
+  - `scope_env_injects_thunder_scope_for_child_processes` confirms
+    the env pairs every child inherits.
+- Total: 302 tests pass (+4 from v0.3.6 baseline).
+
+### Notes
+
+- Per-kind inner command override (`.pm/templates/<kind>.toml`
+  `[terminal] command = "..."`) still pending; v0.3.7 only consults
+  the workspace-wide `[launcher] inner_command`.
+- Multi-agent per ticket: deferred. The manager is keyed on
+  `LeafId`; lifting that to `(LeafId, index)` is a one-line change
+  but the surface UX (tabs vs splits) needs design first.
+
 ## [0.3.6] - 2026-05-18
 
 Populated Workbench surfaces. The v0.3.1 placeholders are gone; every

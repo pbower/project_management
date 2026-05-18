@@ -38,16 +38,16 @@ pub fn render(f: &mut Frame, area: Rect, mode: Mode, focus: Focus) {
             spans.extend(key("← →", "column"));
             spans.extend(key("↑ ↓", "card"));
             spans.extend(key("Enter", "edit"));
+            spans.extend(key("r", "spawn agent"));
         }
         (Focus::Workbench, Mode::Memories) => {
             spans.extend(key("↑ ↓", "memory"));
             spans.extend(key("Enter", "edit"));
         }
-        (Focus::Workbench, Mode::Terminals) => {
-            spans.extend(key("↑ ↓", "terminal"));
-            spans.extend(key("Enter", "ticket"));
-            spans.extend(key("o", "focus"));
-            spans.extend(key("K", "kill"));
+        (Focus::Workbench, Mode::Agents) => {
+            spans.extend(key("type", "to agent"));
+            spans.extend(key("Esc", "nav mode"));
+            spans.extend(key("i", "input mode"));
         }
     }
 

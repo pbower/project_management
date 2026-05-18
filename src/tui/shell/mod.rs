@@ -7,7 +7,7 @@
 //!   `App` and rewritten against [`crate::tui::nav`].
 //! - `Workbench` (centre): the active surface for the current mode
 //!   ([`Mode::Board`] in v0.3.1; [`Mode::Memories`] and
-//!   [`Mode::Terminals`] are placeholders until v0.3.3).
+//!   [`Mode::Agents`] are placeholders until v0.3.3).
 //! - `Activity` (bottom strip): always-visible tail of `events.log`.
 //! - `Footer` (bottom row): context-sensitive key hints.
 //!
@@ -109,6 +109,11 @@ impl Shell {
             if self.activity.poll() {
                 self.db = Database::load(&self.pm_dir);
             }
+            // Drain every embedded agent's reader queue so the PTY
+            // screen the next render shows is current. Ignoring the
+            // returned changed-set: the shell re-renders on every
+            // tick anyway.
+            let _ = self.workbench.poll_agents();
             terminal.draw(|f| self.render(f))?;
 
             if event::poll(Duration::from_millis(200))? {
@@ -362,7 +367,7 @@ impl Shell {
                     crossterm::event::KeyCode::BackTab => self.mode = self.mode.prev(),
                     crossterm::event::KeyCode::Char('1') => self.mode = Mode::Board,
                     crossterm::event::KeyCode::Char('2') => self.mode = Mode::Memories,
-                    crossterm::event::KeyCode::Char('3') => self.mode = Mode::Terminals,
+                    crossterm::event::KeyCode::Char('3') => self.mode = Mode::Agents,
                     _ => {}
                 }
                 self.show_help = false;
@@ -393,14 +398,28 @@ impl Shell {
                     Disposition::OpenTicketEditor(id) => return ShellOutcome::OpenEditor(id),
                     Disposition::EditRaw(id) => return ShellOutcome::EditRaw(id),
                     Disposition::EditPath(path) => return ShellOutcome::EditPath(path),
+                    Disposition::SpawnAgent(id) => {
+                        self.spawn_agent_and_switch(id);
+                    }
                 }
                 ShellOutcome::Continue
             }
             ShellAction::WorkbenchKey(k, m) => {
                 let scope = self.lhp.scope(&self.db);
+                // The Agents surface needs a real `KeyEvent` so it can
+                // distinguish Press / Repeat / state on terminals that
+                // surface those distinctions. Reconstruct one from the
+                // routed code + modifiers; `kind = Press` matches what
+                // the router already filtered for.
+                let synth = crossterm::event::KeyEvent {
+                    code: k,
+                    modifiers: m,
+                    kind: KeyEventKind::Press,
+                    state: crossterm::event::KeyEventState::NONE,
+                };
                 match self
                     .workbench
-                    .handle_key(self.mode, k, m, &self.db, &self.pm_dir, scope)
+                    .handle_key(self.mode, synth, &self.db, &self.pm_dir, scope)
                 {
                     Disposition::Consumed => {}
                     Disposition::OverflowLeft => {
@@ -414,6 +433,9 @@ impl Shell {
                     Disposition::OpenTicketEditor(id) => return ShellOutcome::OpenEditor(id),
                     Disposition::EditRaw(id) => return ShellOutcome::EditRaw(id),
                     Disposition::EditPath(path) => return ShellOutcome::EditPath(path),
+                    Disposition::SpawnAgent(id) => {
+                        self.spawn_agent_and_switch(id);
+                    }
                 }
                 ShellOutcome::Continue
             }
@@ -421,7 +443,40 @@ impl Shell {
         }
     }
 
-    fn render(&self, f: &mut ratatui::Frame) {
+    /// Spawn an embedded agent on `leaf` using the resolved per-kind
+    /// inner command, switch the shell into Agents mode, move focus
+    /// to the Workbench. Errors print to stderr so the user knows
+    /// what happened without crashing the cockpit.
+    fn spawn_agent_and_switch(&mut self, leaf: LeafId) {
+        let command = crate::agents::resolve_inner_command(&self.pm_dir, leaf);
+        let cwd = crate::agents::cwd_for_scope(&self.pm_dir, &self.db, leaf);
+        let label = self
+            .db
+            .get(leaf)
+            .map(|t| format!("{leaf} {}", t.title))
+            .unwrap_or_else(|| leaf.to_string());
+        match self
+            .workbench
+            .spawn_agent(leaf, &command, Some(&cwd), &label)
+        {
+            Ok(()) => {
+                self.mode = Mode::Agents;
+                self.focus = Focus::Workbench;
+                self.workbench.agents_state.input_mode = true;
+                let _ = crate::store::events::emit_event(
+                    &self.pm_dir,
+                    "agent-spawn",
+                    Some(leaf),
+                    Some(&format!("embedded ({command})")),
+                );
+            }
+            Err(e) => {
+                eprintln!("agent spawn: {e}");
+            }
+        }
+    }
+
+    fn render(&mut self, f: &mut ratatui::Frame) {
         let area = f.area();
 
         // The full-screen ticket editor owns the whole canvas when

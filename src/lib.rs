@@ -6,6 +6,7 @@
 //! and `tests/` integration suites link against the same code path the
 //! binary uses.
 
+pub mod agents;
 pub mod cli;
 pub mod cmd;
 pub mod db;

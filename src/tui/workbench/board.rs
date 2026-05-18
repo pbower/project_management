@@ -99,6 +99,20 @@ impl BoardState {
                 }
                 Disposition::Consumed
             }
+            KeyCode::Char('r') => {
+                // Spawn an embedded agent on the focused card and let
+                // the shell auto-switch into Agents mode so the user
+                // sees the PTY come up immediately. Idempotent at the
+                // manager layer: a second `r` on a ticket that already
+                // has an agent surfaces an error from the manager and
+                // the shell logs it without crashing.
+                if let Some(col) = columns.get(self.focused_column) {
+                    if let Some(id) = col.cards.get(self.focused_card) {
+                        return Disposition::SpawnAgent(*id);
+                    }
+                }
+                Disposition::Consumed
+            }
             _ => Disposition::Consumed,
         }
     }

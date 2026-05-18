@@ -1,58 +1,58 @@
 //! Workbench: the central work surface of the shell.
 //!
-//! v0.3.6 wires three live surfaces (Board, Memories, Terminals) and
-//! a Templates browser. Documents / Activity placeholders are gone;
-//! the modes now map onto the surfaces directly.
+//! v0.3.7 hosts agent PTYs in-cockpit. The Workbench owns one
+//! [`crate::agents::AgentManager`] so the main shell can drive every
+//! live agent's reader thread from a single tick. The Agents surface
+//! renders the focused ticket's PTY; the legacy "list of external
+//! terminals" view from v0.3.6 retired because the embedded model
+//! covers the same role with less indirection (the registry-style
+//! list is still reachable via `spacecell terminals` on the CLI).
 
 use std::path::Path;
 
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
+use crate::agents::AgentManager;
 use crate::db::Database;
 use crate::store::LeafId;
 
 use crate::tui::input::{Disposition, Mode};
 
+pub mod agents;
 pub mod board;
 pub mod memories;
 pub mod templates;
-pub mod terminals;
 
-/// Which surface the Workbench is currently showing. v0.3.6 populates
-/// all four. Templates is not wired to a numeric mode yet; v0.3.7 may
-/// add a dedicated mode or keep it as a key-triggered overlay.
+/// Which surface the Workbench is currently showing.
 #[derive(Clone, Copy, Debug)]
 pub enum Surface {
     Board,
     Memories,
-    Terminals,
+    Agents,
     Templates,
 }
 
 impl Surface {
-    /// Map a [`Mode`] onto its default surface.
     pub fn for_mode(mode: Mode) -> Surface {
         match mode {
             Mode::Board => Surface::Board,
             Mode::Memories => Surface::Memories,
-            Mode::Terminals => Surface::Terminals,
+            Mode::Agents => Surface::Agents,
         }
     }
 }
 
-/// Per-surface state retained across renders. Each surface owns the
-/// cursor / scroll state it needs to survive mode switches.
-#[derive(Default)]
+/// Per-surface state retained across renders, plus the manager that
+/// owns every hosted agent's PTY for the life of the shell.
 pub struct WorkbenchState {
     pub board: board::BoardState,
     pub memories: memories::MemoriesState,
-    pub terminals: terminals::TerminalsState,
+    pub agents_state: agents::AgentsState,
     pub templates: templates::TemplatesState,
-    /// `true` when the Workbench is temporarily showing the Templates
-    /// surface (toggled with `t`). Reverts to the mode-default surface
-    /// the next time the user presses a mode-switch or `t` again.
+    pub manager: AgentManager,
+    /// `true` when the Templates overlay is visible. Toggled with `t`.
     pub templates_visible: bool,
 }
 
@@ -61,55 +61,86 @@ impl WorkbenchState {
         WorkbenchState {
             board: board::BoardState::new(),
             memories: memories::MemoriesState::new(),
-            terminals: terminals::TerminalsState::new(),
+            agents_state: agents::AgentsState::new(),
             templates: templates::TemplatesState::new(),
+            manager: AgentManager::new(),
             templates_visible: false,
         }
     }
 
-    /// Toggle the Templates surface overlay.
     pub fn toggle_templates(&mut self) {
         self.templates_visible = !self.templates_visible;
     }
 
+    /// Drain every hosted agent's reader thread. Called by the shell
+    /// on every tick. Returns `true` when at least one agent's
+    /// screen changed so the shell can decide to re-render.
+    pub fn poll_agents(&mut self) -> bool {
+        !self.manager.poll_all().is_empty()
+    }
+
+    /// Spawn an embedded agent for `leaf`. The label is used in the
+    /// surface title and the spawn event detail.
+    pub fn spawn_agent(
+        &mut self,
+        leaf: LeafId,
+        command: &str,
+        cwd: Option<&Path>,
+        label: &str,
+    ) -> Result<(), crate::agents::AgentError> {
+        let env = crate::agents::scope_env(leaf, label);
+        self.manager.spawn(leaf, command, cwd, &env)
+    }
+
     /// Dispatch a keystroke into the surface that matches `mode` (or
-    /// the Templates surface when overlay is active). Returns the
-    /// surface's [`Disposition`] so the shell knows when to flip focus
-    /// or open the ticket editor.
+    /// the Templates overlay when active).
     pub fn handle_key(
         &mut self,
         mode: Mode,
-        key: KeyCode,
-        mods: KeyModifiers,
+        key: KeyEvent,
         db: &Database,
         pm_dir: &Path,
         scope: Option<LeafId>,
     ) -> Disposition {
-        // 't' toggles the templates overlay from any surface. Routed
-        // here rather than in the input router because it shadows
-        // surface-local 't' bindings, and only the Workbench owns the
-        // surface state to mutate.
-        if matches!(key, KeyCode::Char('t')) && mods.is_empty() {
+        // 't' (no modifiers) toggles the templates overlay, but only
+        // from non-Agents surfaces - the Agents surface forwards 't'
+        // to the PTY because the user almost certainly wants to type
+        // it. The overlay is still reachable from Board / Memories.
+        if !self.templates_visible
+            && matches!(key.code, KeyCode::Char('t'))
+            && key.modifiers.is_empty()
+            && !matches!(Surface::for_mode(mode), Surface::Agents)
+        {
+            self.toggle_templates();
+            return Disposition::Consumed;
+        }
+
+        // Once the overlay is up, 't' (or Esc) closes it from any
+        // surface so the user is never trapped.
+        if self.templates_visible
+            && (matches!(key.code, KeyCode::Char('t')) || matches!(key.code, KeyCode::Esc))
+        {
             self.toggle_templates();
             return Disposition::Consumed;
         }
 
         if self.templates_visible {
-            return self.templates.handle_key(key, mods, pm_dir);
+            return self.templates.handle_key(key.code, key.modifiers, pm_dir);
         }
 
         match Surface::for_mode(mode) {
-            Surface::Board => self.board.handle_key(key, mods, db),
-            Surface::Memories => self.memories.handle_key(key, mods, db, pm_dir, scope),
-            Surface::Terminals => self.terminals.handle_key(key, mods, pm_dir),
-            Surface::Templates => self.templates.handle_key(key, mods, pm_dir),
+            Surface::Board => self.board.handle_key(key.code, key.modifiers, db),
+            Surface::Memories => {
+                self.memories
+                    .handle_key(key.code, key.modifiers, db, pm_dir, scope)
+            }
+            Surface::Agents => self.agents_state.handle_key(key, &mut self.manager, scope),
+            Surface::Templates => self.templates.handle_key(key.code, key.modifiers, pm_dir),
         }
     }
 
-    /// Render the workbench for the active `mode` (or the Templates
-    /// overlay) into `area`, filtered to `scope`.
     pub fn render(
-        &self,
+        &mut self,
         f: &mut Frame,
         area: Rect,
         db: &Database,
@@ -129,8 +160,21 @@ impl WorkbenchState {
             Surface::Memories => {
                 memories::render(f, area, db, pm_dir, scope, &self.memories, focused_zone)
             }
-            Surface::Terminals => terminals::render(f, area, pm_dir, &self.terminals, focused_zone),
+            Surface::Agents => agents::render(
+                f,
+                area,
+                &mut self.manager,
+                scope,
+                &self.agents_state,
+                focused_zone,
+            ),
             Surface::Templates => templates::render(f, area, pm_dir, &self.templates, focused_zone),
         }
+    }
+}
+
+impl Default for WorkbenchState {
+    fn default() -> Self {
+        Self::new()
     }
 }

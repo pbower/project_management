@@ -1,6 +1,6 @@
 [package]
 name = "spacecell-thunder"
-version = "0.3.6"
+version = "0.3.7"
 edition = "2021"
 description = "SpaceCell Thunder: hierarchical project management cockpit with embedded agent terminals, three-tier memory, and MCP-native coordination."
 license = "MPL-2.0"
@@ -31,6 +31,8 @@ serde_yml = "0.0.12"
 notify-debouncer-mini = "0.7.0"
 toml = "1.1.2"
 libc = "0.2.186"
+portable-pty = "0.9.0"
+shpool_vt100 = "0.1.3"
 
 # v0.3.0 dropped the `pm` deprecation shim that v0.2.0 carried. Users on
 # the v0.9.x `pm` name install `spacecell` directly.

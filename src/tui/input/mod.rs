@@ -11,12 +11,14 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::store::LeafId;
 
-/// Workbench preset modes. v0.3.6 reshaped the v0.3.1 placeholder
-/// modes into populated surfaces:
+/// Workbench preset modes:
 ///
-/// - `Board` = the 9-stage kanban (unchanged from v0.3.1).
-/// - `Memories` = three-tier memory browser (was `Documents`).
-/// - `Terminals` = live launcher registry view (was `Activity`).
+/// - `Board` = the 9-stage kanban.
+/// - `Memories` = three-tier memory browser.
+/// - `Agents` = in-cockpit PTY for the focused ticket's hosted agent
+///   (v0.3.7). Replaces the v0.3.6 external-terminals registry view;
+///   the `spacecell terminals` CLI still reports launcher-spawned
+///   external windows.
 ///
 /// The Activity feed lives at the bottom strip in every mode, so the
 /// old `Activity` mode does not need a dedicated full-screen renderer
@@ -25,7 +27,7 @@ use crate::store::LeafId;
 pub enum Mode {
     Board,
     Memories,
-    Terminals,
+    Agents,
 }
 
 impl Mode {
@@ -33,17 +35,17 @@ impl Mode {
     pub fn next(self) -> Mode {
         match self {
             Mode::Board => Mode::Memories,
-            Mode::Memories => Mode::Terminals,
-            Mode::Terminals => Mode::Board,
+            Mode::Memories => Mode::Agents,
+            Mode::Agents => Mode::Board,
         }
     }
 
     /// Previous mode in the `Shift+Tab` cycle.
     pub fn prev(self) -> Mode {
         match self {
-            Mode::Board => Mode::Terminals,
+            Mode::Board => Mode::Agents,
             Mode::Memories => Mode::Board,
-            Mode::Terminals => Mode::Memories,
+            Mode::Agents => Mode::Memories,
         }
     }
 
@@ -52,7 +54,7 @@ impl Mode {
         match self {
             Mode::Board => "BOARD",
             Mode::Memories => "MEMORIES",
-            Mode::Terminals => "TERMINALS",
+            Mode::Agents => "AGENTS",
         }
     }
 }
@@ -98,7 +100,7 @@ pub fn route(key: KeyCode, mods: KeyModifiers, focus: Focus, help_open: bool) ->
             KeyCode::BackTab => return ShellAction::SwitchMode(Mode::Board.prev()),
             KeyCode::Char('1') => return ShellAction::SwitchMode(Mode::Board),
             KeyCode::Char('2') => return ShellAction::SwitchMode(Mode::Memories),
-            KeyCode::Char('3') => return ShellAction::SwitchMode(Mode::Terminals),
+            KeyCode::Char('3') => return ShellAction::SwitchMode(Mode::Agents),
             _ => return ShellAction::None,
         }
     }
@@ -122,7 +124,7 @@ pub fn route(key: KeyCode, mods: KeyModifiers, focus: Focus, help_open: bool) ->
         KeyCode::BackTab => return ShellAction::SwitchMode(Mode::Board),
         KeyCode::Char('1') => return ShellAction::SwitchMode(Mode::Board),
         KeyCode::Char('2') => return ShellAction::SwitchMode(Mode::Memories),
-        KeyCode::Char('3') => return ShellAction::SwitchMode(Mode::Terminals),
+        KeyCode::Char('3') => return ShellAction::SwitchMode(Mode::Agents),
         _ => {}
     }
 
@@ -168,6 +170,10 @@ pub enum Disposition {
     /// file path. Used by surfaces that browse files outside any
     /// ticket (memory tier files, per-kind templates).
     EditPath(std::path::PathBuf),
+    /// Spawn an embedded agent PTY for the leaf and auto-switch the
+    /// shell into Agents mode so the user sees the new terminal
+    /// immediately.
+    SpawnAgent(LeafId),
 }
 
 #[cfg(test)]

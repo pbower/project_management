@@ -36,7 +36,7 @@ pub fn render(f: &mut Frame, area: Rect, mode: Mode) {
     lines.push(Line::raw(""));
     lines.push(Line::styled("  GLOBAL", style::eyebrow()));
     lines.push(row("Tab / Shift-Tab", "Cycle modes"));
-    lines.push(row("1 / 2 / 3", "Jump to Board / Memories / Terminals"));
+    lines.push(row("1 / 2 / 3", "Jump to Board / Memories / Agents"));
     lines.push(row(
         "Shift + ← / →",
         "Jump focus between LHP and Workbench from anywhere",
@@ -69,13 +69,22 @@ pub fn render(f: &mut Frame, area: Rect, mode: Mode) {
     lines.push(Line::raw(""));
 
     lines.push(Line::styled(
-        "  NAVIGATION · TERMINALS (mode 3)",
+        "  NAVIGATION · AGENTS (mode 3)",
         style::eyebrow(),
     ));
-    lines.push(row("↑ / ↓", "Move between spawned terminals"));
-    lines.push(row("Enter", "Open the terminal's ticket in the editor"));
-    lines.push(row("o", "Focus the terminal via the configured launcher"));
-    lines.push(row("K", "Kill the terminal (sends SIGINT to its pid)"));
+    lines.push(row(
+        "r (on board)",
+        "Spawn an embedded agent on the focused card",
+    ));
+    lines.push(row("(typing)", "Keystrokes flow to the agent's PTY"));
+    lines.push(row("Esc", "Leave input mode (PTY stops receiving keys)"));
+    lines.push(row("i", "Re-enter input mode"));
+    lines.push(blurb(
+        "Embedded agents run in-cockpit; their stdout/stderr renders inside the Agents surface and their stdin is the keystrokes you type while focused.",
+    ));
+    lines.push(blurb(
+        "External-window agents (launcher-spawned) are still available via `spacecell terminals` on the CLI.",
+    ));
     lines.push(Line::raw(""));
 
     lines.push(Line::styled("  TEMPLATES OVERLAY", style::eyebrow()));
