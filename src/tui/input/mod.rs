@@ -11,32 +11,39 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::store::LeafId;
 
-/// The three Workbench presets described in PM_DESIGN section 8.3.2.
-/// Mode 1 hosts the kanban board; Modes 2 and 3 are placeholders in
-/// v0.3.1 and gain content in later sub-phases.
+/// Workbench preset modes. v0.3.6 reshaped the v0.3.1 placeholder
+/// modes into populated surfaces:
+///
+/// - `Board` = the 9-stage kanban (unchanged from v0.3.1).
+/// - `Memories` = three-tier memory browser (was `Documents`).
+/// - `Terminals` = live launcher registry view (was `Activity`).
+///
+/// The Activity feed lives at the bottom strip in every mode, so the
+/// old `Activity` mode does not need a dedicated full-screen renderer
+/// inside the shell; `spacecell tv` still covers the kiosk case.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Board,
-    Documents,
-    Activity,
+    Memories,
+    Terminals,
 }
 
 impl Mode {
     /// Next mode in the `Tab` cycle.
     pub fn next(self) -> Mode {
         match self {
-            Mode::Board => Mode::Documents,
-            Mode::Documents => Mode::Activity,
-            Mode::Activity => Mode::Board,
+            Mode::Board => Mode::Memories,
+            Mode::Memories => Mode::Terminals,
+            Mode::Terminals => Mode::Board,
         }
     }
 
     /// Previous mode in the `Shift+Tab` cycle.
     pub fn prev(self) -> Mode {
         match self {
-            Mode::Board => Mode::Activity,
-            Mode::Documents => Mode::Board,
-            Mode::Activity => Mode::Documents,
+            Mode::Board => Mode::Terminals,
+            Mode::Memories => Mode::Board,
+            Mode::Terminals => Mode::Memories,
         }
     }
 
@@ -44,8 +51,8 @@ impl Mode {
     pub fn label(self) -> &'static str {
         match self {
             Mode::Board => "BOARD",
-            Mode::Documents => "DOCUMENTS",
-            Mode::Activity => "ACTIVITY",
+            Mode::Memories => "MEMORIES",
+            Mode::Terminals => "TERMINALS",
         }
     }
 }
@@ -90,8 +97,8 @@ pub fn route(key: KeyCode, mods: KeyModifiers, focus: Focus, help_open: bool) ->
             KeyCode::Tab => return ShellAction::SwitchMode(Mode::Board.next()),
             KeyCode::BackTab => return ShellAction::SwitchMode(Mode::Board.prev()),
             KeyCode::Char('1') => return ShellAction::SwitchMode(Mode::Board),
-            KeyCode::Char('2') => return ShellAction::SwitchMode(Mode::Documents),
-            KeyCode::Char('3') => return ShellAction::SwitchMode(Mode::Activity),
+            KeyCode::Char('2') => return ShellAction::SwitchMode(Mode::Memories),
+            KeyCode::Char('3') => return ShellAction::SwitchMode(Mode::Terminals),
             _ => return ShellAction::None,
         }
     }
@@ -114,8 +121,8 @@ pub fn route(key: KeyCode, mods: KeyModifiers, focus: Focus, help_open: bool) ->
         KeyCode::Tab => return ShellAction::SwitchMode(Mode::Board), // resolved by caller
         KeyCode::BackTab => return ShellAction::SwitchMode(Mode::Board),
         KeyCode::Char('1') => return ShellAction::SwitchMode(Mode::Board),
-        KeyCode::Char('2') => return ShellAction::SwitchMode(Mode::Documents),
-        KeyCode::Char('3') => return ShellAction::SwitchMode(Mode::Activity),
+        KeyCode::Char('2') => return ShellAction::SwitchMode(Mode::Memories),
+        KeyCode::Char('3') => return ShellAction::SwitchMode(Mode::Terminals),
         _ => {}
     }
 
@@ -148,13 +155,19 @@ pub fn route(key: KeyCode, mods: KeyModifiers, focus: Focus, help_open: bool) ->
 /// cockpit. `OpenTicketEditor` swaps the layout for the full-screen
 /// ticket editor; `EditRaw` suspends the TUI and hands the terminal
 /// to `$EDITOR` on the ticket's raw CLAUDE.md file (escape hatch).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+// `PathBuf` is not `Copy`, so `Disposition` cannot be either; callers
+// consume it by value so the trait removal is invisible in practice.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Disposition {
     Consumed,
     OverflowLeft,
     OverflowRight,
     OpenTicketEditor(LeafId),
     EditRaw(LeafId),
+    /// Suspend the alternate screen and hand `$EDITOR` an arbitrary
+    /// file path. Used by surfaces that browse files outside any
+    /// ticket (memory tier files, per-kind templates).
+    EditPath(std::path::PathBuf),
 }
 
 #[cfg(test)]

@@ -6,8 +6,8 @@
 //! - `LHP` (left): hierarchical navigation, salvaged from the v0.9
 //!   `App` and rewritten against [`crate::tui::nav`].
 //! - `Workbench` (centre): the active surface for the current mode
-//!   ([`Mode::Board`] in v0.3.1; [`Mode::Documents`] and
-//!   [`Mode::Activity`] are placeholders until v0.3.3).
+//!   ([`Mode::Board`] in v0.3.1; [`Mode::Memories`] and
+//!   [`Mode::Terminals`] are placeholders until v0.3.3).
 //! - `Activity` (bottom strip): always-visible tail of `events.log`.
 //! - `Footer` (bottom row): context-sensitive key hints.
 //!
@@ -55,6 +55,9 @@ enum ShellOutcome {
     Quit,
     EditRaw(LeafId),
     OpenEditor(LeafId),
+    /// Suspend the alternate screen and hand `$EDITOR` an arbitrary
+    /// file path (memory file, template, etc.).
+    EditPath(std::path::PathBuf),
 }
 
 /// The main shell state. Re-loads the database on every refresh tick so
@@ -130,6 +133,9 @@ impl Shell {
                         }
                         ShellOutcome::OpenEditor(id) => {
                             self.open_ticket_editor(id);
+                        }
+                        ShellOutcome::EditPath(path) => {
+                            self.run_external_editor(terminal, &path)?;
                         }
                     }
                 }
@@ -272,6 +278,39 @@ impl Shell {
         self.run_editor(terminal, id)
     }
 
+    /// Suspend the alternate screen and hand `$EDITOR` an arbitrary
+    /// file path. Used by the Memories and Templates surfaces; the
+    /// resume + Database reload path mirrors the ticket editor flow
+    /// so any front-matter changes the user made surface on the next
+    /// render.
+    fn run_external_editor(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        path: &std::path::Path,
+    ) -> io::Result<()> {
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+        let _ = std::process::Command::new(&editor).arg(path).status();
+
+        enable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableMouseCapture
+        )?;
+        terminal.clear()?;
+
+        self.db = Database::load(&self.pm_dir);
+        Ok(())
+    }
+
     /// Suspend the alternate screen, hand the terminal back to `$EDITOR`
     /// for the given ticket, then resume and re-load the database so
     /// any front-matter changes the user made show up immediately.
@@ -322,8 +361,8 @@ impl Shell {
                     crossterm::event::KeyCode::Tab => self.mode = self.mode.next(),
                     crossterm::event::KeyCode::BackTab => self.mode = self.mode.prev(),
                     crossterm::event::KeyCode::Char('1') => self.mode = Mode::Board,
-                    crossterm::event::KeyCode::Char('2') => self.mode = Mode::Documents,
-                    crossterm::event::KeyCode::Char('3') => self.mode = Mode::Activity,
+                    crossterm::event::KeyCode::Char('2') => self.mode = Mode::Memories,
+                    crossterm::event::KeyCode::Char('3') => self.mode = Mode::Terminals,
                     _ => {}
                 }
                 self.show_help = false;
@@ -353,11 +392,16 @@ impl Shell {
                     }
                     Disposition::OpenTicketEditor(id) => return ShellOutcome::OpenEditor(id),
                     Disposition::EditRaw(id) => return ShellOutcome::EditRaw(id),
+                    Disposition::EditPath(path) => return ShellOutcome::EditPath(path),
                 }
                 ShellOutcome::Continue
             }
             ShellAction::WorkbenchKey(k, m) => {
-                match self.workbench.handle_key(self.mode, k, m, &self.db) {
+                let scope = self.lhp.scope(&self.db);
+                match self
+                    .workbench
+                    .handle_key(self.mode, k, m, &self.db, &self.pm_dir, scope)
+                {
                     Disposition::Consumed => {}
                     Disposition::OverflowLeft => {
                         // Left from the leftmost board column hands
@@ -366,10 +410,10 @@ impl Shell {
                     }
                     Disposition::OverflowRight => {
                         // Right from the rightmost column: stay put.
-                        // v0.3.4 adds a right-of-Workbench surface.
                     }
                     Disposition::OpenTicketEditor(id) => return ShellOutcome::OpenEditor(id),
                     Disposition::EditRaw(id) => return ShellOutcome::EditRaw(id),
+                    Disposition::EditPath(path) => return ShellOutcome::EditPath(path),
                 }
                 ShellOutcome::Continue
             }
@@ -428,6 +472,7 @@ impl Shell {
             f,
             body[1],
             &self.db,
+            &self.pm_dir,
             self.lhp.scope(&self.db),
             self.mode,
             self.focus == Focus::Workbench,

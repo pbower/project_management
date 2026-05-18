@@ -4,6 +4,70 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-05-18
+
+Populated Workbench surfaces. The v0.3.1 placeholders are gone; every
+mode now shows live content, and a Templates overlay reachable via `t`
+opens the per-kind config files in `$EDITOR`.
+
+### Added
+
+- `src/tui/workbench/memories.rs` (Memories surface): three-tier
+  browser that enumerates user / project / ticket memories. `Enter`
+  hands the focused file to `$EDITOR`; arrow keys move the cursor and
+  overflow flips focus back to the LHP.
+- `src/tui/workbench/terminals.rs` (Terminals surface): live launcher
+  registry view with a header summarising active vs total entries.
+  `o` invokes the configured focus command; `K` sends `SIGINT` to the
+  recorded pid; `Enter` opens the terminal's scope in the ticket
+  editor.
+- `src/tui/workbench/templates.rs` (Templates overlay): lists the six
+  per-kind template files (`project / product / epic / task / subtask
+  / milestone`) plus the workspace launcher config. `Enter` opens the
+  selected file in `$EDITOR`. `t` from any other surface toggles the
+  overlay on / off.
+- `Disposition::EditPath(PathBuf)` and `ShellOutcome::EditPath`. The
+  shell suspends the alternate screen and runs `$EDITOR` against any
+  path a surface hands it, then resumes and reloads `Database`.
+
+### Changed
+
+- `Mode` variants renamed for clarity (variant names and labels both
+  shift):
+  - `Mode::Documents` -> `Mode::Memories`
+  - `Mode::Activity` -> `Mode::Terminals`
+  - `Mode::Board` unchanged.
+  The activity feed remains the bottom strip in every mode, so the
+  full-screen Activity placeholder is gone; `spacecell tv` keeps the
+  kiosk path.
+- `Workbench::handle_key` and `Workbench::render` gained `pm_dir` and
+  `scope` parameters so the new surfaces can read the launcher
+  registry and the memory tier directories.
+- `Disposition` lost `Copy`; `PathBuf` inside `EditPath` is not
+  `Copy`. Callers move the value, the trait removal is invisible.
+
+### Removed
+
+- `src/tui/workbench/placeholder.rs` and the "coming soon" copy that
+  shipped with v0.3.1.
+
+### Tests
+
+- `tests/phase_v0_3_6_surfaces.rs`: five integration tests cover the
+  Terminals registry round-trip, terminal-spawn scope tagging, memory
+  directory layout invariants, Templates surface paths matching the
+  launcher's actual lookups, and confirmation that `terminal-spawn`
+  events stay out of the state-change ticker.
+- Total: 298 tests pass (+5 from v0.3.5 baseline).
+
+### Notes
+
+- Per-kind form template loader (`.pm/templates/<kind>.toml`)
+  remains on the v0.3.7 list. v0.3.6 ships the file-browsing surface
+  so users can author and edit those templates today; the consumer
+  side (per-kind quick-entry form fields, per-kind inner command)
+  follows next.
+
 ## [0.3.5] - 2026-05-18
 
 Configured-launcher agent terminals, terminal registry, MCP scope

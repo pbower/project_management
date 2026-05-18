@@ -39,9 +39,19 @@ pub fn render(f: &mut Frame, area: Rect, mode: Mode, focus: Focus) {
             spans.extend(key("↑ ↓", "card"));
             spans.extend(key("Enter", "edit"));
         }
-        (Focus::Workbench, _) => {}
+        (Focus::Workbench, Mode::Memories) => {
+            spans.extend(key("↑ ↓", "memory"));
+            spans.extend(key("Enter", "edit"));
+        }
+        (Focus::Workbench, Mode::Terminals) => {
+            spans.extend(key("↑ ↓", "terminal"));
+            spans.extend(key("Enter", "ticket"));
+            spans.extend(key("o", "focus"));
+            spans.extend(key("K", "kill"));
+        }
     }
 
+    spans.extend(key("t", "templates"));
     spans.extend(key("?", "help"));
     spans.extend(key("q", "quit"));
 

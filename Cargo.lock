@@ -550,9 +550,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.175"
+version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a82ae493e598baaea5209805c49bbf2ea7de956d50d7da0da1164f9c6d28543"
+checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libyml"
@@ -931,12 +931,13 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "spacecell-thunder"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "chrono",
  "clap",
  "clap_complete",
  "crossterm 0.29.0",
+ "libc",
  "notify-debouncer-mini",
  "ratatui",
  "serde",
