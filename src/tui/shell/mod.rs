@@ -98,7 +98,14 @@ impl Shell {
     /// re-enter and continue.
     pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
         loop {
-            self.activity.refresh_if_due();
+            // Drain the activity strip's watcher. When events.log has
+            // grown since the last tick the shell reloads Database so
+            // out-of-band CLI mutations propagate into the LHP counts
+            // and the board's content without the user needing to
+            // press anything.
+            if self.activity.poll() {
+                self.db = Database::load(&self.pm_dir);
+            }
             terminal.draw(|f| self.render(f))?;
 
             if event::poll(Duration::from_millis(200))? {

@@ -4,6 +4,47 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-05-18
+
+Live activity refresh + state-change ticker.
+
+### Added
+
+- `src/tui/activity/ticker.rs`: state-change ticker on the right side
+  of the bottom activity strip. Surfaces the last eight transitions
+  with verbs in `{status, priority, complete, move, reopen, checkin}`.
+  Most-recent row at the top; verb gets a semantic colour (gold for
+  in-progress moves, green for completes, muted for reopens).
+- `tests/phase_v0_3_4_live_refresh.rs`: three integration tests that
+  exercise the watcher end-to-end - idle poll, external append wakes
+  the watcher within 2s, missing `events.log` falls back to throttled
+  polling and still picks up later writes.
+
+### Changed
+
+- `ActivityStrip` swapped its 500ms polling for a
+  `notify-debouncer-mini` watcher on `events.log`. The strip's new
+  `poll()` method drains the watcher channel and re-reads the buffer
+  only when something fired (or the 500ms fallback throttle expires
+  on a watcher-less filesystem). Returns `true` when the event buffer
+  grew, so the shell knows the workspace state may have changed.
+- `src/tui/shell/mod.rs` now reloads `Database` whenever `poll()`
+  reports a buffer growth. External CLI mutations (`spacecell status
+  TSK7 in_progress`, etc.) propagate into the LHP counts and the
+  board's content without the user pressing anything.
+- Activity strip layout: 2-column inside the bordered band. Events
+  feed on the left (variable width), state-change ticker on the
+  right (fixed 34 cells).
+
+### Notes
+
+- The watcher silently falls back to polling when `events.log` does
+  not yet exist at strip-construction time. The shell's poll loop
+  still picks up appends after creation through the throttled path,
+  so a fresh workspace is no worse than v0.3.1.
+- Debouncer kept alive for the strip's lifetime via an unnamed field
+  so the OS watcher thread does not get dropped mid-session.
+
 ## [0.3.3] - 2026-05-18
 
 The full-screen ticket editor. Pressing Enter on a board card opens a
