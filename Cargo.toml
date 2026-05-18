@@ -1,6 +1,6 @@
 [package]
 name = "spacecell-thunder"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 description = "SpaceCell Thunder: hierarchical project management cockpit with embedded agent terminals, three-tier memory, and MCP-native coordination."
 license = "MPL-2.0"

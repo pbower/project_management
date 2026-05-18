@@ -4,6 +4,79 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-05-18
+
+The full-screen ticket editor. Pressing Enter on a board card opens a
+new editor that owns the screen until the user saves or cancels;
+short fields are typed in directly, enum fields cycle with Left/Right,
+and the long-form section bodies are still edited externally in
+`$EDITOR`. The user never sees the YAML front-matter or the other
+sections while editing one; on save, the body splices back into
+`CLAUDE.md` at the same anchor.
+
+### Added
+
+- `src/tui/ticket_editor/`: new module split into `mod.rs` (the
+  full-screen editor), `form.rs` (13-field form model, enum cycling,
+  text-input typing mode, diff-against-task), and `sections.rs`
+  (anchor-based section parsing, body extraction, atomic splice
+  back, temp-file lifecycle).
+- 13 form fields: title, summary, kind, status, priority, urgency,
+  process, tags, due, parent, milestone, issue_link, pr_link. Text
+  fields type straight in. Enum fields cycle with Left/Right.
+- Section list shows every level-1 heading present in CLAUDE.md plus
+  a line count. Enter on a section opens it externally in nvim with
+  only that section's body in the temp file - no YAML, no other
+  sections, no `@artifacts` import line. On save, splice back to the
+  same anchor; everything else in CLAUDE.md is untouched.
+- Save & Return and Cancel buttons at the bottom of the form. Ctrl+S
+  also saves from anywhere; Esc cancels.
+- New `Disposition` variants `OpenTicketEditor(LeafId)` and
+  `EditRaw(LeafId)`. The shell routes Enter from a board card to the
+  editor, `e` from a board card to raw `$EDITOR` on the whole
+  CLAUDE.md (escape hatch for power users).
+- Section splice tests: parse round-trip, body extraction with
+  trailing-blank trim, splice replaces only the named section body,
+  add-section inserts before the `@artifacts` import.
+- Form tests: enum cycling in both directions, priority cycle
+  includes None, typing appends and backspaces.
+
+### Changed
+
+- `cmd_edit` default `$EDITOR` fallback changed from `nano` to
+  `nvim`. `EDITOR=...` still wins; the fallback is now nvim.
+- Shell hosts `Option<TicketEditor>` and renders it full-screen when
+  open. While the editor owns the screen, all keys route to it; the
+  shell's mode-switch keys are inert until the editor closes.
+- Save path applies each dirty form field through a direct task
+  mutation + `db.save()` + `commit_workspace()` + `append_event()`
+  cycle, so every change in the editor produces a git commit and an
+  events.log entry. Future agents reading the event log see what the
+  user changed and when.
+
+### Robustness
+
+- Ticket re-read from disk on editor open; missing fields default to
+  empty; missing sections do not appear in the list.
+- Section parse handles missing front-matter, missing `@artifacts`
+  import, unclosed front-matter (treats as no body), and trailing
+  blank-line normalisation across round-trips.
+- Splice writes are atomic (temp file + rename). Tests pin the
+  byte-equivalence of unmodified sections after a splice.
+- Database reload after every save / cancel / external section edit
+  so the form and the board reflect the latest disk state.
+
+### Deferred
+
+- Markdown rendering inside the editor (preview pane). `tui-markdown`
+  is the obvious crate; deferring until the editor settles.
+- Add Section flow (prompts the user for a heading and inserts it).
+  v0.3.3 ships an "Add Section" row that surfaces a status note
+  pointing at v0.3.4; the splice helper that backs it
+  (`sections::add_section`) is already wired and tested.
+- Artifact add / rename UI: still CLI-only via `spacecell artifact
+  add`. v0.3.4 (launcher work) brings the in-form affordance.
+
 ## [0.3.2] - 2026-05-16
 
 Lightning palette refresh and arrow-key-only navigation. The cockpit

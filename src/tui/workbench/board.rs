@@ -76,10 +76,25 @@ impl BoardState {
                 Disposition::Consumed
             }
             KeyCode::Enter => {
-                // Open the focused card's CLAUDE.md in $EDITOR.
+                // Enter opens the focused card in the full-screen
+                // ticket editor (form + section list). For raw
+                // CLAUDE.md access bypassing the form, `e` is the
+                // power-user escape hatch (handled below).
                 if let Some(col) = columns.get(self.focused_column) {
                     if let Some(id) = col.cards.get(self.focused_card) {
-                        return Disposition::Edit(*id);
+                        return Disposition::OpenTicketEditor(*id);
+                    }
+                }
+                Disposition::Consumed
+            }
+            KeyCode::Char('e') => {
+                // Escape hatch: open the focused card's raw CLAUDE.md
+                // in $EDITOR. Skips the form so power users can edit
+                // front-matter, sections, and the @-import line all
+                // at once.
+                if let Some(col) = columns.get(self.focused_column) {
+                    if let Some(id) = col.cards.get(self.focused_card) {
+                        return Disposition::EditRaw(*id);
                     }
                 }
                 Disposition::Consumed

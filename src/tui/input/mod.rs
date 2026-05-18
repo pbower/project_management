@@ -145,14 +145,16 @@ pub fn route(key: KeyCode, mods: KeyModifiers, focus: Focus, help_open: bool) ->
 /// "handled with no change" (the shell re-renders on every tick
 /// regardless). The overflow variants ask the shell to flip focus to
 /// the adjacent zone so arrow-key navigation flows across the whole
-/// cockpit. `Edit` asks the shell to suspend the TUI, open the named
-/// ticket in `$EDITOR`, then resume.
+/// cockpit. `OpenTicketEditor` swaps the layout for the full-screen
+/// ticket editor; `EditRaw` suspends the TUI and hands the terminal
+/// to `$EDITOR` on the ticket's raw CLAUDE.md file (escape hatch).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Disposition {
     Consumed,
     OverflowLeft,
     OverflowRight,
-    Edit(LeafId),
+    OpenTicketEditor(LeafId),
+    EditRaw(LeafId),
 }
 
 #[cfg(test)]

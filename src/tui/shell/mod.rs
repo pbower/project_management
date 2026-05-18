@@ -19,7 +19,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -36,6 +36,10 @@ use crate::style;
 use crate::tui::activity::ActivityStrip;
 use crate::tui::input::{route, Disposition, Focus, Mode, ShellAction};
 use crate::tui::lhp::LhpState;
+use crate::tui::ticket_editor::{
+    sections::{cleanup_temp, extract_body, read_temp, splice_back, write_temp_for_section},
+    EditorOutcome, TicketEditor,
+};
 use crate::tui::workbench::WorkbenchState;
 
 mod footer;
@@ -43,13 +47,14 @@ mod header;
 mod help;
 
 /// What `Shell::apply` reports back to the run loop after each
-/// keystroke. `Continue` keeps the loop running; `Quit` exits; `Edit`
-/// suspends the TUI so `$EDITOR` can take over the terminal for the
-/// duration of the edit and then resumes.
+/// keystroke. `Continue` keeps the loop running; `Quit` exits;
+/// `EditRaw` suspends the TUI for raw `$EDITOR` on the ticket's
+/// CLAUDE.md; `OpenEditor` swaps in the full-screen ticket editor.
 enum ShellOutcome {
     Continue,
     Quit,
-    Edit(LeafId),
+    EditRaw(LeafId),
+    OpenEditor(LeafId),
 }
 
 /// The main shell state. Re-loads the database on every refresh tick so
@@ -65,6 +70,9 @@ pub struct Shell {
     workbench: WorkbenchState,
     activity: ActivityStrip,
     show_help: bool,
+    /// Full-screen ticket editor. When `Some`, the editor owns the
+    /// screen and the LHP / Workbench / Activity layout is hidden.
+    editor: Option<TicketEditor>,
 }
 
 impl Shell {
@@ -80,6 +88,7 @@ impl Shell {
             workbench: WorkbenchState::new(),
             activity,
             show_help: false,
+            editor: None,
         }
     }
 
@@ -97,17 +106,163 @@ impl Shell {
                     if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                         continue;
                     }
+                    // If the full-screen ticket editor is open it
+                    // owns every keystroke until it returns Save or
+                    // Cancel; the shell never sees mode-switch keys
+                    // until then.
+                    if self.editor.is_some() {
+                        self.tick_editor(terminal, key.code, key.modifiers)?;
+                        continue;
+                    }
                     let action = route(key.code, key.modifiers, self.focus, self.show_help);
                     match self.apply(key, action) {
                         ShellOutcome::Continue => {}
                         ShellOutcome::Quit => return Ok(()),
-                        ShellOutcome::Edit(id) => {
-                            self.run_editor(terminal, id)?;
+                        ShellOutcome::EditRaw(id) => {
+                            self.run_raw_editor(terminal, id)?;
+                        }
+                        ShellOutcome::OpenEditor(id) => {
+                            self.open_ticket_editor(id);
                         }
                     }
                 }
             }
         }
+    }
+
+    fn open_ticket_editor(&mut self, id: LeafId) {
+        match TicketEditor::open(self.pm_dir.clone(), &self.db, id) {
+            Ok(editor) => self.editor = Some(editor),
+            Err(e) => eprintln!("editor open: {e}"),
+        }
+    }
+
+    /// Hand a keystroke to the open editor and react to its outcome.
+    fn tick_editor(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        key: KeyCode,
+        mods: KeyModifiers,
+    ) -> io::Result<()> {
+        let outcome = match self.editor.as_mut() {
+            Some(ed) => ed.handle_key(key, mods),
+            None => return Ok(()),
+        };
+        match outcome {
+            EditorOutcome::Continue => Ok(()),
+            EditorOutcome::Cancel => {
+                self.editor = None;
+                self.db = Database::load(&self.pm_dir);
+                Ok(())
+            }
+            EditorOutcome::Save => {
+                if let Some(ed) = self.editor.as_ref() {
+                    if let Err(e) = ed.save(&mut self.db) {
+                        eprintln!("editor save: {e}");
+                    }
+                }
+                self.editor = None;
+                self.db = Database::load(&self.pm_dir);
+                Ok(())
+            }
+            EditorOutcome::EditSection { ticket, section } => {
+                self.edit_section_externally(terminal, ticket, section)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Drop out of the alternate screen, hand the temp section file
+    /// to `$EDITOR`, splice the body back into CLAUDE.md, then resume.
+    fn edit_section_externally(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        ticket: LeafId,
+        section: crate::tui::ticket_editor::sections::Section,
+    ) -> io::Result<()> {
+        // Resolve the CLAUDE.md path for this ticket via the editor's
+        // own knowledge if it is still open; otherwise fall back to
+        // the state-json lookup.
+        let claude_path = match self.editor.as_ref() {
+            Some(ed) if ed.ticket_id() == ticket => ed.claude_path().clone(),
+            _ => match self.db.state.items.get(&ticket) {
+                Some(entry) => self
+                    .pm_dir
+                    .join(&entry.path)
+                    .join(crate::store::claude_md::CLAUDE_MD),
+                None => return Ok(()),
+            },
+        };
+
+        // Extract the section body to a temp file with no headers,
+        // front-matter, or import line. The user sees only their
+        // prose.
+        let body = match extract_body(&claude_path, &section) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("section extract: {e}");
+                return Ok(());
+            }
+        };
+        let temp_path =
+            match write_temp_for_section(&self.pm_dir, &ticket.to_string(), &section, &body) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("section temp: {e}");
+                    return Ok(());
+                }
+            };
+
+        // Suspend, edit, resume.
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+
+        let editor_bin = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+        let _ = std::process::Command::new(&editor_bin)
+            .arg(&temp_path)
+            .status();
+
+        enable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableMouseCapture
+        )?;
+        terminal.clear()?;
+
+        // Splice the edited body back into CLAUDE.md.
+        match read_temp(&temp_path) {
+            Ok(new_body) => {
+                if let Err(e) = splice_back(&claude_path, &section, &new_body) {
+                    eprintln!("section splice: {e}");
+                }
+            }
+            Err(e) => eprintln!("section read-back: {e}"),
+        }
+        cleanup_temp(&temp_path);
+
+        // Refresh the editor's section list and the database so the
+        // form reflects whatever the user changed.
+        if let Some(ed) = self.editor.as_mut() {
+            let _ = ed.refresh_sections();
+        }
+        self.db = Database::load(&self.pm_dir);
+        Ok(())
+    }
+
+    /// Raw `$EDITOR` on the ticket's full CLAUDE.md. Power-user
+    /// escape hatch wired to `e` from the board.
+    fn run_raw_editor(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        id: LeafId,
+    ) -> io::Result<()> {
+        self.run_editor(terminal, id)
     }
 
     /// Suspend the alternate screen, hand the terminal back to `$EDITOR`
@@ -189,7 +344,8 @@ impl Shell {
                         // Already at the leftmost LHP level; nothing to
                         // do until v0.3.4 adds a left-of-LHP surface.
                     }
-                    Disposition::Edit(id) => return ShellOutcome::Edit(id),
+                    Disposition::OpenTicketEditor(id) => return ShellOutcome::OpenEditor(id),
+                    Disposition::EditRaw(id) => return ShellOutcome::EditRaw(id),
                 }
                 ShellOutcome::Continue
             }
@@ -205,7 +361,8 @@ impl Shell {
                         // Right from the rightmost column: stay put.
                         // v0.3.4 adds a right-of-Workbench surface.
                     }
-                    Disposition::Edit(id) => return ShellOutcome::Edit(id),
+                    Disposition::OpenTicketEditor(id) => return ShellOutcome::OpenEditor(id),
+                    Disposition::EditRaw(id) => return ShellOutcome::EditRaw(id),
                 }
                 ShellOutcome::Continue
             }
@@ -215,6 +372,14 @@ impl Shell {
 
     fn render(&self, f: &mut ratatui::Frame) {
         let area = f.area();
+
+        // The full-screen ticket editor owns the whole canvas when
+        // open; the normal LHP + Workbench + Activity layout is
+        // hidden until the user saves or cancels.
+        if let Some(editor) = &self.editor {
+            editor.render(f, area);
+            return;
+        }
 
         // Hard responsive minimum: refuse to draw if the terminal is
         // narrower than 80 cols, per PM_DESIGN section 8.7.5.

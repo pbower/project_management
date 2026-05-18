@@ -25,6 +25,7 @@ pub mod tui {
     pub mod nav;
     pub mod run;
     pub mod shell;
+    pub mod ticket_editor;
     pub mod utils;
     pub mod workbench;
     pub mod workflow;
