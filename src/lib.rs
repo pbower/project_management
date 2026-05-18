@@ -10,6 +10,7 @@ pub mod cli;
 pub mod cmd;
 pub mod db;
 pub mod fields;
+pub mod launcher;
 pub mod mcp;
 pub mod memory;
 pub mod project;

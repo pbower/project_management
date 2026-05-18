@@ -32,6 +32,11 @@ pub struct Context {
     pub db: Database,
     pub home: PathBuf,
     pub cwd: PathBuf,
+    /// Launch scope inherited from `THUNDER_SCOPE`, if the MCP server is
+    /// running inside a `spacecell agent --window` terminal. `None`
+    /// means the server is not scoped and every operation is allowed
+    /// without a warning event.
+    pub scope: Option<LeafId>,
 }
 
 impl Context {
@@ -43,17 +48,64 @@ impl Context {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let scope = crate::store::events::scope_from_env();
         Context {
             pm_dir,
             db,
             home,
             cwd,
+            scope,
         }
     }
 
     pub fn reload(&mut self) {
         self.db = Database::load(&self.pm_dir);
     }
+
+    /// Soft-enforce subtree authority: when the MCP server is scoped
+    /// to `THUNDER_SCOPE` and the operation's target is outside that
+    /// subtree, emit a `warning` event with detail mentioning the
+    /// violation. Returns regardless so the operation proceeds; the
+    /// audit trail is the enforcement mechanism, not a refusal.
+    pub fn record_scope_violation_if_any(&self, verb: &str, target: LeafId) {
+        let Some(scope) = self.scope else {
+            return;
+        };
+        if is_descendant_of(&self.db, target, scope) {
+            return;
+        }
+        let detail = format!("out-of-scope: {verb} {target} from scope {scope}");
+        let _ = append_event(
+            &self.pm_dir,
+            &Event {
+                ts: Utc::now(),
+                actor: default_actor(),
+                verb: "warning".to_string(),
+                id: Some(target),
+                detail: Some(detail),
+                scope: Some(scope),
+            },
+        );
+    }
+}
+
+/// `true` if `id` is `ancestor` itself or any descendant via parent
+/// links. Linear walk capped at 16 levels to guard against pathological
+/// data.
+fn is_descendant_of(db: &Database, id: LeafId, ancestor: LeafId) -> bool {
+    let mut cursor = Some(id);
+    let mut guard = 0;
+    while let Some(c) = cursor {
+        if c == ancestor {
+            return true;
+        }
+        if guard > 16 {
+            return false;
+        }
+        guard += 1;
+        cursor = db.get(c).and_then(|t| t.parent);
+    }
+    false
 }
 
 /// Dispatch one tool call. Returns the structured payload for the response;
@@ -349,6 +401,7 @@ fn handle_write_doc(ctx: &mut Context, args: &Value) -> Result<Value, String> {
     let section = require_str(args, "section")?;
     let content = require_str(args, "content")?;
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
+    ctx.record_scope_violation_if_any("write_doc", leaf);
     let entry = ctx
         .db
         .state
@@ -372,6 +425,7 @@ fn handle_write_doc(ctx: &mut Context, args: &Value) -> Result<Value, String> {
             verb: "edit".to_string(),
             id: Some(leaf),
             detail: Some(format!("write_doc section={section}")),
+            scope: crate::store::events::scope_from_env(),
         },
     );
 
@@ -416,6 +470,7 @@ fn handle_write_memory(ctx: &mut Context, args: &Value) -> Result<Value, String>
             verb: "memory-write".to_string(),
             id: None,
             detail: Some(format!("{}:{name}", scope.as_str())),
+            scope: crate::store::events::scope_from_env(),
         },
     );
     Ok(json!({
@@ -440,6 +495,7 @@ fn handle_checkout(ctx: &mut Context, args: &Value) -> Result<Value, String> {
         .and_then(Value::as_u64)
         .unwrap_or(DEFAULT_TTL_SECONDS);
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
+    ctx.record_scope_violation_if_any("checkout", leaf);
     let now = Utc::now();
     let lock = LockFile::new(leaf, Some(intent.to_string()), ttl, mode, None);
     match locks::acquire(&ctx.pm_dir, &lock, now) {
@@ -462,6 +518,7 @@ fn handle_checkin(ctx: &mut Context, args: &Value) -> Result<Value, String> {
     let id = require_str(args, "id")?;
     let summary = require_str(args, "summary")?;
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
+    ctx.record_scope_violation_if_any("checkin", leaf);
     let removed = locks::release(&ctx.pm_dir, leaf).map_err(|e| format!("checkin: {e}"))?;
     let _ = append_event(
         &ctx.pm_dir,
@@ -471,6 +528,7 @@ fn handle_checkin(ctx: &mut Context, args: &Value) -> Result<Value, String> {
             verb: "checkin".to_string(),
             id: Some(leaf),
             detail: Some(summary.to_string()),
+            scope: crate::store::events::scope_from_env(),
         },
     );
     Ok(json!({"id": leaf.to_string(), "released": removed}))
@@ -487,6 +545,7 @@ fn handle_complete(ctx: &mut Context, args: &Value) -> Result<Value, String> {
     }
     let id = require_str(args, "id")?;
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
+    ctx.record_scope_violation_if_any("complete", leaf);
     {
         let task = ctx
             .db
@@ -504,6 +563,7 @@ fn handle_complete(ctx: &mut Context, args: &Value) -> Result<Value, String> {
             verb: "complete".to_string(),
             id: Some(leaf),
             detail: None,
+            scope: crate::store::events::scope_from_env(),
         },
     );
     Ok(json!({"id": leaf.to_string(), "status": "done"}))
@@ -620,6 +680,7 @@ fn handle_add(ctx: &mut Context, args: &Value) -> Result<Value, String> {
             verb: "add".to_string(),
             id: Some(id),
             detail: Some(title.to_string()),
+            scope: crate::store::events::scope_from_env(),
         },
     );
     Ok(json!({"id": id.to_string()}))
@@ -632,6 +693,7 @@ fn handle_link(ctx: &mut Context, args: &Value) -> Result<Value, String> {
     let dep_id = require_str(args, "dep_id")?;
     let leaf = resolve_leaf(&ctx.db, id).ok_or_else(|| format!("not found: {id}"))?;
     let dep_leaf = resolve_leaf(&ctx.db, dep_id).ok_or_else(|| format!("not found: {dep_id}"))?;
+    ctx.record_scope_violation_if_any("link", leaf);
     if leaf == dep_leaf {
         return Err("a ticket cannot depend on itself".into());
     }
@@ -654,6 +716,7 @@ fn handle_link(ctx: &mut Context, args: &Value) -> Result<Value, String> {
             verb: "link".to_string(),
             id: Some(leaf),
             detail: Some(format!("needs {dep_leaf}")),
+            scope: crate::store::events::scope_from_env(),
         },
     );
     Ok(json!({"id": leaf.to_string(), "dep_id": dep_leaf.to_string()}))

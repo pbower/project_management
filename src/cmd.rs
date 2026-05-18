@@ -383,6 +383,46 @@ pub enum Commands {
         /// Run the legacy `tasks.json` migration into the current workspace.
         #[arg(long)]
         migrate: bool,
+        /// Sweep `.pm/terminals/` for entries past TTL and mark them dead;
+        /// pass `--purge-terminals --delete` to remove the registry files
+        /// outright instead of flagging.
+        #[arg(long)]
+        purge_terminals: bool,
+        /// Combine with `--purge-terminals` to delete stale entries rather
+        /// than marking them dead.
+        #[arg(long)]
+        delete: bool,
+    },
+
+    /// Spawn a new agent terminal scoped to a ticket. Uses the launcher
+    /// template from `.pm/.thunder.toml` or the user-global config; falls
+    /// back to `$SHELL -c '{cmd}'` so a fresh workspace still works.
+    Run {
+        /// Ticket id (any of TSK7, EPC3, PRJ1-PRD1-EPC3 ...). The
+        /// terminal's `THUNDER_SCOPE` is the resolved leaf.
+        id: String,
+    },
+
+    /// Print the registry of spawned terminals: uuid, scope, agent id,
+    /// pid, last heartbeat, and status.
+    Terminals,
+
+    /// Invoke the configured focus command for a terminal uuid. With no
+    /// focus command in the launcher config the verb prints the uuid so
+    /// the user can pipe it elsewhere.
+    Focus {
+        /// Terminal UUID (the `tk-xxxx` string returned by `run`).
+        uuid: String,
+    },
+
+    /// Internal entry point exec'd inside spawned terminals. Looks up
+    /// the UUID in the registry, sets `THUNDER_SCOPE` / `THUNDER_WINDOW`
+    /// / `PM_AGENT_ID`, prints the scope header, starts the heartbeat
+    /// thread, and exec's the inner command (default `claude`).
+    Agent {
+        /// Window UUID written by `spacecell run`.
+        #[arg(long)]
+        window: String,
     },
 
     /// Search CLAUDE.md content across the workspace.
@@ -3134,7 +3174,30 @@ pub fn cmd_milestone(db: &mut Database, pm_dir: &Path, id: &str, milestone_id: &
 /// `pm doctor [--migrate]`: rebuild `state.json` from disk and (with the
 /// `--migrate` flag) import any legacy `tasks.json` files into the workspace
 /// via the Phase 3.5 bridge.
-pub fn cmd_doctor(pm_dir: &Path, migrate: bool) {
+pub fn cmd_doctor(pm_dir: &Path, migrate: bool, purge_terminals: bool, delete: bool) {
+    if purge_terminals {
+        match crate::launcher::purge_dead_terminals(pm_dir, delete) {
+            Ok(acted) => {
+                if acted.is_empty() {
+                    println!("doctor: no stale terminals to purge.");
+                } else {
+                    let mode = if delete { "deleted" } else { "marked dead" };
+                    println!("doctor: {mode} {} stale terminal(s):", acted.len());
+                    for uuid in acted {
+                        println!("  - {uuid}");
+                    }
+                }
+            }
+            Err(e) => eprintln!("doctor: terminal purge failed: {e}"),
+        }
+        // Purge is an opt-in subroutine; the standard reconciliation
+        // below still runs so `doctor --purge-terminals` doubles as a
+        // full health check.
+    }
+    cmd_doctor_inner(pm_dir, migrate);
+}
+
+fn cmd_doctor_inner(pm_dir: &Path, migrate: bool) {
     if migrate {
         run_doctor_migrate(pm_dir);
     }
@@ -4200,4 +4263,182 @@ fn memref_name(m: &MemoryRef) -> &str {
     match m {
         MemoryRef::User(s) | MemoryRef::Project(s) | MemoryRef::Ticket(s) => s.as_str(),
     }
+}
+
+// =============================================================================
+// v0.3.5 launcher + terminals
+// =============================================================================
+
+/// `spacecell run <id>`: spawn an agent terminal scoped to `id`.
+pub fn cmd_run(db: &Database, pm_dir: &Path, id: &str) {
+    let leaf = match resolve_v2_id(id, db) {
+        Some(l) => l,
+        None => {
+            eprintln!("run: ticket not found: {id}");
+            std::process::exit(1);
+        }
+    };
+    let title = db.get(leaf).map(|t| t.title.clone());
+    let scope_dir = db
+        .state
+        .items
+        .get(&leaf)
+        .map(|entry| pm_dir.join(&entry.path));
+
+    match crate::launcher::spawn_terminal(pm_dir, leaf, title.as_deref(), scope_dir.as_deref()) {
+        Ok(uuid) => {
+            println!("run: spawned terminal {uuid} scoped to {leaf}");
+            if let Some(t) = title {
+                println!("     label: {leaf} {t}");
+            }
+        }
+        Err(e) => {
+            eprintln!("run: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `spacecell terminals`: list all registry entries with status.
+pub fn cmd_terminals(pm_dir: &Path) {
+    let entries = match crate::launcher::list_terminals(pm_dir) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("terminals: read failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    if entries.is_empty() {
+        println!("terminals: none.");
+        return;
+    }
+    println!(
+        "{:<14}  {:<8}  {:<22}  {:<8}  {:<19}  STATUS",
+        "UUID", "SCOPE", "AGENT", "PID", "LAST HEARTBEAT"
+    );
+    let now = chrono::Utc::now();
+    for entry in entries {
+        let stale = entry.is_stale(now);
+        let status = match (entry.status, stale) {
+            (crate::launcher::TerminalStatus::Active, true) => "STALE".to_string(),
+            (s, _) => format!("{s:?}").to_uppercase(),
+        };
+        println!(
+            "{:<14}  {:<8}  {:<22}  {:<8}  {:<19}  {status}",
+            entry.uuid,
+            entry.scope.to_string(),
+            entry.agent_id,
+            entry.pid,
+            entry.last_heartbeat.format("%Y-%m-%d %H:%M:%S"),
+        );
+    }
+}
+
+/// `spacecell focus <uuid>`: invoke the configured focus command. With
+/// no focus command in the launcher config the verb prints the uuid so
+/// the user can wire it into their WM by hand.
+pub fn cmd_focus(pm_dir: &Path, uuid: &str) {
+    let entry = match crate::launcher::load_terminal(pm_dir, uuid) {
+        Some(e) => e,
+        None => {
+            eprintln!("focus: no terminal with uuid {uuid}");
+            std::process::exit(1);
+        }
+    };
+    let cfg = crate::launcher::load_config(pm_dir);
+    let focus = match crate::launcher::resolve_focus_command(&cfg) {
+        Some(f) => f,
+        None => {
+            println!("focus: no focus command configured. Terminal {uuid}:");
+            println!("  scope:  {}", entry.scope);
+            println!("  label:  {}", entry.label);
+            println!("  pid:    {}", entry.pid);
+            println!("  spawn:  {}", entry.spawn_command);
+            return;
+        }
+    };
+
+    let sub = crate::launcher::ScopeSubstitution {
+        cmd: String::new(),
+        uuid: entry.uuid.clone(),
+        scope: entry.scope.to_string(),
+        label: entry.label.clone(),
+        cwd: pm_dir.display().to_string(),
+    };
+    let line = sub.apply(&focus);
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let status = match std::process::Command::new(&shell)
+        .arg("-c")
+        .arg(&line)
+        .status()
+    {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("focus: exec failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    if !status.success() {
+        eprintln!("focus: command exited with {status}");
+        std::process::exit(1);
+    }
+}
+
+/// `spacecell agent --window <uuid>`: the entry point exec'd inside a
+/// spawned terminal. Sets the scope env, prints the scope header,
+/// starts the heartbeat thread, and exec's the inner command.
+pub fn cmd_agent(pm_dir: &Path, window: &str) {
+    let entry = match crate::launcher::load_terminal(pm_dir, window) {
+        Some(e) => e,
+        None => {
+            eprintln!("agent: unknown window uuid: {window}");
+            std::process::exit(1);
+        }
+    };
+
+    // Inject scope env so the spawned process and anything it forks
+    // (claude, then MCP, then any tool the agent shells out to) all
+    // see the same THUNDER_SCOPE.
+    std::env::set_var("THUNDER_WINDOW", &entry.uuid);
+    std::env::set_var("THUNDER_SCOPE", entry.scope.to_string());
+    std::env::set_var("PM_AGENT_ID", &entry.agent_id);
+
+    print_scope_header(&entry);
+
+    let cfg = crate::launcher::load_config(pm_dir);
+    let inner = crate::launcher::resolve_inner_command(&cfg, Kind::Task);
+
+    let heartbeat =
+        crate::launcher::HeartbeatThread::start(pm_dir.to_path_buf(), entry.uuid.clone());
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let status = std::process::Command::new(&shell)
+        .arg("-c")
+        .arg(&inner)
+        .status();
+
+    if let Err(e) = heartbeat.stop_and_close() {
+        eprintln!("agent: heartbeat shutdown: {e}");
+    }
+    if let Err(e) = status {
+        eprintln!("agent: inner command failed: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn print_scope_header(entry: &crate::launcher::TerminalEntry) {
+    // Distinct, brand-aligned banner so the user immediately knows
+    // which scope this terminal is operating in. Plain ANSI codes
+    // rather than ratatui so the header survives ssh / tmux / weird
+    // emulators that drop our preferred Unicode.
+    println!();
+    println!(
+        "\x1b[1;33m\u{258c} {} \u{00b7} {} \u{00b7} subtree authority\x1b[0m",
+        entry.scope, entry.label
+    );
+    println!(
+        "\x1b[2m\u{258c} agent: {}  \u{00b7}  window: {}\x1b[0m",
+        entry.agent_id, entry.uuid
+    );
+    println!();
 }

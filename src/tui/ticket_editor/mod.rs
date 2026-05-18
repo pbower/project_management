@@ -581,6 +581,7 @@ fn apply_change(
         verb: change.label().to_string(),
         id: Some(leaf),
         detail: Some(summary),
+        scope: crate::store::events::scope_from_env(),
     };
     let _ = append_event(pm_dir, &event);
     Ok(())

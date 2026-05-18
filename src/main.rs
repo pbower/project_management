@@ -296,7 +296,16 @@ fn main() {
         }
 
         // v2 views / maintenance
-        Commands::Doctor { migrate } => cmd_doctor(&pm_dir, migrate),
+        Commands::Doctor {
+            migrate,
+            purge_terminals,
+            delete,
+        } => cmd_doctor(&pm_dir, migrate, purge_terminals, delete),
+
+        Commands::Run { id } => cmd_run(&db, &pm_dir, &id),
+        Commands::Terminals => cmd_terminals(&pm_dir),
+        Commands::Focus { uuid } => cmd_focus(&pm_dir, &uuid),
+        Commands::Agent { window } => cmd_agent(&pm_dir, &window),
         Commands::Search { query } => cmd_search(&pm_dir, &query),
 
         // Phase 6: lock protocol + activity feed

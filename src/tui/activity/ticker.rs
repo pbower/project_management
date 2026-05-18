@@ -149,6 +149,7 @@ mod tests {
             verb: verb.into(),
             id: leaf,
             detail: None,
+            scope: None,
         }
     }
 

@@ -572,6 +572,7 @@ mod tests {
             verb: verb.to_string(),
             id,
             detail: detail.map(String::from),
+            scope: None,
         }
     }
 

@@ -35,6 +35,13 @@ pub struct Event {
     /// `checkin`/`edit`, and so on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// The launch scope of the terminal that emitted the event, if any.
+    /// Set automatically by `spacecell agent --window` so the activity
+    /// feed can show the subtree authority each agent is operating
+    /// under. CLI invocations from a shell that was not spawned by
+    /// Thunder leave this `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<LeafId>,
 }
 
 /// Errors emitted by the events layer.
@@ -135,8 +142,18 @@ pub fn emit_event(
         verb: verb.to_string(),
         id,
         detail: detail.map(|s| s.to_string()),
+        scope: scope_from_env(),
     };
     append_event(pm_dir, &event)
+}
+
+/// Read `THUNDER_SCOPE` if the current process was spawned by
+/// `spacecell run` (or any other launcher that sets it). Returns
+/// `None` for plain shell invocations so events emitted from a normal
+/// CLI call do not gain a spurious scope tag.
+pub fn scope_from_env() -> Option<LeafId> {
+    let raw = std::env::var("THUNDER_SCOPE").ok()?;
+    raw.parse::<LeafId>().ok()
 }
 
 /// Append a pre-built event. Exposed mainly for tests that need a fixed

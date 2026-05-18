@@ -4,6 +4,92 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-05-18
+
+Configured-launcher agent terminals, terminal registry, MCP scope
+enforcement. This is the phase where Thunder stops being just a TUI
+and starts orchestrating agents.
+
+### Added
+
+- `src/launcher/` module with three submodules:
+  - `config`: TOML loader for `<pm_dir>/.thunder.toml` and
+    `~/.config/spacecell/launcher.toml`. Resolution order is project
+    > user > built-in default (`$SHELL -c '{cmd}'`). Substitutions
+    available in the spawn template: `{cmd}`, `{uuid}`, `{scope}`,
+    `{label}`, `{cwd}`.
+  - `registry`: `.pm/terminals/<uuid>.json` per spawned terminal.
+    Atomic writes via the same `store::state::atomic_write` the rest
+    of the workspace uses. `TerminalEntry { uuid, scope, agent_id,
+    pid, spawned_at, last_heartbeat, label, spawn_command, status }`.
+    `HeartbeatThread` refreshes `last_heartbeat` every 30s while the
+    agent runs. `purge_dead_terminals` sweeps for stale entries (TTL
+    120s) and can either mark them `Dead` or delete the registry
+    files outright.
+  - `spawn`: glue. Generates a short URL-safe UUID, substitutes the
+    template, exec's it through `$SHELL -c`, writes the registry
+    entry, and emits a `terminal-spawn` event into `events.log` so
+    the cockpit's activity strip surfaces the spawn live.
+
+- New CLI verbs:
+  - `spacecell run <id>`: spawn a terminal scoped to a ticket.
+  - `spacecell terminals`: list registry entries with status column
+    that flags stale-heartbeat actives as `STALE`.
+  - `spacecell focus <uuid>`: invoke the configured focus command;
+    falls back to printing the entry if no focus is configured.
+  - `spacecell agent --window <uuid>`: internal entry point exec'd
+    inside spawned terminals. Sets `THUNDER_WINDOW`, `THUNDER_SCOPE`,
+    `PM_AGENT_ID`; prints the brand-styled scope header; starts the
+    heartbeat thread; exec's the inner command (`claude` by default,
+    overridable via `[launcher] inner_command = "..."`).
+  - `spacecell doctor --purge-terminals [--delete]`: clean stale
+    registry entries. Without `--delete` they get flipped to `Dead`
+    so the user can still see what was spawned.
+
+- Optional `scope: Option<LeafId>` field on `store::events::Event`
+  plus `store::events::scope_from_env` so events emitted from any
+  process inside a scoped terminal get the `THUNDER_SCOPE` tag
+  automatically.
+
+- MCP scope enforcement (soft). The MCP server reads `THUNDER_SCOPE`
+  on construction; every mutating handler (`write_doc`, `checkout`,
+  `checkin`, `complete`, `link`) calls `record_scope_violation_if_any`
+  which emits a `warning` event with detail `out-of-scope: <verb>
+  <target> from scope <scope>` when the target ticket is not a
+  descendant of the launch scope. The operation proceeds regardless;
+  the audit trail is the enforcement mechanism rather than a refusal.
+
+### Tests
+
+- 12 unit tests across `launcher::config`, `launcher::registry`,
+  `launcher::spawn`.
+- 6 integration tests in `tests/phase_v0_3_5_launcher.rs`:
+  - registry round-trips an entry written by spawn
+  - spawn emits a `terminal-spawn` event with the scope tag
+  - purge flips status to `Dead` when not deleting
+  - purge deletes when asked
+  - `label_for` formats consistently
+  - MCP scope enforcement: in-scope checkout passes silently;
+    out-of-scope checkout emits exactly one warning event with the
+    correct `id` and `scope` fields.
+
+Total: 293 tests pass (+18 from v0.3.4 baseline).
+
+### Notes
+
+- Per-kind inner command (`[terminal] command = "..."` in
+  `.pm/templates/<kind>.toml`) lands with the templates work in a
+  later phase. v0.3.5 reads only the workspace-wide
+  `[launcher] inner_command` override.
+- The launcher does not require tmux. Users who want tmux configure
+  `spawn = "tmux new-window -n thunder-{scope} -- {cmd}"`. i3 users
+  wire `spawn = "i3-msg exec 'alacritty -T {label} --command {cmd}'"`.
+  See `docs/launchers.md` (added in a later polish phase) for the
+  recipe library.
+- Library `Context` in the MCP server gained a public `scope` field
+  and `record_scope_violation_if_any` method. Existing callers stay
+  source-compatible because the constructor still takes only `pm_dir`.
+
 ## [0.3.4] - 2026-05-18
 
 Live activity refresh + state-change ticker.
